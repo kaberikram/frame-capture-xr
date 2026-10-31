@@ -1,0 +1,27 @@
+{
+  "version": "iwsdk.scene.v1",
+  "units": "meters",
+  "components": {},
+  "resources": {},
+  "nodes": [
+    {
+      "id": "capture-settings",
+      "name": "Capture settings",
+      "metadata": {
+        "iwsdk.validation": {
+          "allowFloating": true
+        }
+      },
+      "content": {
+        "type": "group"
+      },
+      "transform": {
+        "position": [0, 0, 0]
+      },
+      "components": {
+        "CaptureLook": {}
+      },
+      "children": []
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Frame capture</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #f3efe6;
+        --muted: #b7b1a6;
+        --line: rgba(243, 239, 230, 0.22);
+        --card: rgba(16, 17, 20, 0.78);
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: #101114;
+        color: var(--ink);
+        font-family: "Iowan Old Style", Palatino, Georgia, serif;
+        overflow: hidden;
+      }
+      #scene-container { position: fixed; inset: 0; }
+      #launch {
+        position: fixed;
+        z-index: 2;
+        left: max(16px, env(safe-area-inset-left));
+        bottom: max(16px, env(safe-area-inset-bottom));
+        width: min(360px, calc(100vw - 32px));
+        padding: 16px 16px 14px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        backdrop-filter: blur(16px);
+      }
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 560;
+        letter-spacing: -0.02em;
+      }
+      p { margin: 8px 0 0; color: var(--muted); font-size: 14px; line-height: 1.4; }
+      #status { color: var(--ink); }
+      button {
+        margin-top: 14px;
+        height: 38px;
+        padding: 0 14px;
+        border: 1px solid var(--ink);
+        background: var(--ink);
+        color: #161616;
+        font: inherit;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.45; cursor: default; }
+      @media (max-width: 640px) {
+        h1 { font-size: 20px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="scene-container"></div>
+    <section id="launch" aria-labelledby="title">
+      <h1 id="title">Frame capture</h1>
+      <p id="hint">Pinch a rectangle in the air. Letting go anchors it, photographs what it frames, and pushes that photo into relief.</p>
+      <p id="status">Drag to draw a frame. Right-drag looks around.</p>
+      <button id="enter" type="button">Enter passthrough</button>
+    </section>
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

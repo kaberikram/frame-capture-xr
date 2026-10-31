@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+.DS_Store
+*.log
+.iwsdk/
+.mcp.json
+.cursor/mcp.json
+.vscode/mcp.json
+playwright-report/
+test-results/
+artifacts/
