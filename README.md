@@ -15,7 +15,7 @@ The dev server is HTTPS on port 4473, which the Quest browser needs for WebXR. O
 
 On the headset, use the same network, accept the certificate warning, and allow the camera and hand tracking when asked. You do not need Space Setup. Press **Enter passthrough**. The session is seated. Hands only; controllers are not used.
 
-Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, then peels the photo off a corner until it comes free. `?at=curl` holds the curl, and `?at=detached` holds the sticker floating in front of the empty frame. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card.
+Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to.
 
 ## Gestures
 
@@ -27,7 +27,11 @@ A frame is whatever size and shape you drag. It is not snapped to a wall. It sit
 - After a two-hand frame, open both hands before starting another, so the hand that is still pinching does not immediately draw again.
 - On the desk, the left mouse button is the pinch. Drag a corner of a finished frame to peel it. Shift-drag fans the depth sheets.
 
-Once the photo has eased into a relief, pinch within about 6 cm of a corner and pull. The photo curls off the frame like a vinyl sticker: a soft cylinder bend along a fold perpendicular to the pull, with the depth relief still on the sheet and a shadow on the part that is still stuck. Let go before it is about 70% peeled and it springs flat. Pull past that and it comes free, a slightly curved sticker in your hand. Let go and it stays where you left it. Pinch it again to move it. The white frame stays put, and the live room shows through it. Pinch with both hands (or shift-drag on the desk) and the older depth-sheet fan opens instead: near things on the front sheets, the far wall on the back, gaps empty. The white handle under the frame moves and tilts the frame. It stays where you leave it.
+Once the photo has eased into a relief, pinch within about 6 cm of a corner and pull. The photo curls off the frame like a vinyl sticker: a soft cylinder bend along a fold perpendicular to the pull, with the depth relief still on the sheet and a shadow on the part that is still stuck. Let go before it is about 70% peeled and it springs flat. Pull past that and it comes free, a slightly curved sticker in your hand. The empty white frame breaks into a few short pieces and fades, about 0.6 seconds, then it is gone.
+
+Bring the sticker within about 4 cm of a wall, table, or other scanned surface and a faint outline shows where it will land. Let go, or touch the surface, and it flattens to the surface normal, squashes slightly, and settles with a soft contact shadow. The depth relief stays, and the corner you peeled sits a little off the wall. Let go in open space and it keeps floating. Pinch that lifted corner to peel it off and stick it somewhere else. Every sticker you leave stays for the session.
+
+On a headset the surfaces come from plane detection and bounded mesh faces in the room scan, and from hit-test when those are missing. On the desk, drag a free sticker and move up to carry it away from you along the pointer; the back wall and the table are the demo surfaces. Pinch with both hands (or shift-drag on the desk) and the older depth-sheet fan opens instead: near things on the front sheets, the far wall on the back, gaps empty. The white handle under a frame that is still there moves and tilts it.
 
 Hands are not cut out of the photo. Move them outside the rectangle before you let go.
 
@@ -54,6 +58,9 @@ The **Capture settings** entity in the scene carries `CaptureLook`. The same fie
 | curl | 0.075 | Bend radius of the sticker peel, in metres. Larger is softer |
 | detach | 0.7 | Peel amount where the sticker lets go of the frame |
 | spring | 36 | How hard a sticker that has not detached snaps back |
+| snap | 0.04 | How close a held sticker must be to a surface, in metres, before it can stick |
+| squish | 0.95 | Scale at the moment of contact. It eases back to 1 |
+| dissolve | 0.6 | Seconds the empty frame takes to break apart and fade |
 
 The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in front of the eye and tilted 11.8° down. A headset check can trim it without a rebuild: `?lensf=863&yaw=-0.23&pitch=-11.77&roll=0.14&tau=0.025`. The console line `[frame] lens` shows which values came from the URL.
 

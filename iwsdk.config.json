@@ -15,8 +15,9 @@
       "features": {
         "handTracking": true,
         "anchors": false,
-        "planeDetection": false,
-        "meshDetection": false
+        "hitTest": true,
+        "planeDetection": true,
+        "meshDetection": true
       }
     },
     "input": {
@@ -34,7 +35,7 @@
       "locomotion": false,
       "grabbing": false,
       "physics": false,
-      "sceneUnderstanding": false,
+      "sceneUnderstanding": true,
       "camera": true,
       "environmentRaycast": false,
       "spatialUI": {

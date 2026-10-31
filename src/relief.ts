@@ -63,6 +63,8 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
       uCurlFold: { value: 1 },
       uCurlRadius: { value: 0 },
       uCurlShadow: { value: 0 },
+      uCurlClear: { value: 0.028 },
+      uReliefFloor: { value: -10 },
     },
     vertexShader: /* glsl */ `
       uniform sampler2D uDepth;
@@ -77,6 +79,8 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
       uniform float uCurlFold;
       uniform float uCurlRadius;
       uniform float uCurlShadow;
+      uniform float uCurlClear;
+      uniform float uReliefFloor;
       varying vec2 vUv;
       varying float vKeep;
       varying float vSide;
@@ -112,6 +116,7 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
           float cliff = smoothstep(uEdge, uEdge + max(0.02, uBand * 0.35), j);
           float seated = mix(d, min(d, far), cliff);
           reliefZ = (mix(seated, d, curled) - 0.28) * uDepthAmt * uRelief;
+          reliefZ = max(reliefZ, uReliefFloor);
         }
         vec3 n = vec3(0.0, 0.0, 1.0);
         float side = -1.0;
@@ -128,7 +133,7 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
             float lift = uCurlRadius * (1.0 - cos(phi)) + extra * sin(phi);
             p.xy += axis * (along - dist);
             // Clear the sheet still stuck to the frame so the curl does not z-fight it.
-            p.z += lift + smoothstep(0.0, 0.035, dist) * 0.028;
+            p.z += lift + smoothstep(0.0, 0.035, dist) * uCurlClear;
             n = vec3(-axis * sin(phi), cos(phi));
           }
         }
@@ -229,6 +234,11 @@ export function setRelief(mat: ShaderMaterial, amount: number): void {
   mat.uniforms.uRelief.value = amount
 }
 
+/** How far relief may sink behind the sheet. Stuck stickers sit near zero so they stay on the wall. */
+export function setReliefFloor(mat: ShaderMaterial, floor: number): void {
+  mat.uniforms.uReliefFloor.value = floor
+}
+
 export interface CurlPose {
   axisX: number
   axisY: number
@@ -238,12 +248,15 @@ export interface CurlPose {
   radius: number
   /** 0..1 darkening of the part still stuck to the frame. */
   shadow: number
+  /** Extra lift, in metres, so a peel clears the sheet under it. */
+  clear?: number
 }
 
 /** Page-curl the relief. A null pose lays it flat again. */
 export function applyCurl(mat: ShaderMaterial, pose: CurlPose | null): void {
   const on = pose !== null && pose.radius > 0.001
   mat.uniforms.uCurlRadius.value = on && pose ? pose.radius : 0
+  mat.uniforms.uCurlClear.value = pose?.clear ?? 0.028
   if (!on || !pose) return
   ;(mat.uniforms.uCurlAxis.value as Vector2).set(pose.axisX, pose.axisY)
   mat.uniforms.uCurlFold.value = pose.fold

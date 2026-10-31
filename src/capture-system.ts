@@ -20,11 +20,15 @@ import {
   Vector2,
   Vector3,
   WebGLRenderTarget,
+  XRMesh,
+  XRPlane,
   createSystem,
+  type BufferAttribute,
   type CameraDeviceInfo,
   type Entity,
 } from '@iwsdk/core'
 import { brightnessDepth, detrendDepth, settleDepth } from './brightness-depth.js'
+import { disposeDissolve, makeContactShadow, makeDissolve, stepDissolve, type DissolveRig } from './dissolve.js'
 import { CameraFeed, rasterFromPixels } from './camera-feed.js'
 import { CaptureLook } from './capture-look.js'
 import { cropQuad, cropSize, type Quad, type Raster } from './crop.js'
@@ -34,16 +38,28 @@ import { makeBorder, writeBorder } from './frame-border.js'
 import { RectGesture } from './gesture.js'
 import { classifyHit, hitPlane, makeHandle, placeHandle, type FrameHit } from './handle.js'
 import { bindPeel, layoutPeel, makePeel, spreadFromPull, springStep, type PeelRig } from './peel.js'
-import { axisExtent, curlFromPull, foldForPeel, nearestCorner } from './peel-math.js'
+import { CORNER_REACH, axisExtent, curlFromPull, foldForPeel, nearestCorner } from './peel-math.js'
 import { HeadsetLens, cameraMount, projectPixel } from './lens.js'
-import { applyCurl, applyDepth, applyLook, applyPhoto, bindMesh, reliefGeometry, reliefMaterial, setRelief } from './relief.js'
+import { applyCurl, applyDepth, applyLook, applyPhoto, bindMesh, reliefGeometry, reliefMaterial, setRelief, setReliefFloor } from './relief.js'
 import { buildStandIn } from './stand-in.js'
+import {
+  DESK_SURFACES,
+  DESK_WALL,
+  appendBoxFaces,
+  nearestSurface,
+  readVec3,
+  stickBasis,
+  surfaceFromMatrix,
+  type Snap,
+  type Surface,
+} from './surfaces.js'
 
 type Side = 'left' | 'right'
-type Hold = 'off' | 'play' | 'draw' | 'photo' | 'side' | 'rest' | 'peel' | 'open' | 'curl' | 'detached'
-type Phase = 'ready' | 'drawing' | 'photo' | 'relief' | 'side' | 'rest' | 'peel' | 'open' | 'curl' | 'detached'
+type Hold = 'off' | 'play' | 'draw' | 'photo' | 'side' | 'rest' | 'peel' | 'open' | 'curl' | 'detached' | 'stuck'
+type Phase = 'ready' | 'drawing' | 'photo' | 'relief' | 'side' | 'rest' | 'peel' | 'open' | 'curl' | 'detached' | 'dissolve' | 'approach' | 'stuck'
 type Touch = 'none' | 'peel' | 'grab' | 'curl' | 'sticker'
-type StickerMode = 'idle' | 'curl' | 'sheets' | 'free'
+type StickerMode = 'idle' | 'curl' | 'sheets' | 'free' | 'stuck'
+type ShotStick = 'idle' | 'melt' | 'travel' | 'linger' | 'done'
 type DepthKind = 'wait' | 'brightness' | 'model'
 
 interface Look {
@@ -60,6 +76,9 @@ interface Look {
   curl: number
   detach: number
   spring: number
+  snap: number
+  squish: number
+  dissolve: number
 }
 
 interface Held {
@@ -91,6 +110,11 @@ interface Held {
   cornerY: number
   /** The pinch or the desk demo is driving the gesture, so the spring waits. */
   holding: boolean
+  /** The white frame has broken apart. The photo lives on the root. */
+  frameGone: boolean
+  /** 0 at contact, 1 after the squish eases back to full size. */
+  squishT: number
+  shadow: Mesh | null
 }
 
 const SIDES: readonly Side[] = ['left', 'right']
@@ -101,6 +125,10 @@ const DEPTH_WAIT = 1.4
 const PINCH_ON = 0.02
 const PINCH_OFF = 0.032
 const WORLD_UP = new Vector3(0, 1, 0)
+/** Peel amount that leaves one corner slightly off a stuck sticker. */
+const LIFT_CURL = 0.26
+/** Metres the stuck sheet sits off the surface, so the relief does not clip it. */
+const STICK_GAP = 0.012
 
 const REDUCE_MOTION = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
@@ -119,6 +147,8 @@ interface CaptureApi {
  */
 export class CaptureSystem extends createSystem({
   settings: { required: [CaptureLook] },
+  planes: { required: [XRPlane] },
+  meshes: { required: [XRMesh] },
 }) {
   private readonly lens = new HeadsetLens()
   private readonly feed = new CameraFeed()
@@ -127,6 +157,7 @@ export class CaptureSystem extends createSystem({
   private readonly look: Look = {
     relief: 0.42, pop: 0.85, edge: 0.18, band: 0.1, feather: 0.018, minSpan: 0.12, strip: 0.008, segments: 72,
     layers: 24, spread: 0.2, curl: 0.075, detach: 0.7, spring: 36,
+    snap: 0.04, squish: 0.95, dissolve: 0.6,
   }
 
   private root!: Group
@@ -214,6 +245,22 @@ export class CaptureSystem extends createSystem({
   private readonly planeHit = new Vector3()
   private readonly local = new Vector3()
   private readonly aimDir = new Vector3()
+  private readonly dissolves: DissolveRig[] = []
+  private readonly liveSurfaces: Surface[] = []
+  private previewPositions!: BufferAttribute
+  private preview!: Group
+  private previewing = false
+  private snap: Snap | null = null
+  private shotStick: ShotStick = 'idle'
+  private shotClock = 0
+  private readonly travelFrom = new Vector3()
+  private readonly travelTo = new Vector3()
+  private grabDist = DRAW_DISTANCE
+  /** The next desk move re-bases depth so a finished peel does not fling the sticker. */
+  private catchDepth = false
+  private hitArmed = false
+  private hitSource: XRHitTestSource | null = null
+  private handHits: XRTransientInputHitTestSource | null = null
 
   private readonly onSelectStart = (event: Event): void => {
     const side = (event as XRInputSourceEvent).inputSource?.handedness
@@ -239,7 +286,14 @@ export class CaptureSystem extends createSystem({
     el.setPointerCapture(event.pointerId)
     this.aimPointer(event)
     const hit = this.aimAtFrames(this.raycaster.ray.origin, this.raycaster.ray.direction)
+    if (hit?.kind === 'corner' && hit.held.mode === 'stuck') {
+      this.pointerY = event.clientY
+      this.beginUnstick(hit.held, this.pickAt)
+      return
+    }
+    if (hit?.kind === 'sticker' && hit.held.mode === 'stuck') return
     if (hit?.kind === 'sticker') {
+      this.pointerY = event.clientY
       this.beginSticker(hit.held, this.pickAt)
       return
     }
@@ -277,7 +331,15 @@ export class CaptureSystem extends createSystem({
     }
     if (this.touch === 'sticker' && this.touchHeld) {
       this.aimPointer(event)
-      if (this.dragOnView(this.pickAt)) this.moveSticker(this.pickAt)
+      if (this.catchDepth) {
+        this.catchDepth = false
+        this.pointerY = event.clientY
+        this.touchHeld.photo.getWorldPosition(this.local)
+        this.grabDist = Math.max(0.2, this.local.distanceTo(this.raycaster.ray.origin))
+      }
+      const dist = clamp(this.grabDist + (this.pointerY - event.clientY) * 0.008, 0.2, 3.4)
+      this.pickAt.copy(this.raycaster.ray.origin).addScaledVector(this.raycaster.ray.direction, dist)
+      this.placeStickerCenter(this.pickAt)
       return
     }
     if (this.touch === 'curl' && this.touchHeld) {
@@ -324,6 +386,21 @@ export class CaptureSystem extends createSystem({
     this.dragGroup.visible = false
     this.root.add(this.dragGroup)
 
+    const ghost = makeBorder(0.004)
+    const ghostMat = ghost.mesh.material
+    if (!Array.isArray(ghostMat)) {
+      ghostMat.opacity = 0.28
+      ghostMat.transparent = true
+      ghostMat.depthWrite = false
+    }
+    ghost.mesh.renderOrder = 7
+    this.previewPositions = ghost.positions
+    this.preview = new Group()
+    this.preview.name = 'snap-preview'
+    this.preview.add(ghost.mesh)
+    this.preview.visible = false
+    this.root.add(this.preview)
+
     this.hudCanvas.width = 512
     this.hudCanvas.height = 128
     const ctx = this.hudCanvas.getContext('2d')
@@ -365,6 +442,7 @@ export class CaptureSystem extends createSystem({
       this.watchQuestCamera()
       this.updateHands()
       this.rearmCamera(now)
+      this.armHitTest()
     } else {
       this.scene.background = this.deskColor
       this.standIn.visible = true
@@ -373,6 +451,9 @@ export class CaptureSystem extends createSystem({
       this.updateShot(dt)
     }
     this.syncDrag()
+    this.collectSurfaces()
+    this.updateSnap()
+    this.maybeContact()
     this.animate(dt)
     this.hud.visible = presenting
     if (presenting) this.paintHud()
@@ -406,6 +487,12 @@ export class CaptureSystem extends createSystem({
     if (Number.isFinite(curl)) this.look.curl = curl
     if (Number.isFinite(detach)) this.look.detach = detach
     if (Number.isFinite(spring)) this.look.spring = spring
+    const snap = n('snap')
+    const squish = n('squish')
+    const dissolve = n('dissolve')
+    if (Number.isFinite(snap)) this.look.snap = snap
+    if (Number.isFinite(squish)) this.look.squish = clamp(squish, 0.8, 1)
+    if (Number.isFinite(dissolve)) this.look.dissolve = dissolve
     for (let i = 0; i < this.captures.length; i++) {
       const held = this.captures[i]
       applyLook(held.mat, {
@@ -436,10 +523,12 @@ export class CaptureSystem extends createSystem({
     this.waitClear = false
     this.gesture.cancel()
     this.lens.clear()
+    this.clearHitTest()
     if (!session) this.stopCamera()
     else {
       const features = (session as XRSession & { enabledFeatures?: readonly string[] }).enabledFeatures
       console.info(`[frame] session ${features ? features.join(' ') : 'features unlisted'}`)
+      this.armHitTest()
     }
   }
 
@@ -501,6 +590,12 @@ export class CaptureSystem extends createSystem({
       this.player.head.getWorldPosition(this.headPos)
       this.aimDir.copy(at).sub(this.headPos)
       const hit = this.aimAtFrames(this.headPos, this.aimDir)
+      if (hit?.kind === 'corner' && hit.held.mode === 'stuck') {
+        this.primary = side
+        this.beginUnstick(hit.held, this.pickAt)
+        return
+      }
+      if (hit?.kind === 'sticker' && hit.held.mode === 'stuck') return
       if (hit?.kind === 'sticker') {
         this.primary = side
         this.beginSticker(hit.held, this.pickAt)
@@ -632,6 +727,7 @@ export class CaptureSystem extends createSystem({
       group, photo, mat, raster: null, pop: 0, popping: false, flat: holdFlat, age: 0, depth: 'wait', token: ++this.token,
       width, height, peel, handle, spread: 0, spreadV: 0, holding: false,
       mode: 'idle', curl: 0, curlV: 0, axisX: 1, axisY: 0, cornerX: width * 0.5, cornerY: height * 0.5,
+      frameGone: false, squishT: 1, shadow: null,
     }
     this.captures.push(held)
     group.updateWorldMatrix(true, false)
@@ -765,6 +861,13 @@ export class CaptureSystem extends createSystem({
     }
     const dragWas = this.dragGroup.visible
     this.dragGroup.visible = false
+    const previewWas = this.preview.visible
+    this.preview.visible = false
+    const meltWas: boolean[] = []
+    for (let i = 0; i < this.dissolves.length; i++) {
+      meltWas.push(this.dissolves[i].group.visible)
+      this.dissolves[i].group.visible = false
+    }
     const renderer = this.renderer
     const prev = renderer.getRenderTarget()
     const prevXr = renderer.xr.enabled
@@ -780,7 +883,9 @@ export class CaptureSystem extends createSystem({
     renderer.setClearColor(this.prevClear, prevAlpha)
     renderer.xr.enabled = prevXr
     this.dragGroup.visible = dragWas
+    this.preview.visible = previewWas
     for (let i = 0; i < this.captures.length; i++) this.captures[i].group.visible = shown[i]
+    for (let i = 0; i < this.dissolves.length && i < meltWas.length; i++) this.dissolves[i].group.visible = meltWas[i]
     return rasterFromPixels(this.pixelBuf, width, height)
   }
 
@@ -811,13 +916,30 @@ export class CaptureSystem extends createSystem({
         held.pop = REDUCE_MOTION ? 1 : Math.min(1, held.pop + dt / dur)
         setRelief(held.mat, easeOut(held.pop))
       }
-      if (held.mode === 'curl' && !held.holding && (held.curl > 0 || Math.abs(held.curlV) > 0.0001)) {
+      if (held.mode === 'curl' && !held.holding && held.frameGone) {
+        const target = LIFT_CURL
+        const next = REDUCE_MOTION
+          ? { spread: 0, velocity: 0 }
+          : springStep(held.curl - target, held.curlV, this.look.spring, dt)
+        held.curl = target + next.spread
+        held.curlV = next.velocity
+        if (next.spread === 0) {
+          held.curl = target
+          held.mode = 'stuck'
+          if (held.shadow) held.shadow.visible = true
+        }
+      } else if (held.mode === 'curl' && !held.holding && (held.curl > 0 || Math.abs(held.curlV) > 0.0001)) {
         const next = REDUCE_MOTION
           ? { spread: 0, velocity: 0 }
           : springStep(held.curl, held.curlV, this.look.spring, dt)
         held.curl = next.spread
         held.curlV = next.velocity
         if (held.curl === 0) held.mode = 'idle'
+      }
+      if (held.mode === 'stuck' && held.squishT < 1) {
+        held.squishT = REDUCE_MOTION ? 1 : Math.min(1, held.squishT + dt / 0.28)
+        const s = this.look.squish + (1 - this.look.squish) * easeOut(held.squishT)
+        held.photo.scale.setScalar(s)
       }
       if (held.mode === 'sheets' && !held.holding && (held.spread > 0 || Math.abs(held.spreadV) > 0.0001)) {
         const next = REDUCE_MOTION
@@ -828,6 +950,13 @@ export class CaptureSystem extends createSystem({
         if (held.spread === 0) held.mode = 'idle'
       }
       this.layoutHeld(held)
+    }
+    const meltFor = REDUCE_MOTION ? 0.05 : this.look.dissolve
+    for (let i = this.dissolves.length - 1; i >= 0; i--) {
+      const rig = this.dissolves[i]
+      if (!stepDissolve(rig, dt, meltFor)) continue
+      disposeDissolve(rig)
+      this.dissolves.splice(i, 1)
     }
   }
 
@@ -863,7 +992,7 @@ export class CaptureSystem extends createSystem({
       this.yaw = approach(this.yaw, 0.78, dt * 0.7)
       this.pitch = approach(this.pitch, -0.14, dt * 0.45)
     }
-    if (this.hold === 'play' || this.hold === 'rest' || this.hold === 'curl' || this.hold === 'detached') {
+    if (this.hold === 'play' || this.hold === 'rest' || this.hold === 'curl' || this.hold === 'detached' || this.hold === 'stuck') {
       this.playCurl(dt, last, popped)
     }
     if (this.hold === 'peel' || this.hold === 'open') {
@@ -900,6 +1029,9 @@ export class CaptureSystem extends createSystem({
     const curl = last?.curl ?? 0
     let phase: Phase = 'ready'
     if (this.gesture.drawing && (this.hold !== 'draw' || this.shotU > 0.5)) phase = 'drawing'
+    else if (last?.mode === 'stuck') phase = 'stuck'
+    else if (this.dissolves.length > 0 && last) phase = 'dissolve'
+    else if (this.previewing && last?.mode === 'free') phase = 'approach'
     else if (last?.mode === 'free') phase = 'detached'
     else if (last?.mode === 'curl' && curl > 0.06) phase = 'curl'
     else if (spread > 0.85) phase = 'open'
@@ -916,7 +1048,7 @@ export class CaptureSystem extends createSystem({
     api.count = this.captures.length
     api.depth = last?.depth ?? 'none'
     api.relief = relief
-    api.peel = last?.mode === 'free' ? 1 : last?.mode === 'curl' ? curl : spread
+    api.peel = last?.mode === 'free' || last?.mode === 'stuck' ? 1 : last?.mode === 'curl' ? curl : spread
   }
 
   private resting(relief: number, spread: number, curl: number): boolean {
@@ -926,6 +1058,7 @@ export class CaptureSystem extends createSystem({
       case 'play':
       case 'curl':
       case 'detached':
+      case 'stuck':
       case 'peel':
       case 'open':
         return true
@@ -949,7 +1082,9 @@ export class CaptureSystem extends createSystem({
   private statusLine(): string {
     const last = this.captures[this.captures.length - 1]
     if (this.touch === 'curl') return 'Pull the corner. Past the mark the sticker comes free'
+    if (this.previewing) return 'Release to stick it on'
     if (this.touch === 'sticker') return 'The sticker follows your hand'
+    if (last?.mode === 'stuck') return 'Pinch the lifted corner to peel it off'
     if (this.touch === 'peel') return 'Both hands pull the depth apart'
     if (this.touch === 'grab') return 'The handle moves and tilts the frame'
     if (this.gesture.drawing) return 'Release to take the photo'
@@ -959,8 +1094,8 @@ export class CaptureSystem extends createSystem({
     if (last?.flat) return 'Photo held flat'
     if (this.phase === 'photo') return 'Photo in the frame'
     return this.renderer.xr.isPresenting
-      ? 'Pinch a frame. Pinch a corner and pull to peel the photo off.'
-      : 'Drag to draw. Drag a corner to peel the photo off. Shift-drag fans the depth. Right-drag looks around.'
+      ? 'Pinch a corner and pull. Bring the sticker to a wall to stick it.'
+      : 'Drag to draw. Drag a corner to peel. Drag a free sticker up onto the wall. Right-drag looks around.'
   }
 
   private note(text: string): void {
@@ -1109,7 +1244,10 @@ export class CaptureSystem extends createSystem({
 
   private playCurl(dt: number, last: Held | undefined, popped: boolean): void {
     if (!popped || !last || last.depth === 'wait' || last.flat) return
-    if (last.mode === 'free') return
+    if (last.mode === 'free' || last.mode === 'stuck') {
+      if (this.hold === 'play' || this.hold === 'stuck') this.playStick(dt, last)
+      return
+    }
     const relief = last.mat.uniforms.uRelief.value as number
     if (relief < 0.9) return
     this.yaw = approach(this.yaw, 0.52, dt * 0.65)
@@ -1152,23 +1290,26 @@ export class CaptureSystem extends createSystem({
     const depth = held.mat.uniforms.uDepth.value as Texture | null
     const texel = held.mat.uniforms.uTexel.value as Vector2
     const hasDepth = held.depth === 'wait' ? 0 : 1
-    bindPeel(held.peel, photo, depth, texel, this.look.feather, hasDepth)
+    if (!held.frameGone) bindPeel(held.peel, photo, depth, texel, this.look.feather, hasDepth)
     const relief = held.mat.uniforms.uRelief.value as number
-    const sheets = held.mode === 'sheets' && !held.flat
-    layoutPeel(held.peel, {
-      layers: this.look.layers,
-      spread: sheets ? held.spread : 0,
-      maxSpread: this.look.spread,
-      relief,
-      depthAmt: Math.max(held.width, held.height) * this.look.relief,
-      feather: this.look.feather,
-    })
+    const sheets = held.mode === 'sheets' && !held.flat && !held.frameGone
+    if (!held.frameGone) {
+      layoutPeel(held.peel, {
+        layers: this.look.layers,
+        spread: sheets ? held.spread : 0,
+        maxSpread: this.look.spread,
+        relief,
+        depthAmt: Math.max(held.width, held.height) * this.look.relief,
+        feather: this.look.feather,
+      })
+    }
     this.layoutCurl(held)
     held.photo.visible = held.raster !== null && !(sheets && held.spread >= 0.035)
   }
 
   private layoutCurl(held: Held): void {
-    if (held.mode !== 'curl' && held.mode !== 'free') {
+    setReliefFloor(held.mat, held.mode === 'stuck' ? -0.004 : -10)
+    if (held.mode !== 'curl' && held.mode !== 'free' && held.mode !== 'stuck') {
       applyCurl(held.mat, null)
       return
     }
@@ -1183,6 +1324,17 @@ export class CaptureSystem extends createSystem({
       })
       return
     }
+    if (held.mode === 'stuck') {
+      applyCurl(held.mat, {
+        axisX: held.axisX,
+        axisY: held.axisY,
+        fold: foldForPeel(LIFT_CURL, extent),
+        radius: Math.max(0.05, this.look.curl),
+        shadow: 0.35,
+        clear: 0.012,
+      })
+      return
+    }
     if (held.curl <= 0.001) {
       applyCurl(held.mat, null)
       return
@@ -1192,7 +1344,8 @@ export class CaptureSystem extends createSystem({
       axisY: held.axisY,
       fold: foldForPeel(held.curl, extent),
       radius: Math.max(0.02, this.look.curl),
-      shadow: 1,
+      shadow: held.frameGone ? 0.35 : 1,
+      clear: held.frameGone ? 0.012 : 0.028,
     })
   }
 
@@ -1236,6 +1389,7 @@ export class CaptureSystem extends createSystem({
       held.group.worldToLocal(this.local.copy(this.planeHit))
       const hit = classifyHit(this.local, held.width * 0.5, held.height * 0.5, this.look.strip)
       if (hit === 'miss') continue
+      if (held.frameGone) continue
       if (held.mode === 'free' && hit !== 'handle') continue
       if ((hit === 'photo' || hit === 'corner') && !this.canPeel(held)) continue
       best = held
@@ -1247,7 +1401,7 @@ export class CaptureSystem extends createSystem({
   }
 
   private canPeel(held: Held): boolean {
-    if (held.flat || held.depth === 'wait' || held.mode === 'free') return false
+    if (held.flat || held.depth === 'wait' || held.mode === 'free' || held.frameGone) return false
     return (held.mat.uniforms.uRelief.value as number) > 0.55
   }
 
@@ -1260,22 +1414,27 @@ export class CaptureSystem extends createSystem({
     return this.pinchWas[other] || this.selectHeld[other]
   }
 
-  private aimAtSticker(origin: Vector3, dir: Vector3): { held: Held; kind: 'sticker' } | null {
+  private aimAtSticker(origin: Vector3, dir: Vector3): { held: Held; kind: 'sticker' | 'corner' } | null {
     let best: Held | null = null
+    let kind: 'sticker' | 'corner' = 'sticker'
     let bestT = 8
     for (let i = 0; i < this.captures.length; i++) {
       const held = this.captures[i]
-      if (held.mode !== 'free') continue
+      if (held.mode !== 'free' && held.mode !== 'stuck') continue
       if (!hitPlane(held.photo, origin, dir, this.planeHit)) continue
       const t = this.planeHit.distanceTo(origin)
       if (t >= bestT) continue
       held.photo.worldToLocal(this.local.copy(this.planeHit))
       if (Math.abs(this.local.x) > held.width * 0.55 || Math.abs(this.local.y) > held.height * 0.55) continue
+      const dx = this.local.x - held.cornerX
+      const dy = this.local.y - held.cornerY
+      const onCorner = held.mode === 'stuck' && dx * dx + dy * dy <= CORNER_REACH * CORNER_REACH
       best = held
+      kind = onCorner ? 'corner' : 'sticker'
       bestT = t
       this.pickAt.copy(this.planeHit)
     }
-    return best ? { held: best, kind: 'sticker' } : null
+    return best ? { held: best, kind } : null
   }
 
   private armCorner(held: Held, corner = nearestCorner(held.width * 0.5, held.height * 0.5, held.width * 0.5, held.height * 0.5)): void {
@@ -1311,11 +1470,14 @@ export class CaptureSystem extends createSystem({
       return
     }
     const pull = this.pullAmount(at)
-    held.curl = curlFromPull(pull)
+    const peeled = curlFromPull(pull)
+    held.curl = held.frameGone && peeled < LIFT_CURL ? LIFT_CURL : peeled
     held.curlV = 0
     if (held.curl >= this.look.detach) {
-      this.detach(held, at)
+      if (held.frameGone) this.releaseFromWall(held, at)
+      else this.detach(held, at)
       this.touch = 'sticker'
+      this.catchDepth = true
     }
   }
 
@@ -1324,7 +1486,8 @@ export class CaptureSystem extends createSystem({
       if (this.dragOnView(this.pickAt)) this.moveSticker(this.pickAt)
       return
     }
-    if (!hitPlane(held.group, origin, dir, this.pickAt) && !this.dragOnView(this.pickAt)) return
+    const plane = held.frameGone ? held.photo : held.group
+    if (!hitPlane(plane, origin, dir, this.pickAt) && !this.dragOnView(this.pickAt)) return
     this.moveCurl(this.pickAt)
   }
 
@@ -1336,6 +1499,7 @@ export class CaptureSystem extends createSystem({
   }
 
   private beginSheets(held: Held, at: Vector3): void {
+    if (held.frameGone || held.mode === 'stuck') return
     if (!this.canCurl(held) && held.mode !== 'curl') return
     if (held.mode === 'free') return
     held.mode = 'sheets'
@@ -1356,6 +1520,9 @@ export class CaptureSystem extends createSystem({
     held.holding = true
     this.grabPinch.copy(at)
     this.grabPos.copy(held.photo.position)
+    this.camera.getWorldPosition(this.headPos)
+    this.grabDist = Math.max(0.2, at.distanceTo(this.headPos))
+    this.catchDepth = false
   }
 
   private moveSticker(at: Vector3): void {
@@ -1391,6 +1558,9 @@ export class CaptureSystem extends createSystem({
     photo.position.add(this.aimDir)
     this.grabPinch.copy(parked)
     this.grabPos.copy(photo.position)
+    this.camera.getWorldPosition(this.headPos)
+    this.grabDist = Math.max(0.2, parked.distanceTo(this.headPos))
+    this.beginDissolve(held)
   }
 
   /** The desk demo lets the sticker go in front of the frame. */
@@ -1443,15 +1613,18 @@ export class CaptureSystem extends createSystem({
   }
 
   private frameAxes(held: Held): void {
-    held.group.updateWorldMatrix(true, false)
-    const e = held.group.matrixWorld.elements
+    const object = held.frameGone ? held.photo : held.group
+    object.updateWorldMatrix(true, false)
+    const e = object.matrixWorld.elements
     this.grabRight.set(e[0], e[1], e[2])
     this.grabUp.set(e[4], e[5], e[6])
     this.forward.set(e[8], e[9], e[10])
   }
 
   private endTouch(): void {
-    if (this.touchHeld) this.touchHeld.holding = false
+    const held = this.touchHeld
+    if (this.touch === 'sticker' && held && held.mode === 'free' && this.snap) this.stick(held, this.snap)
+    if (held && held.mode !== 'stuck') held.holding = false
     this.touch = 'none'
     this.touchHeld = null
     this.primary = null
@@ -1459,7 +1632,350 @@ export class CaptureSystem extends createSystem({
     this.waitClear = true
   }
 
+  /** Pinch the lifted corner and peel a stuck sticker back into the hand. */
+  private beginUnstick(held: Held, at: Vector3): void {
+    if (held.mode !== 'stuck') return
+    held.photo.scale.set(1, 1, 1)
+    held.squishT = 1
+    held.mode = 'curl'
+    held.holding = true
+    held.curlV = 0
+    if (held.shadow) held.shadow.visible = false
+    this.touch = 'curl'
+    this.touchHeld = held
+    this.grabPinch.copy(at)
+    this.frameAxes(held)
+    this.inward.copy(this.grabRight).multiplyScalar(-held.axisX).addScaledVector(this.grabUp, -held.axisY)
+    if (this.inward.lengthSq() > 1e-6) this.inward.normalize()
+  }
+
+  /** The sticker leaves the wall and stays in the pinch. The frame is already gone. */
+  private releaseFromWall(held: Held, at: Vector3): void {
+    held.mode = 'free'
+    held.curl = 1
+    held.holding = true
+    held.photo.scale.set(1, 1, 1)
+    held.squishT = 1
+    if (held.shadow) held.shadow.visible = false
+    this.frameAxes(held)
+    const parked = this.planeHit.copy(at).addScaledVector(this.forward, 0.06)
+    held.photo.getWorldPosition(this.local)
+    this.parentDelta(this.pickAt.copy(parked).sub(this.local), this.aimDir)
+    held.photo.position.add(this.aimDir)
+    this.grabPinch.copy(parked)
+    this.grabPos.copy(held.photo.position)
+    this.camera.getWorldPosition(this.headPos)
+    this.grabDist = Math.max(0.2, parked.distanceTo(this.headPos))
+  }
+
+  private placeStickerCenter(worldPoint: Vector3): void {
+    const held = this.touchHeld
+    if (!held) return
+    held.photo.getWorldPosition(this.local)
+    this.parentDelta(this.planeHit.copy(worldPoint).sub(this.local), this.aimDir)
+    held.photo.position.add(this.aimDir)
+  }
+
+  private beginDissolve(held: Held): void {
+    if (held.frameGone) return
+    held.group.updateWorldMatrix(true, false)
+    if (!REDUCE_MOTION) {
+      const rig = makeDissolve(held.width * 0.5, held.height * 0.5)
+      this.root.add(rig.group)
+      this.pickAt.setFromMatrixPosition(held.group.matrixWorld)
+      this.grabQuat.setFromRotationMatrix(held.group.matrixWorld)
+      this.adoptWorld(rig.group, this.pickAt, this.grabQuat)
+      this.dissolves.push(rig)
+    }
+    this.dropFrame(held)
+  }
+
+  private dropFrame(held: Held): void {
+    held.peel.geometry.dispose()
+    for (let i = 0; i < held.peel.mats.length; i++) held.peel.mats[i].dispose()
+    held.handle.geometry.dispose()
+    const handleMat = held.handle.material
+    if (!Array.isArray(handleMat)) handleMat.dispose()
+    for (let i = 0; i < held.group.children.length; i++) {
+      const child = held.group.children[i]
+      if (child === held.peel.root || child === held.handle || child === held.photo) continue
+      const mesh = child as Mesh
+      mesh.geometry?.dispose()
+      const mat = mesh.material
+      if (mat && !Array.isArray(mat)) mat.dispose()
+    }
+    held.group.removeFromParent()
+    held.frameGone = true
+  }
+
+  private playStick(dt: number, held: Held): void {
+    if (held.mode === 'stuck' || this.shotStick === 'done') return
+    if (this.shotStick === 'idle') {
+      this.shotStick = 'melt'
+      this.shotClock = 0
+    }
+    if (this.shotStick === 'melt') {
+      this.shotClock += dt
+      if (this.shotClock < Math.max(0.45, this.look.dissolve)) return
+      this.shotStick = 'travel'
+      this.shotClock = 0
+      held.photo.getWorldPosition(this.travelFrom)
+      this.travelTo.set(DESK_WALL.px - 0.92, 1.48, DESK_WALL.pz + DESK_WALL.nz * 0.03)
+      return
+    }
+    if (this.shotStick === 'travel') {
+      this.shotClock = Math.min(1, this.shotClock + dt / 1.7)
+      this.pickAt.lerpVectors(this.travelFrom, this.travelTo, smoothStep(this.shotClock))
+      held.photo.getWorldQuaternion(this.grabQuat)
+      this.adoptWorld(held.photo, this.pickAt, this.grabQuat)
+      if (this.shotClock >= 1) {
+        this.shotStick = 'linger'
+        this.shotClock = 0
+      }
+      return
+    }
+    if (this.shotStick === 'linger') {
+      this.shotClock += dt
+      if (this.shotClock < 0.85) return
+      held.photo.getWorldPosition(this.local)
+      this.camera.getWorldPosition(this.headPos)
+      const snap = nearestSurface(
+        this.local.x, this.local.y, this.local.z,
+        DESK_SURFACES, this.look.snap,
+        this.headPos.x, this.headPos.y, this.headPos.z,
+      )
+      if (snap) this.stick(held, snap)
+      this.shotStick = 'done'
+    }
+  }
+
+  private stick(held: Held, snap: Snap): void {
+    if (held.mode === 'stuck') return
+    this.camera.getWorldPosition(this.headPos)
+    const basis = stickBasis(
+      snap.nx, snap.ny, snap.nz,
+      this.headPos.x - snap.px, this.headPos.y - snap.py, this.headPos.z - snap.pz,
+    )
+    this.axisX.set(basis.xx, basis.xy, basis.xz)
+    this.axisY.set(basis.yx, basis.yy, basis.yz)
+    this.forward.set(basis.zx, basis.zy, basis.zz)
+    this.basis.makeBasis(this.axisX, this.axisY, this.forward)
+    this.grabQuat.setFromRotationMatrix(this.basis)
+    this.pickAt.set(
+      snap.px + snap.nx * STICK_GAP,
+      snap.py + snap.ny * STICK_GAP,
+      snap.pz + snap.nz * STICK_GAP,
+    )
+    this.adoptWorld(held.photo, this.pickAt, this.grabQuat)
+    held.mode = 'stuck'
+    held.curl = LIFT_CURL
+    held.holding = false
+    held.curlV = 0
+    held.squishT = REDUCE_MOTION ? 1 : 0
+    const scale = REDUCE_MOTION ? 1 : this.look.squish
+    held.photo.scale.setScalar(scale)
+    if (!held.shadow) {
+      held.shadow = makeContactShadow(held.width, held.height)
+      held.photo.add(held.shadow)
+    }
+    held.shadow.visible = true
+    this.preview.visible = false
+    this.previewing = false
+    this.snap = null
+  }
+
+  private adoptWorld(object: { position: Vector3; quaternion: Quaternion }, worldPos: Vector3, worldQuat: Quaternion): void {
+    this.worldMat.compose(worldPos, worldQuat, this.ones)
+    this.root.updateWorldMatrix(true, false)
+    this.localMat.copy(this.root.matrixWorld).invert().multiply(this.worldMat)
+    object.position.setFromMatrixPosition(this.localMat)
+    object.quaternion.setFromRotationMatrix(this.localMat)
+  }
+
+  private drivenSticker(): Held | null {
+    if (this.touch === 'sticker' && this.touchHeld && this.touchHeld.mode === 'free') return this.touchHeld
+    const last = this.captures[this.captures.length - 1]
+    if (!last || last.mode !== 'free') return null
+    if (this.hold !== 'play' && this.hold !== 'stuck') return null
+    if (this.shotStick !== 'travel' && this.shotStick !== 'linger') return null
+    return last
+  }
+
+  private updateSnap(): void {
+    this.previewing = false
+    this.snap = null
+    this.preview.visible = false
+    const held = this.drivenSticker()
+    if (!held) return
+    held.photo.updateWorldMatrix(true, false)
+    held.photo.getWorldPosition(this.local)
+    this.camera.getWorldPosition(this.headPos)
+    const snap = nearestSurface(
+      this.local.x, this.local.y, this.local.z,
+      this.currentSurfaces(), this.look.snap,
+      this.headPos.x, this.headPos.y, this.headPos.z,
+    )
+    if (!snap) return
+    this.snap = snap
+    this.previewing = true
+    this.preview.visible = true
+    writeBorder(this.previewPositions, held.width * 0.5, held.height * 0.5, 0.004)
+    const basis = stickBasis(
+      snap.nx, snap.ny, snap.nz,
+      this.headPos.x - snap.px, this.headPos.y - snap.py, this.headPos.z - snap.pz,
+    )
+    this.axisX.set(basis.xx, basis.xy, basis.xz)
+    this.axisY.set(basis.yx, basis.yy, basis.yz)
+    this.forward.set(basis.zx, basis.zy, basis.zz)
+    this.basis.makeBasis(this.axisX, this.axisY, this.forward)
+    this.grabQuat.setFromRotationMatrix(this.basis)
+    this.pickAt.set(snap.px + snap.nx * 0.004, snap.py + snap.ny * 0.004, snap.pz + snap.nz * 0.004)
+    this.adoptWorld(this.preview, this.pickAt, this.grabQuat)
+  }
+
+  private maybeContact(): void {
+    const held = this.touchHeld
+    if (this.touch !== 'sticker' || !held || held.mode !== 'free' || !this.snap) return
+    const contact = Math.min(0.012, this.look.snap * 0.3)
+    if (this.snap.distance > contact) return
+    this.stick(held, this.snap)
+    this.touch = 'none'
+    this.touchHeld = null
+    this.primary = null
+    this.dual = false
+    this.waitClear = true
+  }
+
+  private currentSurfaces(): readonly Surface[] {
+    return this.renderer.xr.isPresenting ? this.liveSurfaces : DESK_SURFACES
+  }
+
+  private collectSurfaces(): void {
+    this.liveSurfaces.length = 0
+    if (!this.renderer.xr.isPresenting) return
+    this.queries.planes.entities.forEach((entity) => {
+      if (this.liveSurfaces.length >= 48) return
+      this.pushPlane(entity)
+    })
+    this.queries.meshes.entities.forEach((entity) => {
+      if (this.liveSurfaces.length >= 48) return
+      this.pushMesh(entity)
+    })
+    this.pushHits()
+  }
+
+  private pushPlane(entity: Entity): void {
+    const obj = entity.object3D
+    if (!obj) return
+    obj.updateWorldMatrix(true, false)
+    let halfU = 0.5
+    let halfV = 0.5
+    let centerU = 0
+    let centerV = 0
+    const raw = entity.getValue(XRPlane, '_plane') as { polygon?: ArrayLike<{ x: number; z: number }> } | undefined
+    const polygon = raw?.polygon
+    if (polygon && polygon.length >= 3) {
+      let minX = Infinity
+      let maxX = -Infinity
+      let minZ = Infinity
+      let maxZ = -Infinity
+      for (let i = 0; i < polygon.length; i++) {
+        const point = polygon[i]
+        if (point.x < minX) minX = point.x
+        if (point.x > maxX) maxX = point.x
+        if (point.z < minZ) minZ = point.z
+        if (point.z > maxZ) maxZ = point.z
+      }
+      if (maxX > minX && maxZ > minZ) {
+        centerU = (minX + maxX) * 0.5
+        centerV = (minZ + maxZ) * 0.5
+        halfU = (maxX - minX) * 0.5
+        halfV = (maxZ - minZ) * 0.5
+      }
+    } else {
+      const box = (obj as Mesh).geometry?.boundingBox
+      if (!box) (obj as Mesh).geometry?.computeBoundingBox()
+      const bounds = (obj as Mesh).geometry?.boundingBox
+      if (bounds) {
+        halfU = (bounds.max.x - bounds.min.x) * 0.5
+        halfV = (bounds.max.z - bounds.min.z) * 0.5
+      }
+    }
+    this.liveSurfaces.push(surfaceFromMatrix(obj.matrixWorld.elements, halfU, halfV, centerU, centerV))
+  }
+
+  private pushMesh(entity: Entity): void {
+    if (!entity.getValue(XRMesh, 'isBounded3D')) return
+    const obj = entity.object3D
+    if (!obj) return
+    const min = readVec3(entity.getValue(XRMesh, 'min'))
+    const max = readVec3(entity.getValue(XRMesh, 'max'))
+    if (!min || !max) return
+    obj.updateWorldMatrix(true, false)
+    appendBoxFaces(this.liveSurfaces, obj.matrixWorld.elements, min, max)
+    if (this.liveSurfaces.length > 48) this.liveSurfaces.length = 48
+  }
+
+  private pushHits(): void {
+    if (this.liveSurfaces.length >= 48) return
+    const space = this.world.xrReferenceSpace
+    const frame = this.world.xrFrame
+    if (!space || !frame) return
+    if (this.hitSource) {
+      const hits = this.world.getHitTestResults(this.hitSource)
+      for (let i = 0; i < hits.length && this.liveSurfaces.length < 48; i++) {
+        const pose = hits[i].getPose(space)
+        if (pose) this.liveSurfaces.push(surfaceFromMatrix(pose.transform.matrix, 0.3, 0.3))
+      }
+    }
+    if (!this.handHits || !frame.getHitTestResultsForTransientInput) return
+    const batches = frame.getHitTestResultsForTransientInput(this.handHits)
+    for (let i = 0; i < batches.length && this.liveSurfaces.length < 48; i++) {
+      const results = batches[i].results
+      for (let j = 0; j < results.length && this.liveSurfaces.length < 48; j++) {
+        const pose = results[j].getPose(space)
+        if (pose) this.liveSurfaces.push(surfaceFromMatrix(pose.transform.matrix, 0.3, 0.3))
+      }
+    }
+  }
+
+  private armHitTest(): void {
+    if (this.hitArmed || !this.session) return
+    const session = this.session
+    this.hitArmed = true
+    void session.requestReferenceSpace('viewer').then((viewer) => {
+      if (this.session !== session) return undefined
+      return this.world.requestHitTestSource({ space: viewer })
+    }).then((source) => {
+      if (this.session !== session) {
+        source?.cancel()
+        return
+      }
+      this.hitSource = source ?? null
+    }).catch(() => {
+      this.hitSource = null
+    })
+    void this.world.requestHitTestSourceForTransientInput({ profile: 'generic-hand' }).then((source) => {
+      if (this.session !== session) {
+        source?.cancel()
+        return
+      }
+      this.handHits = source ?? null
+    })
+  }
+
+  private clearHitTest(): void {
+    this.hitSource?.cancel()
+    this.handHits?.cancel()
+    this.hitSource = null
+    this.handHits = null
+    this.hitArmed = false
+  }
+
+  private readonly ones = new Vector3(1, 1, 1)
+
   private dispose(): void {
+    this.clearHitTest()
     this.session?.removeEventListener('selectstart', this.onSelectStart)
     this.session?.removeEventListener('selectend', this.onSelectEnd)
     this.stopCamera()
@@ -1476,7 +1992,7 @@ function firstEntity(entities: Iterable<Entity>): Entity | null {
 
 function readHold(): Hold {
   const at = queryFlag('at')
-  if (at === 'draw' || at === 'photo' || at === 'side' || at === 'rest' || at === 'peel' || at === 'open' || at === 'curl' || at === 'detached') return at
+  if (at === 'draw' || at === 'photo' || at === 'side' || at === 'rest' || at === 'peel' || at === 'open' || at === 'curl' || at === 'detached' || at === 'stuck') return at
   if (queryFlag('shot') !== null) return 'play'
   return 'off'
 }
