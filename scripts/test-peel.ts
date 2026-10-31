@@ -1,4 +1,4 @@
-import { classifyHit, spreadFromPull, springStep } from '../src/peel-math.ts'
+import { axisExtent, classifyHit, curlFromPull, foldForPeel, nearestCorner, spreadFromPull, springStep } from '../src/peel-math.ts'
 
 const halfW = 0.16
 const halfH = 0.11
@@ -25,5 +25,19 @@ for (let i = 0; i < 240; i++) {
   if (spread < 0) throw new Error('spring crossed zero')
 }
 if (spread > 0.02) throw new Error(`spring did not settle ${spread}`)
+
+const corner = classifyHit(halfW - 0.02, halfH - 0.01, halfW, halfH, strip)
+const justOutside = classifyHit(halfW - 0.07, halfH, halfW, halfH, strip)
+if (corner !== 'corner') throw new Error(`corner zone ${corner}`)
+if (justOutside !== 'photo') throw new Error(`outside the 6 cm disc ${justOutside}`)
+const grabbed = nearestCorner(halfW, halfH, halfW, halfH)
+if (!grabbed || grabbed.id !== 0) throw new Error('top-right corner')
+const extent = axisExtent(halfW, halfH, grabbed.axisX, grabbed.axisY)
+if (Math.abs(foldForPeel(0, extent) - extent) > 1e-6) throw new Error('a rest peel sits on the corner')
+if (Math.abs(foldForPeel(1, extent) + extent) > 1e-6) throw new Error('a full peel reaches the far edge')
+if (curlFromPull(-0.02) !== 0) throw new Error('a push stays stuck')
+const stuck = curlFromPull(0.04)
+const loose = curlFromPull(0.2)
+if (stuck <= 0 || stuck >= 0.7 || loose < 0.7) throw new Error(`curl ${stuck} ${loose}`)
 
 console.log('peel ok')

@@ -1,4 +1,4 @@
-import { BoxGeometry, Group, Mesh, MeshBasicMaterial, Vector3 } from '@iwsdk/core'
+import { BoxGeometry, Mesh, MeshBasicMaterial, Object3D, Vector3 } from '@iwsdk/core'
 import { classifyHit as classifyPoint, type FrameHit } from './peel-math.js'
 
 const HANDLE_W = 0.062
@@ -28,10 +28,10 @@ export function classifyHit(local: Vector3, halfW: number, halfH: number, strip:
   return classifyPoint(local.x, local.y, halfW, halfH, strip)
 }
 
-/** Where a ray meets the capture's plane. Local +Z is the plane normal. */
-export function hitPlane(group: Group, origin: Vector3, dir: Vector3, out: Vector3): boolean {
-  group.updateWorldMatrix(true, false)
-  const e = group.matrixWorld.elements
+/** Where a ray meets an object's plane. Local +Z is the plane normal. */
+export function hitPlane(object: Object3D, origin: Vector3, dir: Vector3, out: Vector3): boolean {
+  object.updateWorldMatrix(true, false)
+  const e = object.matrixWorld.elements
   const nx = e[8]
   const ny = e[9]
   const nz = e[10]
