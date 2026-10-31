@@ -15,7 +15,7 @@ The dev server is HTTPS on port 4473, which the Quest browser needs for WebXR. O
 
 On the headset, use the same network, accept the certificate warning, and allow the camera and hand tracking when asked. You do not need Space Setup. Press **Enter passthrough**. The session is seated. Hands only; controllers are not used.
 
-Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, capture, and relief on its own. `?ui=0` hides the card.
+Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, then the peel, and lets the sheets spring back. `?at=rest`, `?at=peel` and `?at=open` hold those three stages. `?ui=0` hides the card.
 
 ## Gestures
 
@@ -25,7 +25,9 @@ A frame is whatever size and shape you drag. It is not snapped to a wall. It sit
 - Both hands: pinch with each hand. The two pinch points are opposite corners.
 - Let go, and if both sides are at least 12 cm the frame is anchored in the world and the photo is taken. A smaller drag is dropped.
 - After a two-hand frame, open both hands before starting another, so the hand that is still pinching does not immediately draw again.
-- On the desk, the left mouse button is the pinch.
+- On the desk, the left mouse button is the pinch. Drag down inside a finished frame to peel it.
+
+Once the photo has eased into a relief, pinch inside it and pull toward your head. The photo splits into depth sheets: near things stay on the front sheets, the far wall on the back ones, and the gaps stay empty so passthrough shows through. How far they open follows the pull, clamped and eased. Let go and they spring back together. The white handle under the frame is a grab: pinch it to move and tilt the frame. It stays where you leave it.
 
 Hands are not cut out of the photo. Move them outside the rectangle before you let go.
 
@@ -47,6 +49,9 @@ The **Capture settings** entity in the scene carries `CaptureLook`. The same fie
 | minSpan | 0.12 | Smallest side, in metres, that is kept |
 | strip | 0.008 | Thickness of the white frame, in metres |
 | segments | 72 | Subdivisions along the long side |
+| layers | 24 | Depth sheets a peel splits the photo into |
+| spread | 0.2 | How far the front sheet comes toward you, in metres, at a full pull |
+| spring | 36 | How hard the sheets pull back together on release |
 
 The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in front of the eye and tilted 11.8° down. A headset check can trim it without a rebuild: `?lensf=863&yaw=-0.23&pitch=-11.77&roll=0.14&tau=0.025`. The console line `[frame] lens` shows which values came from the URL.
 

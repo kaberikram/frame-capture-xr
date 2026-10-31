@@ -10,11 +10,13 @@ import {
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
+  Quaternion,
   Raycaster,
   RGBAFormat,
   SRGBColorSpace,
   ShaderMaterial,
   UnsignedByteType,
+  type Texture,
   Vector2,
   Vector3,
   WebGLRenderTarget,
@@ -30,13 +32,16 @@ import { estimateDepth, prepareDepthModel } from './depth-model.js'
 import { PREVIEW_FORCED, WEBCAM_REQUESTED, launchSession, queryFlag } from './experience.js'
 import { makeBorder, writeBorder } from './frame-border.js'
 import { RectGesture } from './gesture.js'
+import { classifyHit, hitPlane, makeHandle, placeHandle, type FrameHit } from './handle.js'
+import { bindPeel, layoutPeel, makePeel, spreadFromPull, springStep, type PeelRig } from './peel.js'
 import { HeadsetLens, cameraMount, projectPixel } from './lens.js'
 import { applyDepth, applyLook, applyPhoto, bindMesh, reliefGeometry, reliefMaterial, setRelief } from './relief.js'
 import { buildStandIn } from './stand-in.js'
 
 type Side = 'left' | 'right'
-type Hold = 'off' | 'play' | 'draw' | 'photo' | 'side'
-type Phase = 'ready' | 'drawing' | 'photo' | 'relief' | 'side'
+type Hold = 'off' | 'play' | 'draw' | 'photo' | 'side' | 'rest' | 'peel' | 'open'
+type Phase = 'ready' | 'drawing' | 'photo' | 'relief' | 'side' | 'rest' | 'peel' | 'open'
+type Touch = 'none' | 'peel' | 'grab'
 type DepthKind = 'wait' | 'brightness' | 'model'
 
 interface Look {
@@ -48,6 +53,9 @@ interface Look {
   minSpan: number
   strip: number
   segments: number
+  layers: number
+  spread: number
+  spring: number
 }
 
 interface Held {
@@ -63,6 +71,13 @@ interface Held {
   token: number
   width: number
   height: number
+  peel: PeelRig
+  handle: Mesh
+  /** 0 closed, 1 pulled out to the max spread. */
+  spread: number
+  spreadV: number
+  /** The pinch or the desk demo is driving spread, so the spring waits. */
+  holding: boolean
 }
 
 const SIDES: readonly Side[] = ['left', 'right']
@@ -81,6 +96,7 @@ interface CaptureApi {
   count: number
   depth: string
   relief: number
+  peel: number
 }
 
 /**
@@ -97,6 +113,7 @@ export class CaptureSystem extends createSystem({
   private readonly captures: Held[] = []
   private readonly look: Look = {
     relief: 0.42, pop: 0.85, edge: 0.18, band: 0.1, feather: 0.018, minSpan: 0.12, strip: 0.008, segments: 72,
+    layers: 24, spread: 0.2, spring: 36,
   }
 
   private root!: Group
@@ -124,6 +141,18 @@ export class CaptureSystem extends createSystem({
   private waitClear = false
   private pointerDrawing = false
   private readonly pointer = new Vector2()
+  private touch: Touch = 'none'
+  private touchHeld: Held | null = null
+  private pointerY = 0
+  private readonly grabQuat = new Quaternion()
+  private readonly grabPos = new Vector3()
+  private readonly grabPinch = new Vector3()
+  private readonly grabRight = new Vector3()
+  private readonly grabUp = new Vector3()
+  private readonly qYaw = new Quaternion()
+  private readonly qPitch = new Quaternion()
+  private readonly axisX = new Vector3(1, 0, 0)
+  private readonly axisY = new Vector3(0, 1, 0)
 
   private readonly headPos = new Vector3()
   private readonly handA = new Vector3()
@@ -156,11 +185,18 @@ export class CaptureSystem extends createSystem({
   private readonly hold = readHold()
   private shotU = 0
   private shotStarted = false
+  private shotPeel = 0
+  private shotHold = 0
+  private shotLetGo = false
   private readonly shotStart = new Vector3()
   private readonly shotEnd = new Vector3()
   private readonly shotPoint = new Vector3()
   private readonly shotCenter = new Vector3()
   private readonly forward = new Vector3()
+  private readonly pickAt = new Vector3()
+  private readonly planeHit = new Vector3()
+  private readonly local = new Vector3()
+  private readonly aimDir = new Vector3()
 
   private readonly onSelectStart = (event: Event): void => {
     const side = (event as XRInputSourceEvent).inputSource?.handedness
@@ -184,6 +220,17 @@ export class CaptureSystem extends createSystem({
     const el = event.currentTarget
     if (!(el instanceof HTMLElement)) return
     el.setPointerCapture(event.pointerId)
+    this.aimPointer(event)
+    const hit = this.aimAtFrames(this.raycaster.ray.origin, this.raycaster.ray.direction)
+    if (hit?.kind === 'handle') {
+      this.beginGrab(hit.held, this.pickAt)
+      return
+    }
+    if (hit?.kind === 'photo') {
+      this.beginPeel(hit.held, this.pickAt)
+      this.pointerY = event.clientY
+      return
+    }
     this.pointerDrawing = true
     this.placePointer(event, true)
   }
@@ -197,6 +244,17 @@ export class CaptureSystem extends createSystem({
       this.orbitLastY = event.clientY
       return
     }
+    if (this.touch === 'grab' && this.touchHeld) {
+      this.aimPointer(event)
+      if (this.dragOnView(this.pickAt)) this.moveGrab(this.pickAt)
+      return
+    }
+    if (this.touch === 'peel' && this.touchHeld) {
+      const pull = (event.clientY - this.pointerY) * (0.16 / 120)
+      this.touchHeld.spread = spreadFromPull(pull)
+      this.touchHeld.spreadV = 0
+      return
+    }
     if (!this.pointerDrawing) return
     this.placePointer(event, false)
   }
@@ -204,6 +262,10 @@ export class CaptureSystem extends createSystem({
   private readonly onPointerUp = (event: PointerEvent): void => {
     if (this.orbiting && (event.button === 2 || event.altKey || event.button === 0)) {
       this.orbiting = false
+      return
+    }
+    if (this.touch !== 'none' && event.button === 0) {
+      this.endTouch()
       return
     }
     if (!this.pointerDrawing || event.button !== 0) return
@@ -283,7 +345,7 @@ export class CaptureSystem extends createSystem({
   }
 
   private get shotBlocksDraw(): boolean {
-    return this.hold === 'draw' || this.hold === 'photo' || this.hold === 'side' || (this.hold === 'play' && this.gesture.drawing)
+    return this.hold !== 'off'
   }
 
   private readLook(): void {
@@ -298,6 +360,12 @@ export class CaptureSystem extends createSystem({
     this.look.minSpan = n('minSpan')
     this.look.strip = n('strip')
     this.look.segments = n('segments')
+    const layers = n('layers')
+    const spread = n('spread')
+    const spring = n('spring')
+    if (Number.isFinite(layers)) this.look.layers = layers
+    if (Number.isFinite(spread)) this.look.spread = spread
+    if (Number.isFinite(spring)) this.look.spring = spring
     for (let i = 0; i < this.captures.length; i++) {
       const held = this.captures[i]
       applyLook(held.mat, {
@@ -384,7 +452,21 @@ export class CaptureSystem extends createSystem({
 
   private pinchBegan(side: Side): void {
     const at = side === 'left' ? this.handA : this.handB
+    if (this.touch !== 'none') return
     if (!this.gesture.drawing) {
+      this.player.head.getWorldPosition(this.headPos)
+      this.aimDir.copy(at).sub(this.headPos)
+      const hit = this.aimAtFrames(this.headPos, this.aimDir)
+      if (hit?.kind === 'handle') {
+        this.primary = side
+        this.beginGrab(hit.held, this.pickAt)
+        return
+      }
+      if (hit?.kind === 'photo') {
+        this.primary = side
+        this.beginPeel(hit.held, this.pickAt)
+        return
+      }
       this.primary = side
       this.dual = false
       this.gesture.begin(at, this.headPos, WORLD_UP)
@@ -398,8 +480,14 @@ export class CaptureSystem extends createSystem({
   }
 
   private pinchMoved(side: Side): void {
-    if (!this.gesture.drawing || !this.primary) return
     const at = side === 'left' ? this.handA : this.handB
+    if (this.touch !== 'none') {
+      if (side !== this.primary) return
+      if (this.touch === 'grab') this.moveGrab(at)
+      else this.movePeel(at)
+      return
+    }
+    if (!this.gesture.drawing || !this.primary) return
     if (!this.dual) {
       if (side === this.primary) this.gesture.move('a', at, this.headPos)
       return
@@ -408,6 +496,11 @@ export class CaptureSystem extends createSystem({
   }
 
   private pinchEnded(side: Side): void {
+    if (this.touch !== 'none') {
+      if (side !== this.primary) return
+      this.endTouch()
+      return
+    }
     if (!this.gesture.drawing) return
     if (side !== this.primary && !this.dual) return
     this.primary = null
@@ -471,10 +564,15 @@ export class CaptureSystem extends createSystem({
     bindMesh(photo)
     photo.visible = false
     group.add(photo)
+    const peel = makePeel(width, height)
+    group.add(peel.root)
+    const handle = makeHandle()
+    placeHandle(handle, hh, this.look.strip)
+    group.add(handle)
     this.root.add(group)
     const held: Held = {
       group, photo, mat, raster: null, pop: 0, popping: false, flat: holdFlat, age: 0, depth: 'wait', token: ++this.token,
-      width, height,
+      width, height, peel, handle, spread: 0, spreadV: 0, holding: false,
     }
     this.captures.push(held)
     group.updateWorldMatrix(true, false)
@@ -649,10 +747,19 @@ export class CaptureSystem extends createSystem({
         held.popping = true
         console.info('[frame] depth brightness')
       }
-      if (!held.popping) continue
-      const dur = Math.max(0.05, this.look.pop)
-      held.pop = REDUCE_MOTION ? 1 : Math.min(1, held.pop + dt / dur)
-      setRelief(held.mat, easeOut(held.pop))
+      if (held.popping) {
+        const dur = Math.max(0.05, this.look.pop)
+        held.pop = REDUCE_MOTION ? 1 : Math.min(1, held.pop + dt / dur)
+        setRelief(held.mat, easeOut(held.pop))
+      }
+      if (!held.holding && (held.spread > 0 || Math.abs(held.spreadV) > 0.0001)) {
+        const next = REDUCE_MOTION
+          ? { spread: 0, velocity: 0 }
+          : springStep(held.spread, held.spreadV, this.look.spring, dt)
+        held.spread = next.spread
+        held.spreadV = next.velocity
+      }
+      this.layoutHeld(held)
     }
   }
 
@@ -684,9 +791,12 @@ export class CaptureSystem extends createSystem({
     }
     const last = this.captures[this.captures.length - 1]
     const popped = !!last && !last.flat && (last.pop > 0.92 || last.depth === 'model' || this.yaw > 0.02)
-    if ((this.hold === 'side' || this.hold === 'play') && popped) {
+    if (this.hold === 'side' && popped) {
       this.yaw = approach(this.yaw, 0.78, dt * 0.7)
       this.pitch = approach(this.pitch, -0.14, dt * 0.45)
+    }
+    if (this.hold === 'play' || this.hold === 'rest' || this.hold === 'peel' || this.hold === 'open') {
+      this.playPeel(dt, last, popped)
     }
   }
 
@@ -715,8 +825,13 @@ export class CaptureSystem extends createSystem({
   private publishPhase(): void {
     const last = this.captures[this.captures.length - 1]
     const relief = last ? (last.mat.uniforms.uRelief.value as number) : 0
+    const spread = last?.spread ?? 0
     let phase: Phase = 'ready'
     if (this.gesture.drawing && (this.hold !== 'draw' || this.shotU > 0.5)) phase = 'drawing'
+    else if (spread > 0.85) phase = 'open'
+    else if (spread > 0.22) phase = 'peel'
+    else if (this.hold === 'side' && this.yaw > 0.55 && relief > 0.8) phase = 'side'
+    else if ((this.hold === 'rest' || this.hold === 'play' || this.hold === 'peel' || this.hold === 'open') && relief > 0.88 && this.yaw > 0.32 && spread < 0.05) phase = 'rest'
     else if (this.yaw > 0.55 && relief > 0.8) phase = 'side'
     else if (last && relief > 0.04) phase = 'relief'
     else if (last) phase = 'photo'
@@ -727,15 +842,18 @@ export class CaptureSystem extends createSystem({
     api.count = this.captures.length
     api.depth = last?.depth ?? 'none'
     api.relief = relief
+    api.peel = spread
   }
 
   private publishApi(): void {
-    const api: CaptureApi = { phase: 'ready', count: 0, depth: 'none', relief: 0 }
+    const api: CaptureApi = { phase: 'ready', count: 0, depth: 'none', relief: 0, peel: 0 }
     ;(window as unknown as { __capture: CaptureApi }).__capture = api
   }
 
   private statusLine(): string {
     const last = this.captures[this.captures.length - 1]
+    if (this.touch === 'peel') return 'Pull toward you. Release springs the sheets back'
+    if (this.touch === 'grab') return 'The handle moves and tilts the frame'
     if (this.gesture.drawing) return 'Release to take the photo'
     if (last?.depth === 'wait' && !last.flat) return 'Reading depth'
     if (last?.depth === 'model') return `${this.captures.length} captured · depth model`
@@ -743,8 +861,8 @@ export class CaptureSystem extends createSystem({
     if (last?.flat) return 'Photo held flat'
     if (this.phase === 'photo') return 'Photo in the frame'
     return this.renderer.xr.isPresenting
-      ? 'Pinch and drag a frame. Let go to photograph it.'
-      : 'Drag to draw a frame. Right-drag looks around.'
+      ? 'Pinch and drag a frame. Pinch inside it and pull to peel.'
+      : 'Drag to draw. Drag down inside a frame to peel. Right-drag looks around.'
   }
 
   private note(text: string): void {
@@ -891,6 +1009,157 @@ export class CaptureSystem extends createSystem({
     this.feed.dispose()
   }
 
+  private playPeel(dt: number, last: Held | undefined, popped: boolean): void {
+    if (!popped || !last || last.depth === 'wait') return
+    const relief = last.mat.uniforms.uRelief.value as number
+    if (relief < 0.9) return
+    this.yaw = approach(this.yaw, 0.52, dt * 0.65)
+    this.pitch = approach(this.pitch, -0.1, dt * 0.4)
+    if (this.hold === 'rest' || this.yaw < 0.36) return
+    if (this.shotLetGo) {
+      last.holding = false
+      return
+    }
+    const goal = this.hold === 'peel' ? 0.48 : 1
+    this.shotPeel = approach(this.shotPeel, goal, dt * 0.42)
+    last.spread = smoothStep(this.shotPeel)
+    last.spreadV = 0
+    last.holding = true
+    if (this.hold === 'play' && this.shotPeel > 0.98) {
+      this.shotHold += dt
+      if (this.shotHold > 1.15) this.shotLetGo = true
+    }
+  }
+
+  private layoutHeld(held: Held): void {
+    const photo = held.mat.uniforms.uPhoto.value as Texture | null
+    const depth = held.mat.uniforms.uDepth.value as Texture | null
+    const texel = held.mat.uniforms.uTexel.value as Vector2
+    const hasDepth = held.depth === 'wait' ? 0 : 1
+    bindPeel(held.peel, photo, depth, texel, this.look.feather, hasDepth)
+    const relief = held.mat.uniforms.uRelief.value as number
+    layoutPeel(held.peel, {
+      layers: this.look.layers,
+      spread: held.flat ? 0 : held.spread,
+      maxSpread: this.look.spread,
+      relief,
+      depthAmt: Math.max(held.width, held.height) * this.look.relief,
+      feather: this.look.feather,
+    })
+    held.photo.visible = held.raster !== null && held.spread < 0.035
+  }
+
+  private aimPointer(event: PointerEvent): void {
+    const el = document.getElementById('scene-container')
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    this.pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1)
+    this.raycaster.setFromCamera(this.pointer, this.camera)
+    this.camera.getWorldPosition(this.headPos)
+  }
+
+  /** Slide the pointer on a plane facing the camera, through the grab point. */
+  private dragOnView(out: Vector3): boolean {
+    this.camera.getWorldDirection(this.forward)
+    const origin = this.raycaster.ray.origin
+    const dir = this.raycaster.ray.direction
+    const denom = dir.dot(this.forward)
+    if (Math.abs(denom) < 1e-5) return false
+    const t = this.local.copy(this.grabPinch).sub(origin).dot(this.forward) / denom
+    if (t < 0.02) return false
+    out.copy(origin).addScaledVector(dir, t)
+    return true
+  }
+
+  /** `dir` is a direction, not a point. Hands pass pinch − head; the desk passes the camera ray. */
+  private aimAtFrames(origin: Vector3, dir: Vector3): { held: Held; kind: FrameHit } | null {
+    this.aimDir.copy(dir)
+    if (this.aimDir.lengthSq() < 1e-8) return null
+    this.aimDir.normalize()
+    let best: Held | null = null
+    let kind: FrameHit = 'miss'
+    let bestT = 8
+    for (let i = 0; i < this.captures.length; i++) {
+      const held = this.captures[i]
+      if (!hitPlane(held.group, origin, this.aimDir, this.planeHit)) continue
+      const t = this.planeHit.distanceTo(origin)
+      if (t >= bestT) continue
+      held.group.worldToLocal(this.local.copy(this.planeHit))
+      const hit = classifyHit(this.local, held.width * 0.5, held.height * 0.5, this.look.strip)
+      if (hit === 'miss') continue
+      if (hit === 'photo' && !this.canPeel(held)) continue
+      best = held
+      kind = hit
+      bestT = t
+      this.pickAt.copy(this.planeHit)
+    }
+    return best ? { held: best, kind } : null
+  }
+
+  private canPeel(held: Held): boolean {
+    if (held.flat || held.depth === 'wait') return false
+    return (held.mat.uniforms.uRelief.value as number) > 0.55
+  }
+
+  private beginPeel(held: Held, at: Vector3): void {
+    this.touch = 'peel'
+    this.touchHeld = held
+    held.holding = true
+    held.spreadV = 0
+    this.grabPinch.copy(at)
+    this.frameAxes(held)
+  }
+
+  private movePeel(at: Vector3): void {
+    const held = this.touchHeld
+    if (!held) return
+    const pull = this.local.copy(at).sub(this.grabPinch).dot(this.forward)
+    held.spread = spreadFromPull(pull)
+    held.spreadV = 0
+  }
+
+  private beginGrab(held: Held, at: Vector3): void {
+    this.touch = 'grab'
+    this.touchHeld = held
+    this.grabQuat.copy(held.group.quaternion)
+    this.grabPos.copy(held.group.position)
+    this.grabPinch.copy(at)
+    this.frameAxes(held)
+  }
+
+  private moveGrab(at: Vector3): void {
+    const held = this.touchHeld
+    if (!held) return
+    this.local.copy(at).sub(this.grabPinch)
+    const yaw = clamp(this.local.dot(this.grabRight) * 2.4, -0.7, 0.7)
+    const pitch = clamp(this.local.dot(this.grabUp) * 2.4, -0.5, 0.5)
+    this.qYaw.setFromAxisAngle(this.axisY, yaw)
+    this.qPitch.setFromAxisAngle(this.axisX, pitch)
+    held.group.quaternion.copy(this.grabQuat).multiply(this.qYaw).multiply(this.qPitch)
+    held.group.position.copy(this.grabPos).add(at).sub(this.grabPinch)
+    held.group.updateWorldMatrix(true, false)
+    this.local.set(held.handle.position.x, held.handle.position.y, held.handle.position.z)
+    this.local.applyMatrix4(held.group.matrixWorld)
+    held.group.position.add(at).sub(this.local)
+  }
+
+  private frameAxes(held: Held): void {
+    held.group.updateWorldMatrix(true, false)
+    const e = held.group.matrixWorld.elements
+    this.grabRight.set(e[0], e[1], e[2])
+    this.grabUp.set(e[4], e[5], e[6])
+    this.forward.set(e[8], e[9], e[10])
+  }
+
+  private endTouch(): void {
+    if (this.touchHeld) this.touchHeld.holding = false
+    this.touch = 'none'
+    this.touchHeld = null
+    this.primary = null
+    this.dual = false
+    this.waitClear = true
+  }
+
   private dispose(): void {
     this.session?.removeEventListener('selectstart', this.onSelectStart)
     this.session?.removeEventListener('selectend', this.onSelectEnd)
@@ -908,9 +1177,14 @@ function firstEntity(entities: Iterable<Entity>): Entity | null {
 
 function readHold(): Hold {
   const at = queryFlag('at')
-  if (at === 'draw' || at === 'photo' || at === 'side') return at
+  if (at === 'draw' || at === 'photo' || at === 'side' || at === 'rest' || at === 'peel' || at === 'open') return at
   if (queryFlag('shot') !== null) return 'play'
   return 'off'
+}
+
+function smoothStep(t: number): number {
+  const x = t < 0 ? 0 : t > 1 ? 1 : t
+  return x * x * (3 - 2 * x)
 }
 
 function easeOut(t: number): number {

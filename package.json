@@ -10,7 +10,7 @@
     "dev:status": "iwsdk dev status",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
-    "test": "node --experimental-strip-types scripts/test-crop.ts"
+    "test": "node --experimental-strip-types scripts/test-crop.ts && node --experimental-strip-types scripts/test-peel.ts"
   },
   "dependencies": {
     "@iwsdk/core": "0.5.3",
