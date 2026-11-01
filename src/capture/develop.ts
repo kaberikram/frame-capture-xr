@@ -1,4 +1,5 @@
 import { REDUCE_MOTION, type Look } from '../app/context.js'
+import { metric } from '../debug/metrics.js'
 import { bloom, bloomProgress } from '../look/bloom.js'
 import { applyDepth, setDepthMix, setRelief } from '../look/relief.js'
 import { smoothStep } from '../util/math.js'
@@ -66,12 +67,15 @@ export function developModelDepth(held: Held, cropped: Raster): void {
       held.depthMix = fade ? 0 : 1
       held.depth = 'model'
       aim(held, 1)
-      console.info(`[frame] depth model in ${Math.round(performance.now() - started)} ms`)
+      const took = performance.now() - started
+      metric('depth model', took, ' ms')
+      console.info(`[frame] depth model in ${Math.round(took)} ms`)
     })
     .catch((error: unknown) => {
       if (held.token !== token) return
       held.modelPending = false
       if (held.depth === 'brightness') aim(held, 1)
+      metric('depth model', 'failed, using brightness')
       console.warn('[frame] depth', error)
     })
 }

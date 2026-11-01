@@ -15,7 +15,21 @@ The dev server is HTTPS on port 4473, which the Quest browser needs for WebXR. O
 
 On the headset, use the same network, accept the certificate warning, and allow the camera and hand tracking when asked. You do not need Space Setup. Press **Enter passthrough**. The session is seated. Hands only; controllers are not used.
 
+`?debug=1` adds a small panel with the frame rate, the worst frame, long main-thread tasks, the camera, the hands, and how long each step of the last capture took. `?sound=0` keeps it silent.
+
 Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to.
+
+## First headset run
+
+Open the page with `?debug=1` the first time.
+
+1. **Enter passthrough.** The panel should show about 72 or 90 fps. The console has a `[frame] session` line listing the granted features, and `[frame] camera` lines once the camera runs.
+2. **Wait for depth.** The first visit downloads the depth model (about 25 MB) in the background. Until it is ready, frames use brightness depth.
+3. **Draw a frame with one hand, let go, and let your hand fall.** The photo should not include your fingers. The `[frame] capture` line gives the picture and darkroom times, and `[frame] depth model in … ms` how long the model took.
+4. **Check the photo lines up with the room.** Look at the edge of the captured frame against the real room behind it. If the photo sits a little off, trim the lens with the URL fields under Tuning.
+5. **Peel a corner, pull past the mark, and touch the sticker to a wall.** It should land flat with a soft thup.
+
+If the panel's long-task count climbs while you capture, or the worst frame is above about 20 ms, note which step was running. Those numbers are what to tune next.
 
 ## Gestures
 
@@ -33,11 +47,30 @@ Bring the sticker within about 4 cm of a wall, table, or other scanned surface a
 
 On a headset the surfaces come from plane detection and bounded mesh faces in the room scan, and from hit-test when those are missing. On the desk, drag a free sticker and move up to carry it away from you along the pointer; the back wall and the table are the demo surfaces. Pinch with both hands (or shift-drag on the desk) and the older depth-sheet fan opens instead: near things on the front sheets, the far wall on the back, gaps empty. The white handle under a frame that is still there moves and tilts it.
 
-Hands are not cut out of the photo. Move them outside the rectangle before you let go.
+You do not need to move your hands out of the way. After you let go, the photo waits until no part of either hand, or the forearm behind it, is inside the frame. It then uses the first camera frame taken after that. If a hand stays in the frame for more than half a second, the status line asks you to let your hands fall away. After 1.2 seconds the photo is taken anyway.
+
+Pinches are smoothed so tracking jitter does not shake a corner, and a fast drag still follows closely. The pinch is measured between your fingertip surfaces, so it suits any hand size. When you let go, the corner stays where your fingers were tightest, not where opening them dragged it.
 
 The photo is the camera frame cropped to the rectangle, reprojected with the Quest 3 lens. In the desk preview the same crop uses the view camera.
 
-Depth Anything V2 (small) estimates depth in a worker. If it has not answered in about a second and a half, brightness stands in and the model replaces it when it arrives. On the painted stand-in the brightness relief is the cleaner of the two, because the model reads that flat picture as a wavy surface. On a real room, the model is the one to trust. The relief is a subdivided mesh pushed forward by depth, textured with the photo. Steep depth jumps sit back on the far side and fade out, so a cliff does not stretch into a sheet. The pop eases over about a second. `prefers-reduced-motion` skips the ease.
+The photo is developed off the render thread. The shutter takes an image of just the frame's part of the camera view. A worker warps it into the photo and makes a brightness depth map, so taking a picture costs the headset no frames.
+
+Depth Anything V2 (small) estimates depth in another worker. After about a second and a half, brightness depth shows as a gentle preview at about half height. When the model answers, its depth fades in over the preview and the relief blooms to full. If the model has not answered within 3.5 seconds, or cannot load, the brightness relief blooms to full instead, and a model answer that arrives later still fades in. On the painted stand-in the brightness relief is the cleaner of the two, because the model reads that flat picture as a wavy surface. On a real room, the model is the one to trust.
+
+The relief is a subdivided mesh pushed forward by depth, textured with the photo. Steep depth jumps sit back on the far side and fade out, so a cliff does not stretch into a sheet. The relief blooms on a soft spring that overshoots by a few percent and settles in about a second. `prefers-reduced-motion` skips the motion.
+
+## Sound
+
+Hands-only input has no haptics, so small synthesized sounds stand in for touch. Each one comes from where it happens:
+
+- a soft tick when your fingers meet
+- a distant film-camera hush when the photo is taken
+- two bell notes when the relief blooms
+- a vinyl crackle that follows how fast you peel
+- a gentle pop when the sticker comes free
+- a low thup when it lands
+
+Nothing is loaded from disk. Audio starts with the Enter button (or the first click on the desk), and `?sound=0` turns it off.
 
 ## Tuning
 
@@ -68,6 +101,24 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 
 The relief shader samples the photo through one function, `frameContents(vec2 uv)`, in `src/look/relief.ts` (`PHOTO_CONTENTS`). `reliefMaterial(contentsFn)` injects a replacement. Slit-scan and slow motion belong there. They are not built yet.
 
+## How it is built
+
+`src/app/capture-system.ts` wires the parts together and fixes the order they run in each frame. Each area has its own folder:
+
+| Folder | What lives there |
+| --- | --- |
+| `app/` | the system, the shared context, the `CaptureLook` knobs, URL flags |
+| `capture/` | camera rig and lens, the shutter (hands-clear wait), the darkroom and depth workers, crop, develop (depth stages and the bloom) |
+| `input/` | hand pinches (filtering, release rewind) and the desk pointer. Both feed one router |
+| `interaction/` | what is held (`Grip`), the router, stickers (curl, detach, stick, unstick), depth sheets, the frame handle |
+| `look/` | relief shader, bloom spring, frame border, dissolve |
+| `world/` | surfaces from the room scan, the landing outline, the stand-in room |
+| `sound/` | the synthesized soundscape and the cues that trigger it |
+| `desk/`, `ui/`, `debug/` | desk camera and scripted demo, status line, `__capture` and the `?debug=1` panel |
+
 ## Checks
 
-`npm test` crops a known quad. `npm run typecheck` and `npm run build` compile the app.
+- `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), and the bloom spring.
+- `npm run typecheck` and `npm run build` compile the app.
+- `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
+- `npm run check` runs typecheck, tests, and build.

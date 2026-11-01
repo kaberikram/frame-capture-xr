@@ -1,5 +1,6 @@
 import { Matrix4, Vector3 } from '@iwsdk/core'
 import { MAX_CAPTURES, type Ctx } from '../app/context.js'
+import { metric } from '../debug/metrics.js'
 import { applyPhoto } from '../look/relief.js'
 import type { CameraRig } from './camera-rig.js'
 import { insideQuad, quadMargin } from './clearance.js'
@@ -129,6 +130,7 @@ export class Shutter {
       const exposed = stamp === null ? now - 0.07 : stamp - this.rig.lens.tau
       if (!late && exposed < shot.clearAt + EXPOSE_AFTER) continue
       if (blocked) console.info('[frame] capture taken with a hand still in the frame')
+      metric('shutter waited', waited * 1000, ' ms')
       this.pending.splice(i, 1)
       this.expose(shot.held)
     }
@@ -175,6 +177,8 @@ export class Shutter {
         held.photo.visible = true
         renderer.initTexture(held.mat.uniforms.uPhoto.value)
         const done = performance.now()
+        metric('picture', pictured - started, ' ms')
+        metric('darkroom', done - pictured, ' ms')
         console.info(
           `[frame] capture ${held.width.toFixed(2)}x${held.height.toFixed(2)}m ` +
             `picture ${Math.round(pictured - started)} ms, darkroom ${Math.round(done - pictured)} ms`,

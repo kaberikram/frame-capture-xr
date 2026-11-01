@@ -6,6 +6,8 @@ import { stepDevelop } from '../capture/develop.js'
 import { heldLook, type Held } from '../capture/held.js'
 import { Shutter } from '../capture/shutter.js'
 import { computePhase, publishApi, publishPhase, type Phase } from '../debug/api.js'
+import { DEBUG } from '../debug/metrics.js'
+import { DebugOverlay } from '../debug/overlay.js'
 import { DeskCamera } from '../desk/desk-camera.js'
 import { DeskShot } from '../desk/shot.js'
 import { DeskPointer } from '../input/desk-pointer.js'
@@ -67,6 +69,8 @@ export class CaptureSystem extends createSystem({
   private dragPositions!: BufferAttribute
   private session: XRSession | null = null
   private phase: Phase = 'ready'
+  private debug: DebugOverlay | null = null
+  private lastFrameMs = 0
 
   init(): void {
     const root = new Group()
@@ -132,6 +136,10 @@ export class CaptureSystem extends createSystem({
       }, true)
     })
     publishApi()
+    if (DEBUG) {
+      this.debug = new DebugOverlay()
+      this.debug.mount(this.player.head)
+    }
     prepareDarkroom()
     if (WEBCAM_REQUESTED) this.rig.openWebcam()
     void prepareDepthModel().catch((error: unknown) => {
@@ -178,6 +186,7 @@ export class CaptureSystem extends createSystem({
     if (presenting) this.status.paintHud()
     this.publishPhase()
     const last = this.captures[this.captures.length - 1]
+    if (this.debug) this.paintDebug(presenting, last)
     this.status.note(
       statusLine({
         touch: this.grip.touch,
@@ -282,7 +291,32 @@ export class CaptureSystem extends createSystem({
     publishPhase(this.phase, this.captures.length, last)
   }
 
+  private paintDebug(presenting: boolean, last: Held | undefined): void {
+    const debug = this.debug
+    if (!debug) return
+    const nowMs = performance.now()
+    const frameMs = this.lastFrameMs ? nowMs - this.lastFrameMs : 0
+    this.lastFrameMs = nowMs
+    const feed = this.rig.feed
+    const stamp = feed.stamp
+    const hand = (side: 'left' | 'right') => {
+      const r = this.hands.readiness(side)
+      return r < 0 ? '-' : this.hands.isPinched(side) ? 'pinch' : r.toFixed(2)
+    }
+    debug.frame(
+      nowMs,
+      frameMs,
+      [
+        `camera ${feed.width}x${feed.height}${stamp === null ? '' : `  frame age ${Math.round(nowMs - stamp * 1000)} ms`}`,
+        `hands L ${hand('left')}  R ${hand('right')}`,
+        `frames ${this.captures.length}  phase ${this.phase}  depth ${last?.depth ?? '-'}`,
+      ],
+      presenting,
+    )
+  }
+
   private dispose(): void {
+    this.debug?.dispose()
     this.sound.dispose()
     this.surfaces.clear()
     this.hands.dispose()

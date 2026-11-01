@@ -1,3 +1,4 @@
+import { metric } from '../debug/metrics.js'
 import { brightnessDepth, softenField, type DepthField } from './brightness-depth.js'
 import { cropQuad, type Quad, type Raster } from './crop.js'
 
@@ -33,7 +34,11 @@ function darkroom(): Worker | null {
       const job = waiting.get(reply.id)
       if (!job) return
       waiting.delete(reply.id)
-      if (reply.timing) console.info(`[frame] darkroom ${Object.entries(reply.timing).map(([k, v]) => `${k} ${Math.round(v)}`).join(', ')}`)
+      if (reply.timing) {
+        const t = reply.timing
+        metric('darkroom steps', `read ${Math.round(t.read)} / crop ${Math.round(t.crop)} / depth ${Math.round(t.depth)} ms`)
+        console.info(`[frame] darkroom ${Object.entries(t).map(([k, v]) => `${k} ${Math.round(v)}`).join(', ')}`)
+      }
       if (reply.photo && reply.depth) job.resolve({ photo: reply.photo, preview: reply.depth })
       else if (reply.error === 'outside') job.resolve(null)
       else job.reject(new Error(reply.error ?? 'develop failed'))
