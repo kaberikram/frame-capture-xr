@@ -46,6 +46,11 @@ export class RectGesture {
     return this.locked
   }
 
+  /** The corner that follows the hand (or cursor) in a one-hand drag. */
+  get dragCorner(): Vector3 {
+    return this.cornerB
+  }
+
   begin(point: Vector3, head: Vector3, worldUp: Vector3): void {
     this.planePoint.copy(point)
     this.face(head, worldUp)

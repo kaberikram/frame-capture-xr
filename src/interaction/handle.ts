@@ -1,4 +1,5 @@
-import { BoxGeometry, Mesh, MeshBasicMaterial, Object3D, Vector3 } from '@iwsdk/core'
+import { BoxGeometry, Color, Mesh, MeshBasicMaterial, Object3D, SRGBColorSpace, Vector3 } from '@iwsdk/core'
+import { PALETTE } from '../look/palette.js'
 import { classifyHit as classifyPoint, type FrameHit } from './peel-math.js'
 
 const HANDLE_W = 0.062
@@ -11,7 +12,12 @@ export type { FrameHit }
 export function makeHandle(): Mesh {
   const mesh = new Mesh(
     new BoxGeometry(HANDLE_W, HANDLE_H, HANDLE_D),
-    new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthWrite: false }),
+    new MeshBasicMaterial({
+      color: new Color().setRGB(PALETTE.core[0], PALETTE.core[1], PALETTE.core[2], SRGBColorSpace),
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    }),
   )
   mesh.name = 'handle'
   mesh.frustumCulled = false

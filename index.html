@@ -5,20 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Frame capture</title>
     <link rel="icon" href="data:," />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500&display=swap" />
     <style>
       :root {
         color-scheme: dark;
-        --ink: #f3efe6;
-        --muted: #b7b1a6;
-        --line: rgba(243, 239, 230, 0.22);
-        --card: rgba(16, 17, 20, 0.78);
+        --ink: #fff6ec;
+        --muted: #e8cdbd;
+        --glow: #ffb38a;
+        --coral: #e8604c;
+        --line: rgba(255, 179, 138, 0.28);
+        --card: rgba(38, 24, 20, 0.74);
       }
       * { box-sizing: border-box; }
       html, body { height: 100%; margin: 0; }
       body {
-        background: #101114;
+        background: #1c1310;
         color: var(--ink);
-        font-family: "Iowan Old Style", Palatino, Georgia, serif;
+        font-family: "Hanken Grotesk", "Segoe UI", system-ui, sans-serif;
         overflow: hidden;
       }
       #scene-container { position: fixed; inset: 0; }
@@ -27,43 +32,53 @@
         z-index: 2;
         left: max(16px, env(safe-area-inset-left));
         bottom: max(16px, env(safe-area-inset-bottom));
-        width: min(360px, calc(100vw - 32px));
-        padding: 16px 16px 14px;
+        width: min(380px, calc(100vw - 32px));
+        padding: 18px 18px 16px;
         border: 1px solid var(--line);
+        border-radius: 14px;
         background: var(--card);
-        backdrop-filter: blur(16px);
+        backdrop-filter: blur(18px);
+        box-shadow: 0 0 60px rgba(232, 96, 76, 0.18);
       }
       h1 {
         margin: 0;
-        font-size: 22px;
-        font-weight: 560;
-        letter-spacing: -0.02em;
+        font-size: 26px;
+        font-weight: 300;
+        letter-spacing: 0.01em;
+        text-shadow: 0 0 18px rgba(255, 150, 110, 0.55);
       }
-      p { margin: 8px 0 0; color: var(--muted); font-size: 14px; line-height: 1.4; }
+      p { margin: 8px 0 0; color: var(--muted); font-size: 14px; font-weight: 300; line-height: 1.45; }
       #status { color: var(--ink); }
+      #depth { color: var(--glow); font-size: 13px; }
+      #depth:empty { display: none; }
       button {
         margin-top: 14px;
-        height: 38px;
-        padding: 0 14px;
-        border: 1px solid var(--ink);
-        background: var(--ink);
-        color: #161616;
+        height: 40px;
+        padding: 0 18px;
+        border: 0;
+        border-radius: 999px;
+        background: var(--coral);
+        color: var(--ink);
         font: inherit;
-        font-size: 14px;
+        font-size: 15px;
+        font-weight: 400;
         cursor: pointer;
+        box-shadow: 0 0 24px rgba(232, 96, 76, 0.45);
       }
-      button:disabled { opacity: 0.45; cursor: default; }
+      button:focus-visible { outline: 2px solid var(--glow); outline-offset: 3px; }
+      button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
       @media (max-width: 640px) {
-        h1 { font-size: 20px; }
+        h1 { font-size: 22px; }
       }
     </style>
   </head>
   <body>
     <div id="scene-container"></div>
     <section id="launch" aria-labelledby="title">
-      <h1 id="title">Frame capture</h1>
-      <p id="hint">Pinch a corner and pull. The photo peels off, the frame dissolves, and the sticker sticks to a wall. Pinch the lifted corner to take it back.</p>
+      <h1 id="title">frame capture</h1>
+      <p id="hint">Pinch the air to frame a moment. Let go and it becomes a photo with depth, one you can peel off and stick anywhere in your room.</p>
       <p id="status">Drag to draw. Drag a corner to peel. Drag a free sticker up onto the wall. Right-drag looks around.</p>
+      <p id="depth"></p>
       <button id="enter" type="button">Enter passthrough</button>
     </section>
     <script type="module" src="/src/index.ts"></script>

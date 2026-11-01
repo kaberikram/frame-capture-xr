@@ -1,6 +1,6 @@
 import { World } from '@iwsdk/core'
 import projectOptions from 'virtual:iwsdk-project'
-import { CaptureSystem } from './capture-system.js'
+import { CaptureSystem } from './app/capture-system.js'
 
 const container = document.getElementById('scene-container')
 if (!(container instanceof HTMLDivElement)) throw new Error('Missing #scene-container')

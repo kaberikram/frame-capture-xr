@@ -1,4 +1,4 @@
-import { axisExtent, classifyHit, curlFromPull, foldForPeel, nearestCorner, spreadFromPull, springStep } from '../src/peel-math.ts'
+import { axisExtent, classifyHit, curlFromPull, foldForPeel, nearestCorner, spreadFromPull, springStep } from '../src/interaction/peel-math.ts'
 
 const halfW = 0.16
 const halfH = 0.11

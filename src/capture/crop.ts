@@ -140,30 +140,26 @@ function solve8(A: Float64Array, b: Float64Array): Float64Array | null {
   return h
 }
 
+/** Bilinear read with edge clamping, written straight into `dst`. No allocation per pixel. */
 function sample(src: Uint8ClampedArray, w: number, h: number, x: number, y: number, dst: Uint8ClampedArray, o: number): void {
-  const x0 = Math.floor(x)
-  const y0 = Math.floor(y)
-  const tx = x - x0
-  const ty = y - y0
-  const x1 = x0 + 1
-  const y1 = y0 + 1
-  const i00 = at(src, w, h, x0, y0)
-  const i10 = at(src, w, h, x1, y0)
-  const i01 = at(src, w, h, x0, y1)
-  const i11 = at(src, w, h, x1, y1)
+  const fx = Math.floor(x)
+  const fy = Math.floor(y)
+  const tx = x - fx
+  const ty = y - fy
+  const x0 = fx < 0 ? 0 : fx >= w ? w - 1 : fx
+  const x1 = fx + 1 < 0 ? 0 : fx + 1 >= w ? w - 1 : fx + 1
+  const y0 = fy < 0 ? 0 : fy >= h ? h - 1 : fy
+  const y1 = fy + 1 < 0 ? 0 : fy + 1 >= h ? h - 1 : fy + 1
+  const i00 = (y0 * w + x0) * 4
+  const i10 = (y0 * w + x1) * 4
+  const i01 = (y1 * w + x0) * 4
+  const i11 = (y1 * w + x1) * 4
   const w00 = (1 - tx) * (1 - ty)
   const w10 = tx * (1 - ty)
   const w01 = (1 - tx) * ty
   const w11 = tx * ty
-  dst[o] = i00[0] * w00 + i10[0] * w10 + i01[0] * w01 + i11[0] * w11
-  dst[o + 1] = i00[1] * w00 + i10[1] * w10 + i01[1] * w01 + i11[1] * w11
-  dst[o + 2] = i00[2] * w00 + i10[2] * w10 + i01[2] * w01 + i11[2] * w11
+  dst[o] = src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11
+  dst[o + 1] = src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11
+  dst[o + 2] = src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11
   dst[o + 3] = 255
-}
-
-function at(src: Uint8ClampedArray, w: number, h: number, x: number, y: number): readonly [number, number, number] {
-  const cx = x < 0 ? 0 : x >= w ? w - 1 : x
-  const cy = y < 0 ? 0 : y >= h ? h - 1 : y
-  const i = (cy * w + cx) * 4
-  return [src[i], src[i + 1], src[i + 2]]
 }
