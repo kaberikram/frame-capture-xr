@@ -82,11 +82,14 @@ export class Interaction {
     return best ? { held: best, kind } : null
   }
 
-  /** Start the touch a route names. 'draw' and 'ignore' are the caller's to handle. */
-  begin(route: Route, held: Held, at: Vector3): void {
+  /**
+   * Start the touch a route names. 'draw' and 'ignore' are the caller's to handle.
+   * `at` is the hit on the frame; `from` is where the pinch really is, which a peel is measured from.
+   */
+  begin(route: Route, held: Held, at: Vector3, from: Vector3 = at): void {
     switch (route) {
       case 'unstick':
-        this.stickers.beginUnstick(held, at)
+        this.stickers.beginUnstick(held, at, from)
         return
       case 'sticker':
         this.stickers.beginSticker(held, at)
@@ -98,7 +101,7 @@ export class Interaction {
         this.sheets.begin(held, at)
         return
       case 'curl':
-        this.stickers.beginCurl(held, at)
+        this.stickers.beginCurl(held, at, from)
         return
       case 'ignore':
       case 'draw':

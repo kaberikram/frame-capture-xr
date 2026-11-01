@@ -1,8 +1,17 @@
 /** Metres of pull toward the head that opens the depth sheets all the way. */
 export const PULL_FULL = 0.16
 
-/** Combined pull, in metres, that peels a sticker completely off. */
-export const CURL_FULL = 0.22
+/** Pull, in metres, that the adhesive takes up before the corner lifts at all. */
+export const PEEL_TACK = 0.015
+
+/** Pull, in metres, that brings the peel to the mark: the curl reaches `detach` here. */
+export const PEEL_MARK = 0.16
+
+/** Pull, in metres, where the last of the adhesive lets go and the sticker pops free. */
+export const PEEL_POP = 0.19
+
+/** How much further the curl creeps while the last bit holds, between the mark and the pop. */
+const PEEL_STRETCH = 0.06
 
 /** Disc around each photo corner that starts a sticker peel. */
 export const CORNER_REACH = 0.06
@@ -77,12 +86,22 @@ export function foldForPeel(peel: number, extent: number): number {
 }
 
 /**
- * Pull away from the corner, clamped and eased, as a 0..1 sticker peel.
- * Negative pull stays stuck.
+ * Pull away from the corner, in metres, as a sticker peel. Like a real sticker:
+ * the first {@link PEEL_TACK} does nothing, then the peel follows the hand,
+ * slow to start and firming up as it reaches `detach` at {@link PEEL_MARK}.
+ * Past the mark the last bit holds and stretches a little until
+ * {@link PEEL_POP}, where {@link peelsFree} lets it go.
  */
-export function curlFromPull(pull: number): number {
-  const t = pull <= 0 ? 0 : pull >= CURL_FULL ? 1 : pull / CURL_FULL
-  return t * t * (3 - 2 * t)
+export function curlFromPull(pull: number, detach: number): number {
+  if (pull <= PEEL_TACK) return 0
+  if (pull < PEEL_MARK) return detach * smooth((pull - PEEL_TACK) / (PEEL_MARK - PEEL_TACK))
+  const hold = pull >= PEEL_POP ? 1 : (pull - PEEL_MARK) / (PEEL_POP - PEEL_MARK)
+  return Math.min(1, detach + PEEL_STRETCH * hold)
+}
+
+/** The pull has gone past the last of the adhesive: the sticker comes free. */
+export function peelsFree(pull: number): boolean {
+  return pull >= PEEL_POP
 }
 
 /**

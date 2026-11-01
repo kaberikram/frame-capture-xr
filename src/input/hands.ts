@@ -252,7 +252,7 @@ export class HandInput implements JointSource {
         gesture.begin(at, this.headPos, WORLD_UP)
         return
       }
-      this.interaction.begin(route, hit.held, grip.pickAt)
+      this.interaction.begin(route, hit.held, grip.pickAt, at)
       return
     }
     if (side !== this.primary && this.primary && !this.dual) {

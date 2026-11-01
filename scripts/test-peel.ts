@@ -1,4 +1,16 @@
-import { axisExtent, classifyHit, curlFromPull, foldForPeel, nearestCorner, spreadFromPull, springStep } from '../src/interaction/peel-math.ts'
+import {
+  PEEL_MARK,
+  PEEL_POP,
+  PEEL_TACK,
+  axisExtent,
+  classifyHit,
+  curlFromPull,
+  foldForPeel,
+  nearestCorner,
+  peelsFree,
+  spreadFromPull,
+  springStep,
+} from '../src/interaction/peel-math.ts'
 
 const halfW = 0.16
 const halfH = 0.11
@@ -35,9 +47,22 @@ if (!grabbed || grabbed.id !== 0) throw new Error('top-right corner')
 const extent = axisExtent(halfW, halfH, grabbed.axisX, grabbed.axisY)
 if (Math.abs(foldForPeel(0, extent) - extent) > 1e-6) throw new Error('a rest peel sits on the corner')
 if (Math.abs(foldForPeel(1, extent) + extent) > 1e-6) throw new Error('a full peel reaches the far edge')
-if (curlFromPull(-0.02) !== 0) throw new Error('a push stays stuck')
-const stuck = curlFromPull(0.04)
-const loose = curlFromPull(0.2)
-if (stuck <= 0 || stuck >= 0.7 || loose < 0.7) throw new Error(`curl ${stuck} ${loose}`)
+const detach = 0.7
+if (curlFromPull(-0.02, detach) !== 0) throw new Error('a push stays stuck')
+if (curlFromPull(PEEL_TACK * 0.9, detach) !== 0) throw new Error('the tack holds a tiny pull')
+const slight = curlFromPull(0.04, detach)
+if (slight <= 0 || slight > 0.12) throw new Error(`a slight pull lifts only a little: ${slight}`)
+let last = 0
+for (let pull = 0; pull <= PEEL_POP + 0.02; pull += 0.005) {
+  const curl = curlFromPull(pull, detach)
+  if (curl < last - 1e-9) throw new Error(`more pull never peels less (${pull})`)
+  if (!peelsFree(pull) && curl > detach + 0.07) throw new Error(`curl ${curl} while still stuck`)
+  last = curl
+}
+if (Math.abs(curlFromPull(PEEL_MARK, detach) - detach) > 1e-6) throw new Error('the mark reaches detach')
+const holding = (PEEL_MARK + PEEL_POP) * 0.5
+if (curlFromPull(holding, detach) <= detach || peelsFree(holding)) throw new Error('past the mark the last bit holds')
+if (!peelsFree(PEEL_POP)) throw new Error('the pop lets go')
+if (PEEL_POP - PEEL_MARK < 0.02) throw new Error('the hold is long enough to feel')
 
 console.log('peel ok')
