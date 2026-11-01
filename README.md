@@ -66,7 +66,7 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 
 ## Later modes
 
-The relief shader samples the photo through one function, `frameContents(vec2 uv)`, in `src/relief.ts` (`PHOTO_CONTENTS`). `reliefMaterial(contentsFn)` injects a replacement. Slit-scan and slow motion belong there. They are not built yet.
+The relief shader samples the photo through one function, `frameContents(vec2 uv)`, in `src/look/relief.ts` (`PHOTO_CONTENTS`). `reliefMaterial(contentsFn)` injects a replacement. Slit-scan and slow motion belong there. They are not built yet.
 
 ## Checks
 

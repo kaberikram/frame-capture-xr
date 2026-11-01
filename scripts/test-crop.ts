@@ -1,4 +1,4 @@
-import { cropQuad, type Raster } from '../src/crop.ts'
+import { cropQuad, type Raster } from '../src/capture/crop.ts'
 
 function raster(width: number, height: number, fill: (x: number, y: number) => [number, number, number, number]): Raster {
   const data = new Uint8ClampedArray(width * height * 4)

@@ -11,8 +11,8 @@ import {
   Vector2,
   type Texture,
 } from '@iwsdk/core'
-import { softenField, type DepthField } from './brightness-depth.js'
-import type { Raster } from './crop.js'
+import { softenField, type DepthField } from '../capture/brightness-depth.js'
+import type { Raster } from '../capture/crop.js'
 
 /**
  * Per-frame contents. Slit-scan and slow motion replace this GLSL function

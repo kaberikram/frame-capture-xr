@@ -7,7 +7,8 @@ import {
   Vector2,
   type Texture,
 } from '@iwsdk/core'
-import { PHOTO_CONTENTS } from './relief.js'
+import { PHOTO_CONTENTS } from '../look/relief.js'
+import { smoothStep } from '../util/math.js'
 export { spreadFromPull, springStep } from './peel-math.js'
 
 /** Sheets built per capture. The live count is the CaptureLook knob, at most this. */
@@ -80,7 +81,7 @@ export function layoutPeel(rig: PeelRig, pose: PeelPose): void {
     mat.uniforms.uLayer.value = i
     mat.uniforms.uLayers.value = layers
     mat.uniforms.uFeather.value = pose.feather
-    mat.uniforms.uReveal.value = smooth(Math.min(1, spread / 0.08))
+    mat.uniforms.uReveal.value = smoothStep(Math.min(1, spread / 0.08))
     const depth = (i + 0.5) / layers
     const reliefZ = (depth - 0.28) * pose.depthAmt * pose.relief
     const peelZ = (i / denom) * spread * pose.maxSpread
@@ -138,11 +139,6 @@ function sheetMaterial(layer: number): ShaderMaterial {
     depthWrite: false,
     side: DoubleSide,
   })
-}
-
-function smooth(t: number): number {
-  const x = t < 0 ? 0 : t > 1 ? 1 : t
-  return x * x * (3 - 2 * x)
 }
 
 function clampInt(v: number, lo: number, hi: number): number {

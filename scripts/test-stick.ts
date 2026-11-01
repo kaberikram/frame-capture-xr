@@ -6,7 +6,7 @@ import {
   nearestSurface,
   raySurface,
   stickBasis,
-} from '../src/surfaces.ts'
+} from '../src/world/surfaces.ts'
 
 const cam = { x: 0.02, y: 1.48, z: 0.42 }
 
