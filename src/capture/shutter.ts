@@ -55,7 +55,7 @@ export class Shutter {
   constructor(
     private readonly ctx: Ctx,
     private readonly rig: CameraRig,
-    private readonly note: (text: string) => void,
+    private readonly note: (text: string, seconds?: number) => void,
   ) {}
 
   /** A hand has stayed in the photo long enough that the person should hear about it. */
@@ -109,9 +109,10 @@ export class Shutter {
       const shot = this.pending[i]
       const waited = now - shot.since
       if (feed.width < 2) {
-        if (waited <= CAMERA_PATIENCE) continue
-        console.info('[frame] capture gave up waiting for the camera')
-        this.note('The camera did not start')
+        if (waited <= CAMERA_PATIENCE && !this.rig.unavailable) continue
+        const why = this.rig.problem ?? 'The camera did not start'
+        console.info(`[frame] capture gave up waiting for the camera (${this.rig.state}): ${why}`)
+        this.note(why, 6)
         this.pending.splice(i, 1)
         this.discard(shot.held)
         continue

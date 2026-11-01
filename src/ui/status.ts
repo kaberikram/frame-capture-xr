@@ -63,6 +63,12 @@ export class Status {
   }
 }
 
+/** A line on the launch card about the camera. Empty text hides it. */
+export function launchNote(text: string): void {
+  const el = document.getElementById('camera')
+  if (el) el.textContent = text
+}
+
 /** The page card: hide it with `?ui=0`, and enable Enter once the browser can run passthrough. */
 export function wireLaunch(onEnter: () => void): void {
   const enter = document.getElementById('enter') as HTMLButtonElement | null

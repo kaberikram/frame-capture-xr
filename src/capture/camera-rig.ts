@@ -28,6 +28,29 @@ export interface Clip {
   height: number
 }
 
+/** Seconds to wait on the camera permission before letting a retry ask again. */
+const ARM_PATIENCE = 12
+
+/** Has this page already been allowed the camera? False when it has not, or when the browser cannot say. */
+export async function cameraAllowed(): Promise<boolean> {
+  try {
+    const status = await navigator.permissions.query({ name: 'camera' as PermissionName })
+    return status.state === 'granted'
+  } catch {
+    return false
+  }
+}
+
+/** What to tell the person when the camera request failed, by the browser's error name. */
+export function cameraProblem(error: unknown): string {
+  const name = error instanceof Error || error instanceof DOMException ? error.name : ''
+  if (!navigator.mediaDevices) return 'The camera needs the https address'
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'The camera is blocked. Allow headset cameras for this site, then reload'
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'No headset camera found. Photos need a Quest 3 or 3S with current software'
+  if (name === 'NotReadableError' || name === 'AbortError') return 'The camera is busy. Close other tabs or apps using it'
+  return 'The camera did not start'
+}
+
 /**
  * Where a photo comes from: the Quest visor camera in a session, a webcam on the
  * desk with `?cam=1`, or a render of the stand-in room otherwise. Also projects
@@ -36,6 +59,8 @@ export interface Clip {
 export class CameraRig {
   readonly lens = new HeadsetLens()
   readonly feed = new CameraFeed()
+  /** Why the camera is not running, in words for the person, or null. */
+  problem: string | null = null
   private cameraEntity: Entity | null = null
   private webcam: HTMLVideoElement | null = null
   private webcamStream: MediaStream | null = null
@@ -57,21 +82,35 @@ export class CameraRig {
     private readonly overlays: () => readonly Object3D[],
   ) {}
 
+  /**
+   * Ask for the camera and pick the visor camera. A permission prompt that is
+   * answered late still starts the camera, but after `ARM_PATIENCE` this stops
+   * waiting so a retry can ask again.
+   */
   arm(): Promise<boolean> {
     this.cameraWanted = true
     if (this.cameraEntity) return Promise.resolve(true)
     if (this.arming) return this.arming
-    this.arming = CameraUtils.getDevices()
-      .then((devices) => {
-        this.arming = null
-        return this.attach(devices)
-      })
-      .catch((error: unknown) => {
-        this.arming = null
-        console.warn('[frame] camera arm failed', error)
+    const asked = CameraUtils.getDevices().then(
+      (devices) => this.attach(devices),
+      (error: unknown) => {
+        this.problem = cameraProblem(error)
+        console.warn(`[frame] camera arm failed: ${this.problem}`, error)
         return false
-      })
-    return this.arming
+      },
+    )
+    const patience = new Promise<boolean>((resolve) => {
+      setTimeout(() => {
+        if (!this.cameraEntity && !this.problem) this.problem = 'The camera did not answer. Reload and allow headset cameras'
+        resolve(false)
+      }, ARM_PATIENCE * 1000)
+    })
+    const arming = Promise.race([asked, patience]).then((ok) => {
+      if (this.arming === arming) this.arming = null
+      return ok
+    })
+    this.arming = arming
+    return arming
   }
 
   /** Try again a few times, backing off, when the camera did not come up. */
@@ -82,11 +121,25 @@ export class CameraRig {
     void this.arm()
   }
 
+  /** The camera failed and every retry is spent, so waiting longer will not help. */
+  get unavailable(): boolean {
+    return this.cameraWanted && !this.cameraEntity && !this.arming && this.rearmTries >= 3
+  }
+
+  /** One word for the debug panel: asking, starting, active, error, or off. */
+  get state(): string {
+    if (this.cameraEntity) return String(this.cameraEntity.getValue(CameraSource, 'state'))
+    return this.arming ? 'asking' : 'off'
+  }
+
   watchQuest(): void {
     const entity = this.cameraEntity
     if (!entity) return
     const state = String(entity.getValue(CameraSource, 'state'))
+    // IWSDK logs the error and tries again on its own; remember that it failed.
+    if (state === CameraState.Error && !this.problem) this.problem = 'The camera would not open. Close other tabs or apps using it'
     if (state !== CameraState.Active) return
+    this.problem = null
     const video = entity.getValue(CameraSource, 'videoElement') as HTMLVideoElement | null
     const stream = entity.getValue(CameraSource, 'stream') as MediaStream | null
     this.feed.watch(video, stream?.getVideoTracks()[0] ?? null)
@@ -215,8 +268,10 @@ export class CameraRig {
     const chosen = back ?? devices[0]
     if (!chosen) {
       console.warn('[frame] camera: no video inputs')
+      this.problem = cameraProblem(new DOMException('no video inputs', 'NotFoundError'))
       return false
     }
+    this.problem = null
     this.lens.mount = cameraMount(chosen.label, back ? 'back' : 'unknown', labels)
     if (this.lens.mount === 'view') this.lens.mount = 'left'
     console.info(`[frame] camera pick "${chosen.label}" side=${this.lens.mount}`)

@@ -13,9 +13,11 @@ npm run dev
 
 The dev server is HTTPS on port 4473, which the Quest browser needs for WebXR. Open the URL it prints.
 
-On the headset, use the same network, accept the certificate warning, and allow the camera and hand tracking when asked. You do not need Space Setup. Press **Enter passthrough**. The session is seated. Hands only; controllers are not used.
+On the headset, use the same network, accept the certificate warning, and press **Enter passthrough**. The first time, the page asks for the headset cameras before it goes in, because Quest Browser can lose that prompt once passthrough is running. Allow it, and allow hand tracking when asked. You do not need Space Setup. The session is seated. Hands only; controllers are not used.
 
-`?debug=1` adds a small panel with the frame rate, the worst frame, long main-thread tasks, the camera, the hands, and how long each step of the last capture took. `?sound=0` keeps it silent.
+If the camera cannot start, the launch card and the frame say why: blocked (allow headset cameras for the site in the browser's site permissions, and for Browser in the headset's app permissions, then reload), not found (photos need a Quest 3 or 3S with current software), or busy (another tab or app has it). Only one site can use the headset cameras at a time.
+
+`?debug=1` adds a small panel with the frame rate, the worst frame, long main-thread tasks, the camera (asking, starting, active, or error), the hands, and how long each step of the last capture took. `?sound=0` keeps it silent. Your real hands show through passthrough, so IWSDK's hand models are hidden; `?hands=1` draws them, tracking every finger.
 
 Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to.
 
