@@ -19,6 +19,8 @@ import { Stickers } from '../interaction/stickers.js'
 import { disposeDissolve, stepDissolve, type DissolveRig } from '../look/dissolve.js'
 import { makeBorder, writeBorder } from '../look/frame-border.js'
 import { applyLook } from '../look/relief.js'
+import { SoundCues } from '../sound/cues.js'
+import { Soundscape } from '../sound/soundscape.js'
 import { Status, statusLine, wireLaunch } from '../ui/status.js'
 import { LiveSurfaces } from '../world/live-surfaces.js'
 import { SnapPreview } from '../world/snap.js'
@@ -45,6 +47,8 @@ export class CaptureSystem extends createSystem({
   private readonly deskColor = new Color('#141820')
   private readonly deskCamera = new DeskCamera()
   private readonly status = new Status()
+  private readonly sound = new Soundscape()
+  private readonly cues = new SoundCues(this.sound)
   private readonly basis = new Matrix4()
   private ctx!: Ctx
   private rig!: CameraRig
@@ -115,7 +119,13 @@ export class CaptureSystem extends createSystem({
     handVisuals.left.toggleVisual(false)
     handVisuals.right.toggleVisual(false)
 
+    this.hands.onPinch = (at) => this.sound.pinch(at)
+    this.shutter.onExpose = (held) => this.cues.shutter(held)
+    // Browsers start audio only from a gesture: the Enter button, or the first click on the desk.
+    const view = document.getElementById('scene-container')
+    view?.addEventListener('pointerdown', () => this.sound.resume())
     wireLaunch(() => {
+      this.sound.resume()
       void this.rig.arm()
       launchSession(() => {
         this.world.launchXR()
@@ -162,6 +172,8 @@ export class CaptureSystem extends createSystem({
     this.snap.update(driven, presenting ? this.surfaces.list : DESK_SURFACES)
     this.interaction.contact()
     this.animate(dt)
+    this.cues.listen(presenting ? this.player.head : this.camera)
+    this.cues.step(this.captures, dt)
     this.status.hud.visible = presenting
     if (presenting) this.status.paintHud()
     this.publishPhase()
@@ -271,6 +283,7 @@ export class CaptureSystem extends createSystem({
   }
 
   private dispose(): void {
+    this.sound.dispose()
     this.surfaces.clear()
     this.hands.dispose()
     this.pointer.detach()

@@ -41,6 +41,8 @@ interface PendingShot {
  * never catches the fingers that drew it.
  */
 export class Shutter {
+  /** The picture is being taken for this frame, now. */
+  onExpose: ((held: Held) => void) | null = null
   private token = 0
   private readonly basis = new Matrix4()
   private readonly pending: PendingShot[] = []
@@ -151,6 +153,7 @@ export class Shutter {
       this.missed(held)
       return
     }
+    this.onExpose?.(held)
     const size = cropSize(held.width / held.height, CROP_LONG)
     const started = performance.now()
     let pictured = started
