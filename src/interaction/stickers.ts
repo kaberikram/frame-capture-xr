@@ -1,9 +1,12 @@
-import { Matrix4, Quaternion, Vector3 } from '@iwsdk/core'
+import { Euler, Matrix4, Quaternion, Vector3 } from '@iwsdk/core'
 import { LIFT_CURL, REDUCE_MOTION, STICK_GAP, type Ctx } from '../app/context.js'
 import { canPeel, dropFrame, setMode, type Held } from '../capture/held.js'
-import { makeContactShadow, makeDissolve } from '../look/dissolve.js'
-import { applyCurl, setReliefFloor } from '../look/relief.js'
-import { easeOut } from '../util/math.js'
+import { makeContactRing, makeContactShadow } from '../look/contact.js'
+import { motesEffect } from '../look/effects.js'
+import { makeMotes } from '../look/motes.js'
+import { PALETTE } from '../look/palette.js'
+import { applyCurl, setReliefFloor, setShine } from '../look/relief.js'
+import { clamp, easeOut } from '../util/math.js'
 import { stickBasis, type Snap } from '../world/surfaces.js'
 import type { Grip } from './grip.js'
 import { hitPlane } from './handle.js'
@@ -21,6 +24,11 @@ export class Stickers {
   private readonly quat = new Quaternion()
   private readonly pos = new Vector3()
   private readonly framePos = new Vector3()
+  private readonly prev = new Vector3()
+  private readonly vel = new Vector3()
+  private readonly axis = new Vector3()
+  private readonly euler = new Euler()
+  private readonly tiltQ = new Quaternion()
 
   constructor(
     private readonly ctx: Ctx,
@@ -90,6 +98,7 @@ export class Stickers {
     grip.touch = 'sticker'
     grip.held = held
     held.holding = true
+    held.bobT = 0
     grip.grabPinch.copy(at)
     grip.grabPos.copy(held.photo.position)
     this.ctx.camera.getWorldPosition(grip.headPos)
@@ -103,7 +112,8 @@ export class Stickers {
     if (!held) return
     grip.local.copy(at).sub(grip.grabPinch)
     grip.parentDelta(grip.local, grip.aimDir)
-    held.photo.position.copy(grip.grabPos).add(grip.aimDir)
+    this.startFollow(held)
+    held.follow.copy(grip.grabPos).add(grip.aimDir)
   }
 
   /** Desk: put the held sticker's center at a world point. */
@@ -113,7 +123,8 @@ export class Stickers {
     if (!held) return
     held.photo.getWorldPosition(grip.local)
     grip.parentDelta(grip.planeHit.copy(worldPoint).sub(grip.local), grip.aimDir)
-    held.photo.position.add(grip.aimDir)
+    this.startFollow(held)
+    held.follow.copy(held.photo.position).add(grip.aimDir)
   }
 
   /** Lift the curled photo off the frame and leave it in the hand. */
@@ -123,6 +134,7 @@ export class Stickers {
     const photo = held.photo
     grip.reparentToRoot(photo)
     photo.renderOrder = 8
+    held.following = false
     setMode(held, 'free')
     held.curl = 1
     held.holding = true
@@ -168,6 +180,7 @@ export class Stickers {
   /** The sticker leaves the wall and stays in the pinch. The frame is already gone. */
   releaseFromWall(held: Held, at: Vector3): void {
     const grip = this.grip
+    held.following = false
     setMode(held, 'free')
     held.curl = 1
     held.holding = true
@@ -198,6 +211,7 @@ export class Stickers {
     this.basis.makeBasis(this.xAxis, this.yAxis, this.zAxis)
     this.quat.setFromRotationMatrix(this.basis)
     this.pos.set(snap.px + snap.nx * STICK_GAP, snap.py + snap.ny * STICK_GAP, snap.pz + snap.nz * STICK_GAP)
+    held.following = false
     grip.adoptWorld(held.photo, this.pos, this.quat)
     setMode(held, 'stuck')
     held.curl = LIFT_CURL
@@ -206,15 +220,22 @@ export class Stickers {
     held.squishT = REDUCE_MOTION ? 1 : 0
     held.photo.scale.setScalar(REDUCE_MOTION ? 1 : this.ctx.look.squish)
     if (!held.shadow) {
-      held.shadow = makeContactShadow(held.width, held.height)
+      held.shadow = makeContactShadow(held.width, held.height, PALETTE)
       held.photo.add(held.shadow)
     }
     held.shadow.visible = true
+    if (!REDUCE_MOTION) {
+      // A ring of warm light spreads where it lands.
+      const ring = makeContactRing(held.width, held.height, PALETTE)
+      held.photo.add(ring.group)
+      this.ctx.effects.push(ring)
+    }
     this.clearSnap()
   }
 
   /** Curl spring back to the frame (or to the lifted corner on a wall), and the contact squish. */
   step(held: Held, dt: number): void {
+    this.live(held, dt)
     const spring = this.ctx.look.spring
     if (held.mode === 'curl' && !held.holding && held.frameGone) {
       const target = LIFT_CURL
@@ -242,6 +263,7 @@ export class Stickers {
   layout(held: Held): void {
     const look = this.ctx.look
     setReliefFloor(held.mat, held.mode === 'stuck' ? -0.004 : -10)
+    setShine(held.mat, held.mode === 'curl' ? 0.2 + 0.6 * held.curl : held.mode === 'free' ? 0.55 : held.mode === 'stuck' ? 0.4 : 0.08)
     if (held.mode !== 'curl' && held.mode !== 'free' && held.mode !== 'stuck') {
       applyCurl(held.mat, null)
       return
@@ -291,16 +313,64 @@ export class Stickers {
     if (grip.inward.lengthSq() > 1e-6) grip.inward.normalize()
   }
 
+  /** From here the photo trails its target on a short lag, like paper in the hand. */
+  private startFollow(held: Held): void {
+    if (held.following) return
+    held.following = true
+    held.follow.copy(held.photo.position)
+    held.baseQuat.copy(held.photo.quaternion)
+    held.tilt.set(0, 0)
+  }
+
+  /**
+   * A carried sticker follows the hand a beat behind and tilts with its
+   * motion. Let go in open air, it bobs gently where it was left.
+   */
+  private live(held: Held, dt: number): void {
+    if (held.mode !== 'free' || !held.following || dt <= 0) return
+    const photo = held.photo
+    this.prev.copy(photo.position)
+    if (!held.holding) held.bobT += dt
+    const settle = Math.min(1, held.bobT / 0.6)
+    const bob = REDUCE_MOTION || held.holding ? 0 : 0.004 * Math.sin(2 * Math.PI * 0.25 * held.bobT) * settle
+    this.pos.copy(held.follow)
+    this.pos.y += bob
+    photo.position.lerp(this.pos, REDUCE_MOTION ? 1 : 1 - Math.exp(-dt / 0.06))
+    if (REDUCE_MOTION) {
+      photo.quaternion.copy(held.baseQuat)
+      return
+    }
+    this.vel.copy(photo.position).sub(this.prev).divideScalar(dt)
+    const right = this.axis.set(1, 0, 0).applyQuaternion(held.baseQuat)
+    const yaw = clamp(-this.vel.dot(right) * 0.35, -0.12, 0.12)
+    const up = right.set(0, 1, 0).applyQuaternion(held.baseQuat)
+    const sway = held.holding ? 0 : 0.02 * Math.sin(held.bobT * 1.3) * settle
+    const pitch = clamp(this.vel.dot(up) * 0.35, -0.12, 0.12) + sway
+    const k = 1 - Math.exp(-dt / 0.12)
+    held.tilt.x += (pitch - held.tilt.x) * k
+    held.tilt.y += (yaw - held.tilt.y) * k
+    this.tiltQ.setFromEuler(this.euler.set(held.tilt.x, held.tilt.y, 0))
+    photo.quaternion.copy(held.baseQuat).multiply(this.tiltQ)
+  }
+
+  /** Pixels per metre at one metre, so motes keep their size at any distance. */
+  private pixelScale(): number {
+    const { camera, renderer } = this.ctx
+    if (renderer.xr.isPresenting) return 760
+    return renderer.domElement.height / (2 * Math.tan((camera.fov * Math.PI) / 360))
+  }
+
   private beginDissolve(held: Held): void {
     if (held.frameGone) return
     held.group.updateWorldMatrix(true, false)
     if (!REDUCE_MOTION) {
-      const rig = makeDissolve(held.width * 0.5, held.height * 0.5)
+      // The empty frame lets go as warm dust drifting up.
+      const rig = makeMotes(held.width * 0.5, held.height * 0.5, PALETTE, this.pixelScale())
       this.ctx.root.add(rig.group)
       this.framePos.setFromMatrixPosition(held.group.matrixWorld)
       this.quat.setFromRotationMatrix(held.group.matrixWorld)
       this.grip.adoptWorld(rig.group, this.framePos, this.quat)
-      this.ctx.dissolves.push(rig)
+      this.ctx.effects.push(motesEffect(rig))
     }
     dropFrame(held)
   }

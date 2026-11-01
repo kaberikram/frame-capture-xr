@@ -10,6 +10,8 @@ interface WorkerMsg {
   type: string
   id?: number
   message?: string
+  /** Download progress of the model files, 0..100. */
+  percent?: number
   width?: number
   height?: number
   data?: Uint8Array
@@ -20,6 +22,18 @@ let loading: Promise<void> | null = null
 let ready = false
 let nextId = 0
 const failures = new Set<(error: Error) => void>()
+
+export type DepthState = 'loading' | 'ready' | 'failed'
+const progressListeners = new Set<(state: DepthState, percent: number) => void>()
+
+/** Hear how the model download is going, for the launch card. */
+export function onDepthProgress(listener: (state: DepthState, percent: number) => void): void {
+  progressListeners.add(listener)
+}
+
+function report(state: DepthState, percent: number): void {
+  for (const listener of progressListeners) listener(state, percent)
+}
 
 function depthWorker(): Worker {
   if (worker) return worker
@@ -54,10 +68,14 @@ export function prepareDepthModel(): Promise<void> {
       if (event.data.type === 'ready') {
         done()
         ready = true
+        report('ready', 100)
         resolve()
       } else if (event.data.type === 'error') {
         loading = null
+        report('failed', 0)
         fail(new Error(event.data.message ?? 'depth model failed'))
+      } else if (event.data.type === 'progress' && typeof event.data.percent === 'number') {
+        report('loading', event.data.percent)
       }
     }
     failures.add(fail)

@@ -89,6 +89,32 @@ function stretch(src: Uint8Array | Uint8ClampedArray, channels: number, count: n
   return out
 }
 
+interface LoadEvent {
+  status?: string
+  file?: string
+  loaded?: number
+  total?: number
+}
+
+/** Bytes loaded and expected per model file, so the card can show one percentage. */
+const files = new Map<string, { loaded: number; total: number }>()
+let lastPercent = -1
+
+function onLoad(event: LoadEvent): void {
+  if (event.status !== 'progress' || !event.file || !event.total) return
+  files.set(event.file, { loaded: event.loaded ?? 0, total: event.total })
+  let loaded = 0
+  let total = 0
+  for (const f of files.values()) {
+    loaded += f.loaded
+    total += f.total
+  }
+  const percent = total > 0 ? Math.floor((loaded / total) * 100) : 0
+  if (percent === lastPercent) return
+  lastPercent = percent
+  post({ type: 'progress', percent })
+}
+
 async function loadPipe(): Promise<DepthPipe> {
   // CDN module: Vite must not bundle it, and the worker must not import it at startup.
   const transformers = (await import(/* @vite-ignore */ TRANSFORMERS)) as {
@@ -98,7 +124,11 @@ async function loadPipe(): Promise<DepthPipe> {
       useBrowserCache: boolean
       backends: { onnx: { wasm: { numThreads: number } } }
     }
-    pipeline: (task: string, model: string, options: { device: string; dtype: string }) => Promise<DepthPipe>
+    pipeline: (
+      task: string,
+      model: string,
+      options: { device: string; dtype: string; progress_callback?: (event: LoadEvent) => void },
+    ) => Promise<DepthPipe>
     RawImage: RawImageCtor
   }
   transformers.env.allowLocalModels = false
@@ -114,7 +144,7 @@ async function loadPipe(): Promise<DepthPipe> {
   let last: unknown = null
   for (const attempt of attempts) {
     try {
-      return await transformers.pipeline('depth-estimation', MODEL, attempt)
+      return await transformers.pipeline('depth-estimation', MODEL, { ...attempt, progress_callback: onLoad })
     } catch (err) {
       last = err
     }

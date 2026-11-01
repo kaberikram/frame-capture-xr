@@ -59,6 +59,28 @@ Depth Anything V2 (small) estimates depth in another worker. After about a secon
 
 The relief is a subdivided mesh pushed forward by depth, textured with the photo. Steep depth jumps sit back on the far side and fade out, so a cliff does not stretch into a sheet. The relief blooms on a soft spring that overshoots by a few percent and settles in about a second. `prefers-reduced-motion` skips the motion.
 
+## Look
+
+The look is warm and soft, after the sunlit mood of Spike Jonze's *Her*: a cream line, a peach-to-coral glow, and warm dust. Every colour lives in `src/look/palette.ts`. `?look=neutral` switches to a white version to compare.
+
+Each visual cue means something:
+
+| What you see | What it means |
+| --- | --- |
+| A small warm light between thumb and index | Your fingers are about to meet. It blooms when the pinch registers |
+| A line of light with a faint warm wash inside | The frame you are drawing |
+| The line inhales, brighter for a moment | The frame is anchored. If it keeps breathing, the photo is waiting for your hands to clear |
+| The photo resolves out of a peach haze | It has been taken and is developing |
+| A glossy band sweeping across | Depth is still on its way |
+| A highlight running along the bend | The photo is peeling like vinyl |
+| The frame lets go as drifting dust | The sticker came free |
+| A soft outline that breathes on a surface | Let go here and it lands |
+| A ring of light spreading on the surface | It landed |
+
+A carried sticker trails your hand slightly and tilts with the motion. Let go in open air and it bobs gently where you left it.
+
+In a headset, hints appear as a line of light text that drifts along a little below where you look, with no box behind it. Each shows once, when it helps: draw a frame, then peel a corner, then bring it to a wall. After about 45 seconds of nothing happening, the hint for that moment can show again. The launch card shows how far the depth model has downloaded.
+
 ## Sound
 
 Hands-only input has no haptics, so small synthesized sounds stand in for touch. Each one comes from where it happens:

@@ -1,9 +1,9 @@
-import { Color, Group, Matrix4, XRMesh, XRPlane, createSystem, type BufferAttribute, type Object3D } from '@iwsdk/core'
+import { Color, Group, Matrix4, XRMesh, XRPlane, createSystem, type Object3D } from '@iwsdk/core'
 import { CameraRig } from '../capture/camera-rig.js'
 import { prepareDarkroom } from '../capture/darkroom.js'
-import { prepareDepthModel } from '../capture/depth-model.js'
+import { onDepthProgress, prepareDepthModel } from '../capture/depth-model.js'
 import { stepDevelop } from '../capture/develop.js'
-import { heldLook, type Held } from '../capture/held.js'
+import { heldLook, layoutBorder, type Held } from '../capture/held.js'
 import { Shutter } from '../capture/shutter.js'
 import { computePhase, publishApi, publishPhase, type Phase } from '../debug/api.js'
 import { DEBUG } from '../debug/metrics.js'
@@ -18,18 +18,21 @@ import { Grip } from '../interaction/grip.js'
 import { Interaction } from '../interaction/router.js'
 import { Sheets } from '../interaction/sheets.js'
 import { Stickers } from '../interaction/stickers.js'
-import { disposeDissolve, stepDissolve, type DissolveRig } from '../look/dissolve.js'
-import { makeBorder, writeBorder } from '../look/frame-border.js'
+import type { Effect } from '../look/effects.js'
+import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
+import { PALETTE, voice } from '../look/palette.js'
+import { PinchLights } from '../look/pinch-light.js'
 import { applyLook } from '../look/relief.js'
 import { SoundCues } from '../sound/cues.js'
 import { Soundscape } from '../sound/soundscape.js'
+import { Captions, type Hint } from '../ui/captions.js'
 import { Status, statusLine, wireLaunch } from '../ui/status.js'
 import { LiveSurfaces } from '../world/live-surfaces.js'
 import { SnapPreview } from '../world/snap.js'
 import { buildStandIn } from '../world/stand-in.js'
 import { DESK_SURFACES } from '../world/surfaces.js'
 import { CaptureLook } from './capture-look.js'
-import { REDUCE_MOTION, defaultLook, firstEntity, readLook, type Ctx } from './context.js'
+import { defaultLook, firstEntity, readLook, type Ctx } from './context.js'
 import { WEBCAM_REQUESTED, launchSession } from './experience.js'
 
 /**
@@ -44,11 +47,13 @@ export class CaptureSystem extends createSystem({
 }) {
   private readonly look = defaultLook()
   private readonly captures: Held[] = []
-  private readonly dissolves: DissolveRig[] = []
+  private readonly effects: Effect[] = []
   private readonly gesture = new RectGesture()
   private readonly deskColor = new Color('#141820')
   private readonly deskCamera = new DeskCamera()
   private readonly status = new Status()
+  private readonly captions = new Captions()
+  private readonly pinchLights = new PinchLights(PALETTE)
   private readonly sound = new Soundscape()
   private readonly cues = new SoundCues(this.sound)
   private readonly basis = new Matrix4()
@@ -66,7 +71,11 @@ export class CaptureSystem extends createSystem({
   private snap!: SnapPreview
   private standIn!: Group
   private dragGroup!: Group
-  private dragPositions!: BufferAttribute
+  private dragLine!: GlowLine
+  /** What the hint clock last saw, so a hint retires the moment its action happens. */
+  private sawDrawing = false
+  private sawCurl = false
+  private sawStuck = 0
   private session: XRSession | null = null
   private phase: Phase = 'ready'
   private debug: DebugOverlay | null = null
@@ -86,7 +95,7 @@ export class CaptureSystem extends createSystem({
       root,
       look: this.look,
       captures: this.captures,
-      dissolves: this.dissolves,
+      effects: this.effects,
       gesture: this.gesture,
     }
     this.ctx = ctx
@@ -94,18 +103,18 @@ export class CaptureSystem extends createSystem({
     this.standIn = buildStandIn()
     root.add(this.standIn)
 
-    const border = makeBorder(this.look.strip)
-    this.dragPositions = border.positions
+    this.dragLine = makeGlowLine(PALETTE, 5)
     this.dragGroup = new Group()
     this.dragGroup.name = 'draw-frame'
-    this.dragGroup.add(border.mesh)
+    this.dragGroup.add(this.dragLine.mesh)
     this.dragGroup.visible = false
     root.add(this.dragGroup)
+    root.add(this.pinchLights.group)
+    root.add(this.captions.mesh)
 
     this.grip = new Grip(ctx)
     this.snap = new SnapPreview(ctx, this.grip)
     root.add(this.snap.group)
-    this.player.head.add(this.status.hud)
 
     this.rig = new CameraRig(ctx, this.deskColor, () => this.overlays())
     this.shutter = new Shutter(ctx, this.rig, (text) => this.status.flash(text))
@@ -142,6 +151,13 @@ export class CaptureSystem extends createSystem({
     }
     prepareDarkroom()
     if (WEBCAM_REQUESTED) this.rig.openWebcam()
+    onDepthProgress((state, percent) => {
+      const el = document.getElementById('depth')
+      if (!el) return
+      el.textContent = voice(
+        state === 'ready' ? 'Depth is ready' : state === 'failed' ? 'Depth will come from brightness' : `Preparing depth · ${percent}%`,
+      )
+    })
     void prepareDepthModel().catch((error: unknown) => {
       console.warn('[frame] depth model', error)
     })
@@ -173,19 +189,19 @@ export class CaptureSystem extends createSystem({
       this.deskCamera.apply(this.camera)
       this.shot.update(dt)
     }
-    this.syncDrag()
+    this.syncDrag(now)
     // Surfaces only matter while a sticker is being carried toward one.
     const driven = this.drivenSticker()
     if (driven) this.surfaces.collect(this.queries.planes.entities, this.queries.meshes.entities)
-    this.snap.update(driven, presenting ? this.surfaces.list : DESK_SURFACES)
+    this.snap.update(driven, presenting ? this.surfaces.list : DESK_SURFACES, dt)
     this.interaction.contact()
-    this.animate(dt)
+    this.animate(dt, now)
+    this.updatePinchLights(presenting, dt)
     this.cues.listen(presenting ? this.player.head : this.camera)
     this.cues.step(this.captures, dt)
-    this.status.hud.visible = presenting
-    if (presenting) this.status.paintHud()
     this.publishPhase()
     const last = this.captures[this.captures.length - 1]
+    this.captions.update(this.captionLine(last), this.player.head, presenting, dt)
     if (this.debug) this.paintDebug(presenting, last)
     this.status.note(
       statusLine({
@@ -229,8 +245,8 @@ export class CaptureSystem extends createSystem({
     this.surfaces.arm(session)
   }
 
-  /** The frame being drawn follows the live rectangle. */
-  private syncDrag(): void {
+  /** The frame being drawn: a line of light with a faint warm wash inside, following the live rectangle. */
+  private syncDrag(now: number): void {
     const live = this.gesture.rect
     if (!this.gesture.drawing || !live.active) {
       this.dragGroup.visible = false
@@ -238,12 +254,56 @@ export class CaptureSystem extends createSystem({
     }
     this.dragGroup.visible = true
     this.gesture.pose(this.dragGroup.position, this.dragGroup.quaternion, this.basis)
-    writeBorder(this.dragPositions, live.halfW, live.halfH, this.look.strip)
+    setGlowLine(this.dragLine, { halfW: live.halfW, halfH: live.halfH, core: this.look.strip * 0.75, glow: 1, tint: 0.035, opacity: 1, time: now })
   }
 
-  private animate(dt: number): void {
+  /** In a headset a light gathers at each pinch; on the desk one rides the dragged corner. */
+  private updatePinchLights(presenting: boolean, dt: number): void {
+    const lights = this.pinchLights
+    if (presenting) {
+      const sides = ['left', 'right'] as const
+      for (let i = 0; i < 2; i++) {
+        const r = this.hands.readiness(sides[i])
+        lights.set(i, r >= 0 ? this.hands.pinchPoint(sides[i]) : null, r, this.hands.isPinched(sides[i]), dt)
+      }
+      return
+    }
+    const drawing = this.gesture.drawing
+    lights.set(0, drawing ? this.gesture.dragCorner : null, drawing ? 1 : -1, drawing, dt)
+    lights.set(1, null, -1, false, dt)
+  }
+
+  /**
+   * What the caption says: a one-off note, the hands nudge, or the hint for
+   * this moment. A hint retires the moment its action happens.
+   */
+  private captionLine(last: Held | undefined): string | null {
+    const flash = this.status.flashing
+    if (flash) return flash
+    if (this.shutter.waitingOnHands) return 'Let your hands fall away'
+    const touch = this.grip.touch
+    const drawing = this.gesture.drawing
+    if (drawing || touch !== 'none') this.captions.active()
+    if (drawing && !this.sawDrawing) this.captions.retire('draw')
+    if (touch === 'curl' && !this.sawCurl) this.captions.retire('peel')
+    let stuck = 0
+    for (let i = 0; i < this.captures.length; i++) if (this.captures[i].mode === 'stuck') stuck++
+    if (stuck > this.sawStuck) this.captions.retire('wall')
+    this.sawDrawing = drawing
+    this.sawCurl = touch === 'curl'
+    this.sawStuck = stuck
+    let hint: Hint | null = null
+    if (drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
+    else if (touch === 'sticker' || last?.mode === 'free') hint = 'wall'
+    else if (last && !last.frameGone && last.mode === 'idle' && last.pop >= 1 && last.depth !== 'wait') hint = 'peel'
+    else if (!last || last.frameGone) hint = 'draw'
+    return this.captions.hint(hint)
+  }
+
+  private animate(dt: number, now: number): void {
     for (let i = 0; i < this.captures.length; i++) {
       const held = this.captures[i]
+      layoutBorder(held, this.look.strip, now, this.shutter.isPending(held))
       if (held.flat) continue
       stepDevelop(held, dt, this.look)
       this.stickers.step(held, dt)
@@ -252,12 +312,11 @@ export class CaptureSystem extends createSystem({
       this.stickers.layout(held)
       held.photo.visible = held.raster !== null && !(fanned && held.spread >= 0.035)
     }
-    const meltFor = REDUCE_MOTION ? 0.05 : this.look.dissolve
-    for (let i = this.dissolves.length - 1; i >= 0; i--) {
-      const rig = this.dissolves[i]
-      if (!stepDissolve(rig, dt, meltFor)) continue
-      disposeDissolve(rig)
-      this.dissolves.splice(i, 1)
+    for (let i = this.effects.length - 1; i >= 0; i--) {
+      const effect = this.effects[i]
+      if (!effect.step(dt)) continue
+      effect.dispose()
+      this.effects.splice(i, 1)
     }
   }
 
@@ -272,8 +331,8 @@ export class CaptureSystem extends createSystem({
   private overlays(): Object3D[] {
     const list: Object3D[] = []
     for (let i = 0; i < this.captures.length; i++) list.push(this.captures[i].group)
-    list.push(this.dragGroup, this.snap.group)
-    for (let i = 0; i < this.dissolves.length; i++) list.push(this.dissolves[i].group)
+    list.push(this.dragGroup, this.snap.group, this.pinchLights.group, this.captions.mesh)
+    for (let i = 0; i < this.effects.length; i++) list.push(this.effects[i].group)
     return list
   }
 
@@ -284,7 +343,7 @@ export class CaptureSystem extends createSystem({
       hold: this.shot.hold,
       drawU: this.shot.drawU,
       last,
-      dissolving: this.dissolves.length > 0,
+      dissolving: this.effects.some((e) => e.kind === 'dissolve'),
       previewing: this.snap.previewing,
       yaw: this.deskCamera.yaw,
     })
@@ -317,6 +376,8 @@ export class CaptureSystem extends createSystem({
 
   private dispose(): void {
     this.debug?.dispose()
+    this.captions.dispose()
+    this.pinchLights.dispose()
     this.sound.dispose()
     this.surfaces.clear()
     this.hands.dispose()

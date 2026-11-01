@@ -70,7 +70,7 @@ export const PALETTES: Record<LookName, Palette> = {
   },
 }
 
-/** Provisional until the look comparison is decided. Both stay reachable with ?look=. */
+/** Chosen from the look comparison. `?look=neutral` switches to the white look. */
 export const DEFAULT_LOOK: LookName = 'her'
 
 export function readPalette(): Palette {
@@ -80,3 +80,13 @@ export function readPalette(): Palette {
 }
 
 export const PALETTE = readPalette()
+
+/** sRGB 0..1 to linear, for shaders that end in three's colour-space conversion. */
+export function linear(c: Rgb): [number, number, number] {
+  return [c[0] ** 2.2, c[1] ** 2.2, c[2] ** 2.2]
+}
+
+/** Lowercase in the warm look, as written otherwise. */
+export function voice(text: string): string {
+  return PALETTE.lowercase ? text.toLowerCase() : text
+}

@@ -1,8 +1,8 @@
 import { REDUCE_MOTION, type Look } from '../app/context.js'
 import { metric } from '../debug/metrics.js'
 import { bloom, bloomProgress } from '../look/bloom.js'
-import { applyDepth, setDepthMix, setRelief } from '../look/relief.js'
-import { smoothStep } from '../util/math.js'
+import { applyDepth, setDepthMix, setDevelop, setRelief } from '../look/relief.js'
+import { clamp, smoothStep } from '../util/math.js'
 import type { Raster } from './crop.js'
 import { estimateDepth } from './depth-model.js'
 import type { Held } from './held.js'
@@ -15,6 +15,8 @@ const PREVIEW = 0.45
 const MODEL_PATIENCE = 3.5
 /** Seconds the newest depth takes to fade in over the old one. */
 const CROSSFADE = 0.7
+/** Seconds the photo takes to develop out of the haze. */
+const DEVELOP = 0.75
 
 /** Start a bloom from wherever the relief is now toward `to`. */
 function aim(held: Held, to: number): void {
@@ -33,6 +35,14 @@ function aim(held: Held, to: number): void {
  */
 export function stepDevelop(held: Held, dt: number, look: Look): void {
   held.age += dt
+  if (held.developT >= 0) {
+    held.developT += dt
+    // A glossy sweep says depth is still on its way: no depth yet, or only the preview.
+    const thinking = !REDUCE_MOTION && (held.depth === 'wait' || (held.depth === 'brightness' && held.modelPending))
+    held.sheen += ((thinking ? 1 : 0) - held.sheen) * Math.min(1, dt * 3)
+    const develop = REDUCE_MOTION ? 1 : clamp(held.developT / DEVELOP, 0, 1)
+    setDevelop(held.mat, develop, held.sheen, held.age)
+  }
   if (held.depth === 'wait' && held.age >= DEPTH_WAIT && held.preview) {
     applyDepth(held.mat, held.preview, false)
     held.depth = 'brightness'

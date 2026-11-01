@@ -11,7 +11,7 @@ import {
 } from '@iwsdk/core'
 import type { Held } from '../capture/held.js'
 import type { RectGesture } from '../input/gesture.js'
-import type { DissolveRig } from '../look/dissolve.js'
+import type { Effect } from '../look/effects.js'
 import { clamp } from '../util/math.js'
 import { CaptureLook } from './capture-look.js'
 
@@ -54,7 +54,8 @@ export interface Ctx {
   readonly root: Group
   readonly look: Look
   readonly captures: Held[]
-  readonly dissolves: DissolveRig[]
+  /** Short-lived visuals: dissolving frames, contact rings. */
+  readonly effects: Effect[]
   readonly gesture: RectGesture
 }
 

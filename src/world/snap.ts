@@ -1,8 +1,9 @@
-import { Group, Matrix4, Quaternion, Vector3, type BufferAttribute } from '@iwsdk/core'
+import { Group, Matrix4, Quaternion, Vector3 } from '@iwsdk/core'
 import type { Ctx } from '../app/context.js'
 import type { Held } from '../capture/held.js'
 import type { Grip } from '../interaction/grip.js'
-import { makeBorder, writeBorder } from '../look/frame-border.js'
+import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
+import { PALETTE } from '../look/palette.js'
 import { nearestSurface, stickBasis, type Snap, type Surface } from './surfaces.js'
 
 /** The faint outline that shows where a held sticker will land. */
@@ -11,7 +12,8 @@ export class SnapPreview {
   /** The surface a release would stick to, or null. */
   snap: Snap | null = null
   previewing = false
-  private readonly positions: BufferAttribute
+  private readonly line: GlowLine
+  private shownFor = 0
   private readonly local = new Vector3()
   private readonly head = new Vector3()
   private readonly xAxis = new Vector3()
@@ -25,22 +27,15 @@ export class SnapPreview {
     private readonly ctx: Ctx,
     private readonly grip: Grip,
   ) {
-    const ghost = makeBorder(0.004)
-    const ghostMat = ghost.mesh.material
-    if (!Array.isArray(ghostMat)) {
-      ghostMat.opacity = 0.28
-      ghostMat.transparent = true
-      ghostMat.depthWrite = false
-    }
-    ghost.mesh.renderOrder = 7
-    this.positions = ghost.positions
+    this.line = makeGlowLine(PALETTE, 7)
     this.group.name = 'snap-preview'
-    this.group.add(ghost.mesh)
+    this.group.add(this.line.mesh)
     this.group.visible = false
   }
 
   /** `held` is the sticker being carried, by a hand or the desk demo. */
-  update(held: Held | null, surfaces: readonly Surface[]): void {
+  update(held: Held | null, surfaces: readonly Surface[], dt: number): void {
+    const was = this.previewing
     this.clear()
     if (!held) return
     held.photo.updateWorldMatrix(true, false)
@@ -52,7 +47,18 @@ export class SnapPreview {
     this.snap = snap
     this.previewing = true
     this.group.visible = true
-    writeBorder(this.positions, held.width * 0.5, held.height * 0.5, 0.004)
+    // A soft outline that fades in and breathes where the sticker will land.
+    this.shownFor = was ? this.shownFor + dt : 0
+    const t = performance.now() / 1000
+    setGlowLine(this.line, {
+      halfW: held.width * 0.5,
+      halfH: held.height * 0.5,
+      core: 0.004,
+      glow: 0.6,
+      tint: 0.02,
+      opacity: (0.32 + 0.14 * Math.sin(t * 7)) * Math.min(1, this.shownFor / 0.25),
+      time: t,
+    })
     const basis = stickBasis(snap.nx, snap.ny, snap.nz, head.x - snap.px, head.y - snap.py, head.z - snap.pz)
     this.xAxis.set(basis.xx, basis.xy, basis.xz)
     this.yAxis.set(basis.yx, basis.yy, basis.yz)

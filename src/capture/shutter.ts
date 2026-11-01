@@ -1,7 +1,7 @@
 import { Matrix4, Vector3 } from '@iwsdk/core'
-import { MAX_CAPTURES, type Ctx } from '../app/context.js'
+import { MAX_CAPTURES, REDUCE_MOTION, type Ctx } from '../app/context.js'
 import { metric } from '../debug/metrics.js'
-import { applyPhoto } from '../look/relief.js'
+import { applyPhoto, setDevelop } from '../look/relief.js'
 import type { CameraRig } from './camera-rig.js'
 import { insideQuad, quadMargin } from './clearance.js'
 import { cropSize, type Quad } from './crop.js'
@@ -173,7 +173,10 @@ export class Shutter {
         held.raster = developed.photo
         held.preview = developed.preview
         held.age = 0
+        held.developT = 0
         applyPhoto(held.mat, developed.photo)
+        // The photo develops out of a warm haze; a flat demo photo and reduced motion skip it.
+        setDevelop(held.mat, held.flat || REDUCE_MOTION ? 1 : 0, 0, 0)
         held.photo.visible = true
         renderer.initTexture(held.mat.uniforms.uPhoto.value)
         const done = performance.now()

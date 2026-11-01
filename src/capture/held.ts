@@ -1,8 +1,10 @@
-import { Group, Mesh, type ShaderMaterial } from '@iwsdk/core'
+import { Group, Mesh, Quaternion, Vector2, Vector3, type ShaderMaterial } from '@iwsdk/core'
 import type { Look } from '../app/context.js'
 import { makeHandle, placeHandle } from '../interaction/handle.js'
 import { makePeel, type PeelRig } from '../interaction/peel.js'
-import { makeBorder, writeBorder } from '../look/frame-border.js'
+import { REDUCE_MOTION } from '../app/context.js'
+import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
+import { PALETTE } from '../look/palette.js'
 import { applyLook, bindMesh, reliefGeometry, reliefMaterial, type ReliefLook } from '../look/relief.js'
 import type { DepthField } from './brightness-depth.js'
 import type { Raster } from './crop.js'
@@ -58,6 +60,23 @@ export interface Held {
   /** 0 at contact, 1 after the squish eases back to full size. */
   squishT: number
   shadow: Mesh | null
+  /** The frame's line of light. */
+  border: GlowLine
+  /** Page-clock seconds when the frame was anchored. */
+  since: number
+  /** Seconds since the photo arrived, for the develop. -1 before it arrives. */
+  developT: number
+  /** 0..1 strength of the thinking sweep, eased. */
+  sheen: number
+  /** Where a carried sticker is heading; the photo follows it on a short lag. */
+  follow: Vector3
+  following: boolean
+  /** The sticker's pose when it was picked up, before the tilt from moving. */
+  baseQuat: Quaternion
+  /** Smoothed tilt from motion, radians about the sticker's right and up axes. */
+  tilt: Vector2
+  /** Seconds of gentle bob since it was let go in open air. */
+  bobT: number
 }
 
 export function heldLook(look: Look, width: number, height: number): ReliefLook {
@@ -75,8 +94,8 @@ export function heldLook(look: Look, width: number, height: number): ReliefLook 
 export function makeHeld(look: Look, halfW: number, halfH: number, holdFlat: boolean, token: number): Held {
   const group = new Group()
   group.name = 'capture'
-  const border = makeBorder(look.strip)
-  writeBorder(border.positions, halfW, halfH, look.strip)
+  const border = makeGlowLine(PALETTE, 5)
+  border.mesh.position.z = 0.004
   group.add(border.mesh)
   const width = halfW * 2
   const height = halfH * 2
@@ -98,7 +117,34 @@ export function makeHeld(look: Look, halfW: number, halfH: number, holdFlat: boo
     width, height, peel, handle, spread: 0, spreadV: 0, holding: false,
     mode: 'idle', curl: 0, curlV: 0, axisX: 1, axisY: 0, cornerX: width * 0.5, cornerY: height * 0.5,
     frameGone: false, squishT: 1, shadow: null,
+    border, since: performance.now() / 1000, developT: -1, sheen: 0,
+    follow: new Vector3(), following: false, baseQuat: new Quaternion(), tilt: new Vector2(), bobT: 0,
   }
+}
+
+/**
+ * The frame's line of light. On release it inhales, brighter and thicker for a
+ * moment; while the shutter waits for hands it breathes; then it settles to a
+ * quiet glow. `now` is page-clock seconds.
+ */
+export function layoutBorder(held: Held, strip: number, now: number, waiting: boolean): void {
+  if (held.frameGone) return
+  const k = now - held.since
+  const inhale = !REDUCE_MOTION && k > 0 && k < 0.3 ? Math.sin((Math.PI * k) / 0.3) : 0
+  const s = Math.min(1, Math.max(0, k / 0.6))
+  const settled = s * s * (3 - 2 * s)
+  let glow = (1 - 0.5 * settled) * (1 + 0.9 * inhale)
+  if (waiting && !REDUCE_MOTION) glow *= 0.85 + 0.25 * Math.sin(now * 4)
+  const t = Math.min(1, Math.max(0, k / 0.4))
+  setGlowLine(held.border, {
+    halfW: held.width * 0.5,
+    halfH: held.height * 0.5,
+    core: strip * 0.75 * (1 + 0.6 * inhale),
+    glow,
+    tint: 0.035 * (1 - t * t * (3 - 2 * t)),
+    opacity: 1,
+    time: now,
+  })
 }
 
 /** Every mode change goes through here, so leaving or reaching a surface always fixes up the shadow and squish. */

@@ -9,10 +9,12 @@ import {
   ShaderMaterial,
   SRGBColorSpace,
   Vector2,
+  Vector3,
   type Texture,
 } from '@iwsdk/core'
 import type { DepthField } from '../capture/brightness-depth.js'
 import type { Raster } from '../capture/crop.js'
+import { PALETTE, linear } from './palette.js'
 
 /**
  * Per-frame contents. Slit-scan and slow motion replace this GLSL function
@@ -68,6 +70,15 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
       uCurlShadow: { value: 0 },
       uCurlClear: { value: 0.028 },
       uReliefFloor: { value: -10 },
+      /** 0 is warm haze, 1 the photo itself. */
+      uDevelop: { value: 1 },
+      /** 0..1 strength of the glossy sweep that says depth is on its way. */
+      uSheenOn: { value: 0 },
+      uTime: { value: 0 },
+      /** Strength of the vinyl highlight along a bend. */
+      uShine: { value: 0 },
+      uHaze: { value: new Vector3(...linear(PALETTE.haze)) },
+      uSheenCol: { value: new Vector3(...linear(PALETTE.sheen)) },
     },
     vertexShader: /* glsl */ `
       uniform sampler2D uDepth;
@@ -89,6 +100,8 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
       varying vec2 vUv;
       varying float vKeep;
       varying float vSide;
+      varying vec3 vN;
+      varying vec3 vView;
       float raw(vec2 q) {
         vec2 c = clamp(q, vec2(0.002), vec2(0.998));
         return mix(texture(uDepthPrev, c).r, texture(uDepth, c).r, uDepthMix);
@@ -147,22 +160,53 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
         }
         p += n * reliefZ;
         vSide = side;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+        vN = normalize(normalMatrix * n);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vView = mv.xyz;
+        gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: /* glsl */ `
       uniform sampler2D uPhoto;
       uniform float uFeather;
       uniform float uCurlRadius;
       uniform float uCurlShadow;
+      uniform float uDevelop;
+      uniform float uSheenOn;
+      uniform float uTime;
+      uniform float uShine;
+      uniform vec3 uHaze;
+      uniform vec3 uSheenCol;
       varying vec2 vUv;
       varying float vKeep;
       varying float vSide;
+      varying vec3 vN;
+      varying vec3 vView;
       ${contentsFn}
       void main() {
         vec4 contents = frameContents(vUv);
+        vec3 col = contents.rgb;
+        if (uDevelop < 0.999) {
+          // Develop: a soft, warm, lifted haze that resolves into the photo.
+          float b = (1.0 - uDevelop) * 0.012;
+          vec3 soft = (frameContents(vUv + vec2(b, b)).rgb + frameContents(vUv + vec2(-b, b)).rgb
+            + frameContents(vUv + vec2(b, -b)).rgb + frameContents(vUv + vec2(-b, -b)).rgb) * 0.25;
+          col = mix(soft, col, smoothstep(0.35, 1.0, uDevelop));
+          vec3 haze = mix(col * 0.55, uHaze, 0.6) + uHaze * 0.08;
+          col = mix(haze, col, smoothstep(0.05, 1.0, uDevelop));
+        }
+        // Thinking: a glossy band sweeps across while depth is on its way.
+        float s = (vUv.x + (1.0 - vUv.y)) * 0.5;
+        float pos = fract(uTime / 1.6) * 1.7 - 0.35;
+        col += uSheenCol * exp(-pow((s - pos) / 0.06, 2.0)) * 0.16 * uSheenOn;
+        // Vinyl: a highlight where the bend turns toward the light.
+        if (uShine > 0.001) {
+          vec3 N = normalize(vN);
+          vec3 H = normalize(normalize(vec3(-0.5, -0.25, 0.83)) + normalize(-vView));
+          col += uSheenCol * pow(max(dot(N, H), 0.0), 90.0) * uShine * 0.32;
+        }
         vec2 m = min(vUv, 1.0 - vUv);
         float edge = smoothstep(0.0, max(uFeather, 1e-4), min(m.x, m.y));
-        float a = contents.a * edge * vKeep;
+        float a = contents.a * edge * vKeep * smoothstep(0.0, 0.25, uDevelop);
         if (a < 0.08) discard;
         float shade = 1.0;
         if (vSide < 0.0 && uCurlShadow > 0.001 && uCurlRadius > 0.001) {
@@ -170,7 +214,7 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
           float t = clamp(-vSide / band, 0.0, 1.0);
           shade = 1.0 - (1.0 - t) * (1.0 - t) * 0.55 * clamp(uCurlShadow, 0.0, 1.0);
         }
-        gl_FragColor = vec4(contents.rgb * shade, a);
+        gl_FragColor = vec4(col * shade, a);
         #include <colorspace_fragment>
       }`,
     transparent: true,
@@ -263,6 +307,17 @@ export function setDepthMix(mat: ShaderMaterial, mix: number): void {
   if (prev === current) return
   prev.dispose()
   u.uDepthPrev.value = current
+}
+
+/** Develop progress (0 haze, 1 photo), the thinking sweep's strength, and its clock. */
+export function setDevelop(mat: ShaderMaterial, develop: number, sheen: number, time: number): void {
+  mat.uniforms.uDevelop.value = develop
+  mat.uniforms.uSheenOn.value = sheen
+  mat.uniforms.uTime.value = time
+}
+
+export function setShine(mat: ShaderMaterial, shine: number): void {
+  mat.uniforms.uShine.value = shine
 }
 
 export function setRelief(mat: ShaderMaterial, amount: number): void {
