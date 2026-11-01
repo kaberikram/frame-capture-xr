@@ -1,5 +1,5 @@
 import { Color, Group, Matrix4, XRMesh, XRPlane, createSystem, type Object3D } from '@iwsdk/core'
-import { CameraRig } from '../capture/camera-rig.js'
+import { CameraRig, cameraAllowed } from '../capture/camera-rig.js'
 import { prepareDarkroom } from '../capture/darkroom.js'
 import { onDepthProgress, prepareDepthModel } from '../capture/depth-model.js'
 import { stepDevelop } from '../capture/develop.js'
@@ -26,14 +26,14 @@ import { applyLook } from '../look/relief.js'
 import { SoundCues } from '../sound/cues.js'
 import { Soundscape } from '../sound/soundscape.js'
 import { Captions, type Hint } from '../ui/captions.js'
-import { Status, statusLine, wireLaunch } from '../ui/status.js'
+import { Status, launchNote, statusLine, wireLaunch } from '../ui/status.js'
 import { LiveSurfaces } from '../world/live-surfaces.js'
 import { SnapPreview } from '../world/snap.js'
 import { buildStandIn } from '../world/stand-in.js'
 import { DESK_SURFACES } from '../world/surfaces.js'
 import { CaptureLook } from './capture-look.js'
 import { defaultLook, firstEntity, readLook, type Ctx } from './context.js'
-import { WEBCAM_REQUESTED, launchSession } from './experience.js'
+import { HAND_MODELS, WEBCAM_REQUESTED, launchSession } from './experience.js'
 
 /**
  * Draw a rectangle in the air, anchor it, photograph what it frames, and ease
@@ -79,6 +79,9 @@ export class CaptureSystem extends createSystem({
   private session: XRSession | null = null
   private phase: Phase = 'ready'
   private debug: DebugOverlay | null = null
+  /** The camera was asked for from the launch card once; a second Enter goes in whatever the answer. */
+  private cameraAsked = false
+  private entering = false
   private lastFrameMs = 0
 
   init(): void {
@@ -117,7 +120,7 @@ export class CaptureSystem extends createSystem({
     root.add(this.snap.group)
 
     this.rig = new CameraRig(ctx, this.deskColor, () => this.overlays())
-    this.shutter = new Shutter(ctx, this.rig, (text) => this.status.flash(text))
+    this.shutter = new Shutter(ctx, this.rig, (text, seconds) => this.status.flash(text, seconds))
     this.stickers = new Stickers(ctx, this.grip, () => this.snap.clear())
     this.sheets = new Sheets(ctx, this.grip)
     const frameGrab = new FrameGrab(this.grip)
@@ -128,9 +131,12 @@ export class CaptureSystem extends createSystem({
     this.pointer.attach(document.getElementById('scene-container'))
     this.surfaces = new LiveSurfaces(ctx)
     // Passthrough shows your real hands; IWSDK's hand models would sit on top of them.
-    const handVisuals = this.input.xr.visualAdapters.hand
-    handVisuals.left.toggleVisual(false)
-    handVisuals.right.toggleVisual(false)
+    // This stops the models animating; `hideHandModels` keeps them out of view.
+    if (!HAND_MODELS) {
+      const handVisuals = this.input.xr.visualAdapters.hand
+      handVisuals.left.toggleVisual(false)
+      handVisuals.right.toggleVisual(false)
+    }
 
     this.hands.onPinch = (at) => this.sound.pinch(at)
     this.shutter.onExpose = (held) => this.cues.shutter(held)
@@ -139,10 +145,7 @@ export class CaptureSystem extends createSystem({
     view?.addEventListener('pointerdown', () => this.sound.resume())
     wireLaunch(() => {
       this.sound.resume()
-      void this.rig.arm()
-      launchSession(() => {
-        this.world.launchXR()
-      }, true)
+      void this.enter()
     })
     publishApi()
     if (DEBUG) {
@@ -174,6 +177,7 @@ export class CaptureSystem extends createSystem({
     if (presenting) {
       this.scene.background = null
       this.standIn.visible = false
+      if (!HAND_MODELS) this.hideHandModels()
       this.player.head.updateWorldMatrix(true, false)
       this.player.updateWorldMatrix(true, false)
       this.rig.lens.recordHead(this.player.head, this.world.xrFrame?.predictedDisplayTime, now)
@@ -215,6 +219,52 @@ export class CaptureSystem extends createSystem({
         waitingOnHands: this.shutter.waitingOnHands,
       }),
     )
+  }
+
+  /**
+   * Ask for the headset cameras while still on the page, where Quest Browser can
+   * show its prompt, then enter passthrough. Asked from inside the session, the
+   * prompt can be lost and the camera never starts.
+   */
+  private async enter(): Promise<void> {
+    if (this.entering) return
+    this.entering = true
+    const button = document.getElementById('enter') as HTMLButtonElement | null
+    try {
+      if (this.cameraAsked || (await cameraAllowed())) {
+        void this.rig.arm()
+      } else {
+        this.cameraAsked = true
+        launchNote(voice('Allow the headset cameras when asked. The frame uses them to take its photo.'))
+        if (button) button.disabled = true
+        const ok = await this.rig.arm()
+        if (button) button.disabled = false
+        if (!ok) {
+          launchNote(voice(`${this.rig.problem ?? 'The camera did not start'}. Press Enter passthrough to go in without photos.`))
+          return
+        }
+        launchNote('')
+        // Entering needs a recent tap. A prompt answered slowly uses it up, so ask for one more.
+        if (navigator.userActivation && !navigator.userActivation.isActive) {
+          launchNote(voice('Camera allowed. Press Enter passthrough.'))
+          return
+        }
+      }
+      launchSession(() => {
+        this.world.launchXR()
+      }, true)
+    } finally {
+      this.entering = false
+    }
+  }
+
+  /** IWSDK shows each tracked hand model again every frame (after `toggleVisual`), so hide it after input runs. */
+  private hideHandModels(): void {
+    const hands = this.input.xr.visualAdapters.hand
+    const left = hands.left.visual
+    const right = hands.right.visual
+    if (left) left.model.visible = false
+    if (right) right.model.visible = false
   }
 
   private readLook(): void {
@@ -366,7 +416,7 @@ export class CaptureSystem extends createSystem({
       nowMs,
       frameMs,
       [
-        `camera ${feed.width}x${feed.height}${stamp === null ? '' : `  frame age ${Math.round(nowMs - stamp * 1000)} ms`}`,
+        `camera ${this.rig.state} ${feed.width}x${feed.height}${stamp === null ? '' : `  frame age ${Math.round(nowMs - stamp * 1000)} ms`}`,
         `hands L ${hand('left')}  R ${hand('right')}`,
         `frames ${this.captures.length}  phase ${this.phase}  depth ${last?.depth ?? '-'}`,
       ],

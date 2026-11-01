@@ -7,6 +7,9 @@ export const PREVIEW_FORCED = typeof location !== 'undefined' && new URLSearchPa
 /** `?cam=1` uses a webcam for the photo instead of a render of the stand-in room. */
 export const WEBCAM_REQUESTED = typeof location !== 'undefined' && new URLSearchParams(location.search).get('cam') === '1'
 
+/** `?hands=1` shows IWSDK's tracked hand models over the passthrough hands. */
+export const HAND_MODELS = typeof location !== 'undefined' && new URLSearchParams(location.search).get('hands') === '1'
+
 /** `?ui=0` hides the launch card. `?at=draw|photo|side` and `?shot=1` drive the desk demo. */
 export function queryFlag(name: string): string | null {
   if (typeof location === 'undefined') return null

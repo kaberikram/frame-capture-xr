@@ -51,6 +51,8 @@
       #status { color: var(--ink); }
       #depth { color: var(--glow); font-size: 13px; }
       #depth:empty { display: none; }
+      #camera { color: var(--glow); font-size: 13px; }
+      #camera:empty { display: none; }
       button {
         margin-top: 14px;
         height: 40px;
@@ -79,6 +81,7 @@
       <p id="hint">Pinch the air to frame a moment. Let go and it becomes a photo with depth, one you can peel off and stick anywhere in your room.</p>
       <p id="status">Drag to draw. Drag a corner to peel. Drag a free sticker up onto the wall. Right-drag looks around.</p>
       <p id="depth"></p>
+      <p id="camera" role="status"></p>
       <button id="enter" type="button">Enter passthrough</button>
     </section>
     <script type="module" src="/src/index.ts"></script>
