@@ -12,6 +12,8 @@ export interface StatusInputs {
   phase: Phase
   presenting: boolean
   count: number
+  /** A hand has been in a waiting frame's photo for a moment. */
+  waitingOnHands: boolean
 }
 
 /** One line that says what is happening or what to do next. */
@@ -24,6 +26,7 @@ export function statusLine(s: StatusInputs): string {
   if (s.touch === 'peel') return 'Both hands pull the depth apart'
   if (s.touch === 'grab') return 'The handle moves and tilts the frame'
   if (s.drawing) return 'Release to take the photo'
+  if (s.waitingOnHands) return 'Let your hands fall away from the frame'
   if (last?.depth === 'wait' && !last.flat) return 'Reading depth'
   if (last?.depth === 'model') return `${s.count} captured · depth model`
   if (last?.depth === 'brightness') return `${s.count} captured · brightness depth`
@@ -39,6 +42,8 @@ export class Status {
   readonly hud: Mesh
   private text = ''
   private hudText = ''
+  private flashText = ''
+  private flashUntil = 0
   private readonly canvas = document.createElement('canvas')
   private readonly ctx2d: CanvasRenderingContext2D
 
@@ -57,11 +62,19 @@ export class Status {
     this.hud.visible = false
   }
 
+  /** Show a one-off message for a few seconds over the running status line. */
+  flash(text: string, seconds = 2.8): void {
+    this.flashText = text
+    this.flashUntil = performance.now() / 1000 + seconds
+    this.note(text)
+  }
+
   note(text: string): void {
-    if (text === this.text) return
-    this.text = text
+    const shown = performance.now() / 1000 < this.flashUntil ? this.flashText : text
+    if (shown === this.text) return
+    this.text = shown
     const el = document.getElementById('status')
-    if (el) el.textContent = text
+    if (el) el.textContent = shown
   }
 
   paintHud(): void {

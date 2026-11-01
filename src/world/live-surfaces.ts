@@ -10,6 +10,7 @@ const MAX_SURFACES = 48
  */
 export class LiveSurfaces {
   readonly list: Surface[] = []
+  private warned = false
   private session: XRSession | null = null
   private hitArmed = false
   private hitSource: XRHitTestSource | null = null
@@ -20,15 +21,21 @@ export class LiveSurfaces {
   collect(planes: Iterable<Entity>, meshes: Iterable<Entity>): void {
     this.list.length = 0
     if (!this.ctx.renderer.xr.isPresenting) return
-    for (const entity of planes) {
-      if (this.list.length >= MAX_SURFACES) break
-      this.pushPlane(entity)
+    // A surface that cannot be read is skipped. It must never stop the frame.
+    try {
+      for (const entity of planes) {
+        if (this.list.length >= MAX_SURFACES) break
+        this.pushPlane(entity)
+      }
+      for (const entity of meshes) {
+        if (this.list.length >= MAX_SURFACES) break
+        this.pushMesh(entity)
+      }
+      this.pushHits()
+    } catch (error) {
+      if (!this.warned) console.warn('[frame] room scan', error)
+      this.warned = true
     }
-    for (const entity of meshes) {
-      if (this.list.length >= MAX_SURFACES) break
-      this.pushMesh(entity)
-    }
-    this.pushHits()
   }
 
   /** Ask for hit-test sources once per session. */
@@ -114,8 +121,9 @@ export class LiveSurfaces {
     if (!entity.getValue(XRMesh, 'isBounded3D')) return
     const obj = entity.object3D
     if (!obj) return
-    const min = readVec3(entity.getValue(XRMesh, 'min'))
-    const max = readVec3(entity.getValue(XRMesh, 'max'))
+    // Vec3 fields only read through a vector view; getValue throws on them.
+    const min = readVec3(entity.getVectorView(XRMesh, 'min'))
+    const max = readVec3(entity.getVectorView(XRMesh, 'max'))
     if (!min || !max) return
     obj.updateWorldMatrix(true, false)
     appendBoxFaces(this.list, obj.matrixWorld.elements, min, max)

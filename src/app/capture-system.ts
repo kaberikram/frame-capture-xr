@@ -99,7 +99,7 @@ export class CaptureSystem extends createSystem({
     this.player.head.add(this.status.hud)
 
     this.rig = new CameraRig(ctx, this.deskColor, () => this.overlays())
-    this.shutter = new Shutter(ctx, this.rig, (text) => this.status.note(text))
+    this.shutter = new Shutter(ctx, this.rig, (text) => this.status.flash(text))
     this.stickers = new Stickers(ctx, this.grip, () => this.snap.clear())
     this.sheets = new Sheets(ctx, this.grip)
     const frameGrab = new FrameGrab(this.grip)
@@ -109,6 +109,10 @@ export class CaptureSystem extends createSystem({
     this.pointer = new DeskPointer(ctx, this.grip, this.interaction, this.stickers, frameGrab, this.deskCamera, this.shutter, () => this.shot.blocksDraw)
     this.pointer.attach(document.getElementById('scene-container'))
     this.surfaces = new LiveSurfaces(ctx)
+    // Passthrough shows your real hands; IWSDK's hand models would sit on top of them.
+    const handVisuals = this.input.xr.visualAdapters.hand
+    handVisuals.left.toggleVisual(false)
+    handVisuals.right.toggleVisual(false)
 
     wireLaunch(() => {
       void this.rig.arm()
@@ -138,7 +142,8 @@ export class CaptureSystem extends createSystem({
       this.player.updateWorldMatrix(true, false)
       this.rig.lens.recordHead(this.player.head, this.world.xrFrame?.predictedDisplayTime, now)
       this.rig.watchQuest()
-      this.hands.update()
+      this.hands.update(now)
+      this.shutter.step(now, this.hands)
       this.rig.rearm(now)
       this.surfaces.arm(this.session)
     } else {
@@ -166,6 +171,7 @@ export class CaptureSystem extends createSystem({
         phase: this.phase,
         presenting,
         count: this.captures.length,
+        waitingOnHands: this.shutter.waitingOnHands,
       }),
     )
   }
@@ -189,6 +195,7 @@ export class CaptureSystem extends createSystem({
     this.rig.lens.clear()
     this.surfaces.clear()
     if (!session) {
+      this.shutter.cancelPending()
       this.rig.stop()
       return
     }

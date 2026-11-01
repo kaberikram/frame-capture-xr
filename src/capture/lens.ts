@@ -142,6 +142,11 @@ export class HeadsetLens {
   frameH = 0
 
   private readonly lens = lensModel()
+
+  /** Seconds between a camera frame's exposure and its stamp. */
+  get tau(): number {
+    return this.lens.tau
+  }
   private readonly poses = new Float64Array(POSES * 8)
   private poseHead = -1
   private poseCount = 0

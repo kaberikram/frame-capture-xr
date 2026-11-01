@@ -1,32 +1,55 @@
 import { Vector3 } from '@iwsdk/core'
 import { WORLD_UP, type Ctx } from '../app/context.js'
-import type { Shutter } from '../capture/shutter.js'
+import type { JointSource, Shutter } from '../capture/shutter.js'
 import type { Grip } from '../interaction/grip.js'
 import { routeHit, type Interaction } from '../interaction/router.js'
 import type { Sheets } from '../interaction/sheets.js'
+import { OneEuro3, type Point3 } from './one-euro.js'
+import { PinchTrail } from './pinch-trail.js'
 
 type Side = 'left' | 'right'
 
 const SIDES: readonly Side[] = ['left', 'right']
-/** Thumb-to-index distance, in metres, that starts a pinch. */
-const PINCH_ON = 0.02
-/** Distance that ends it. The gap is hysteresis so a pinch does not flicker. */
-const PINCH_OFF = 0.032
+/** Gap between the thumb and index fingertip surfaces, in metres, that starts a pinch. */
+const GAP_ON = 0.004
+/** Gap that ends it. The difference is hysteresis so a pinch does not flicker. */
+const GAP_OFF = 0.015
+/** Thumb and index tip radii together, when the runtime does not report them. */
+const TIP_RADII = 0.016
+/** How far back a release looks for the moment the fingers were tightest. */
+const REWIND = 0.15
+/** Points sampled back along the forearm from the wrist, metres. */
+const FOREARM = [0.08, 0.16, 0.24] as const
 
 /**
  * Pinches from tracked hands (or a system select). The first pinch either
  * grabs something under it or starts a frame; a second pinch joins as the
  * opposite corner, or fans a curl into depth sheets.
+ *
+ * Pinch points are smoothed with a One Euro filter, the pinch threshold
+ * measures between fingertip surfaces so it suits any hand, and a release uses
+ * where the fingers were tightest so opening them does not drag the corner.
  */
-export class HandInput {
+export class HandInput implements JointSource {
+  /** Fingers met: the soundscape ticks here. */
+  onPinch: ((at: Vector3) => void) | null = null
   private session: XRSession | null = null
+  private now = 0
   private readonly selectHeld = { left: false, right: false }
   private readonly pinchWas = { left: false, right: false }
-  private readonly pinchDist = { left: 0, right: 0 }
+  private readonly tracked = { left: false, right: false }
+  private readonly pinchGap = { left: 1, right: 1 }
+  private readonly filters = { left: new OneEuro3(), right: new OneEuro3() }
+  private readonly trails = { left: new PinchTrail(), right: new PinchTrail() }
   private readonly handA = new Vector3()
   private readonly handB = new Vector3()
   private readonly headPos = new Vector3()
   private readonly aimDir = new Vector3()
+  private readonly rewound = new Vector3()
+  private readonly raw = new Vector3()
+  private readonly smooth: Point3 = { x: 0, y: 0, z: 0 }
+  private readonly wrist = new Vector3()
+  private readonly knuckle = new Vector3()
   private primary: Side | null = null
   private dual = false
   /** After a frame or a touch ends, wait until every pinch opens before reading new ones. */
@@ -59,27 +82,34 @@ export class HandInput {
     session?.addEventListener('selectstart', this.onSelectStart)
     session?.addEventListener('selectend', this.onSelectEnd)
     this.session = session
-    this.selectHeld.left = false
-    this.selectHeld.right = false
-    this.pinchWas.left = false
-    this.pinchWas.right = false
+    for (let i = 0; i < SIDES.length; i++) {
+      const side = SIDES[i]
+      this.selectHeld[side] = false
+      this.pinchWas[side] = false
+      this.filters[side].reset()
+      this.trails[side].clear()
+    }
     this.primary = null
     this.dual = false
     this.waitClear = false
   }
 
-  update(): void {
+  /** `now` is page-clock seconds. */
+  update(now: number): void {
+    this.now = now
     this.ctx.player.head.getWorldPosition(this.headPos)
-    const tracked = { left: this.fillPinch('left'), right: this.fillPinch('right') }
+    this.tracked.left = this.fillPinch('left')
+    this.tracked.right = this.fillPinch('right')
     if (this.waitClear) {
-      const still = SIDES.some((side) => this.isPinching(side, tracked[side]))
+      let still = false
+      for (let i = 0; i < SIDES.length; i++) if (this.isPinching(SIDES[i])) still = true
       if (!still) this.waitClear = false
-      for (let i = 0; i < SIDES.length; i++) this.pinchWas[SIDES[i]] = this.isPinching(SIDES[i], tracked[SIDES[i]])
+      for (let i = 0; i < SIDES.length; i++) this.pinchWas[SIDES[i]] = this.isPinching(SIDES[i])
       return
     }
     for (let i = 0; i < SIDES.length; i++) {
       const side = SIDES[i]
-      const down = this.isPinching(side, tracked[side])
+      const down = this.isPinching(side)
       const was = this.pinchWas[side]
       if (down && !was) this.began(side)
       else if (down && was) this.moved(side)
@@ -95,6 +125,64 @@ export class HandInput {
     this.waitClear = true
   }
 
+  /** How close each hand is to pinching, 0 open to 1 pinched, or -1 when it is not tracked. */
+  readiness(side: Side): number {
+    if (!this.tracked[side]) return -1
+    const gap = this.pinchGap[side]
+    if (gap <= GAP_ON) return 1
+    const t = 1 - (gap - GAP_ON) / 0.05
+    return t < 0 ? 0 : t
+  }
+
+  /** The smoothed pinch point of a hand, valid while `readiness` is not -1. */
+  pinchPoint(side: Side): Vector3 {
+    return this.point(side)
+  }
+
+  isPinched(side: Side): boolean {
+    return this.pinchWas[side]
+  }
+
+  /** World positions of every tracked joint, plus points back along each forearm. */
+  collectJoints(out: Vector3[]): number {
+    const { world, input, player } = this.ctx
+    const frame = world.xrFrame
+    const space = world.xrReferenceSpace
+    if (!frame || !space || !frame.getJointPose) return 0
+    let n = 0
+    for (let s = 0; s < SIDES.length; s++) {
+      const side = SIDES[s]
+      if (!input.xr.isPrimary('hand', side)) continue
+      const hand = input.xr.getPrimaryInputSource(side)?.hand
+      if (!hand) continue
+      let haveWrist = false
+      let haveKnuckle = false
+      for (const joint of hand.values()) {
+        if (n >= out.length) return n
+        const pose = frame.getJointPose(joint, space)
+        if (!pose) continue
+        const p = pose.transform.position
+        const v = out[n++].set(p.x, p.y, p.z).applyMatrix4(player.matrixWorld)
+        if (joint.jointName === 'wrist') {
+          this.wrist.copy(v)
+          haveWrist = true
+        } else if (joint.jointName === 'middle-finger-metacarpal') {
+          this.knuckle.copy(v)
+          haveKnuckle = true
+        }
+      }
+      if (!haveWrist || !haveKnuckle) continue
+      // The forearm continues back from the wrist, away from the knuckles.
+      this.knuckle.sub(this.wrist)
+      if (this.knuckle.lengthSq() < 1e-6) continue
+      this.knuckle.normalize()
+      for (let i = 0; i < FOREARM.length && n < out.length; i++) {
+        out[n++].copy(this.wrist).addScaledVector(this.knuckle, -FOREARM[i])
+      }
+    }
+    return n
+  }
+
   dispose(): void {
     this.bind(null)
   }
@@ -103,33 +191,38 @@ export class HandInput {
     return side === 'left' ? this.handA : this.handB
   }
 
-  /** The pinch point (midway between thumb and index tips) in world space. */
+  /** The smoothed pinch point (midway between thumb and index tips) in world space, and the fingertip gap. */
   private fillPinch(side: Side): boolean {
     const { world, input, player } = this.ctx
     const frame = world.xrFrame
     const space = world.xrReferenceSpace
-    if (!frame || !space || !input.xr.isPrimary('hand', side)) return false
-    const hand = input.xr.getPrimaryInputSource(side)?.hand
-    if (!hand) return false
-    const thumb = hand.get('thumb-tip')
-    const index = hand.get('index-finger-tip')
-    if (!thumb || !index) return false
-    const thumbPose = frame.getJointPose?.(thumb, space)
-    const indexPose = frame.getJointPose?.(index, space)
-    if (!thumbPose || !indexPose) return false
+    const hand = frame && space && input.xr.isPrimary('hand', side) ? input.xr.getPrimaryInputSource(side)?.hand : undefined
+    const thumb = hand?.get('thumb-tip')
+    const index = hand?.get('index-finger-tip')
+    const thumbPose = thumb && space ? frame?.getJointPose?.(thumb, space) : undefined
+    const indexPose = index && space ? frame?.getJointPose?.(index, space) : undefined
+    if (!thumbPose || !indexPose) {
+      this.filters[side].reset()
+      this.trails[side].clear()
+      return false
+    }
     const tp = thumbPose.transform.position
     const ip = indexPose.transform.position
+    this.raw.set((tp.x + ip.x) * 0.5, (tp.y + ip.y) * 0.5, (tp.z + ip.z) * 0.5).applyMatrix4(player.matrixWorld)
+    this.filters[side].filter(this.raw.x, this.raw.y, this.raw.z, this.now, this.smooth)
     const store = this.point(side)
-    store.set((tp.x + ip.x) * 0.5, (tp.y + ip.y) * 0.5, (tp.z + ip.z) * 0.5)
-    store.applyMatrix4(player.matrixWorld)
-    this.pinchDist[side] = Math.hypot(tp.x - ip.x, tp.y - ip.y, tp.z - ip.z)
+    store.set(this.smooth.x, this.smooth.y, this.smooth.z)
+    const radii = (thumbPose.radius ?? 0) + (indexPose.radius ?? 0)
+    const gap = Math.hypot(tp.x - ip.x, tp.y - ip.y, tp.z - ip.z) - (radii > 0.004 ? radii : TIP_RADII)
+    this.pinchGap[side] = gap
+    this.trails[side].push(this.now, store.x, store.y, store.z, gap)
     return true
   }
 
-  private isPinching(side: Side, tracked: boolean): boolean {
-    if (!tracked) return this.selectHeld[side] && this.pinchWas[side]
+  private isPinching(side: Side): boolean {
+    if (!this.tracked[side]) return this.selectHeld[side] && this.pinchWas[side]
     if (this.selectHeld[side]) return true
-    return this.pinchDist[side] < (this.pinchWas[side] ? PINCH_OFF : PINCH_ON)
+    return this.pinchGap[side] < (this.pinchWas[side] ? GAP_OFF : GAP_ON)
   }
 
   private otherPinching(side: Side): boolean {
@@ -141,6 +234,7 @@ export class HandInput {
     const at = this.point(side)
     const grip = this.grip
     const gesture = this.ctx.gesture
+    this.onPinch?.(at)
     if (grip.touch === 'curl' && grip.held && side !== this.primary && grip.held.curl < 0.18) {
       this.sheets.begin(grip.held, at)
       return
@@ -184,13 +278,18 @@ export class HandInput {
   }
 
   private ended(side: Side): void {
+    // Opening the fingers moved the point; go back to where they were tightest.
+    const rewound = this.trails[side].rewind(this.now, REWIND, this.rewound)
     if (this.grip.touch !== 'none') {
       if (side !== this.primary) return
+      if (rewound) this.interaction.move(this.rewound)
       this.interaction.end()
       return
     }
-    if (!this.ctx.gesture.drawing) return
+    const gesture = this.ctx.gesture
+    if (!gesture.drawing) return
     if (side !== this.primary && !this.dual) return
+    if (rewound) gesture.move(this.dual && side !== this.primary ? 'b' : 'a', this.rewound, this.headPos)
     this.primary = null
     this.dual = false
     this.waitClear = true

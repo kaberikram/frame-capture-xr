@@ -104,6 +104,18 @@ export function canPeel(held: Held): boolean {
   return (held.mat.uniforms.uRelief.value as number) > 0.55
 }
 
+/** Throw away a frame that never got its photo, and everything in it. */
+export function disposeHeld(held: Held): void {
+  dropFrame(held)
+  held.photo.removeFromParent()
+  held.photo.geometry.dispose()
+  const photo = held.mat.uniforms.uPhoto.value as { dispose(): void } | null
+  const depth = held.mat.uniforms.uDepth.value as { dispose(): void } | null
+  photo?.dispose()
+  depth?.dispose()
+  held.mat.dispose()
+}
+
 /** Throw away the empty frame: border, handle, and sheets. The photo has already moved to the root. */
 export function dropFrame(held: Held): void {
   held.peel.geometry.dispose()
