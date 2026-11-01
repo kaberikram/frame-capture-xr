@@ -3,7 +3,8 @@ import { MAX_CAPTURES, type Ctx } from '../app/context.js'
 import { applyPhoto } from '../look/relief.js'
 import type { CameraRig } from './camera-rig.js'
 import { insideQuad, quadMargin } from './clearance.js'
-import { cropQuad, cropSize, type Quad } from './crop.js'
+import { cropSize, type Quad } from './crop.js'
+import { develop } from './darkroom.js'
 import { developModelDepth } from './develop.js'
 import { disposeHeld, makeHeld, type Held } from './held.js'
 import { projectPixel } from './lens.js'
@@ -137,30 +138,58 @@ export class Shutter {
     this.pending.length = 0
   }
 
+  /**
+   * Take the picture now and develop it off the render thread: the darkroom
+   * worker crops the frame's quad and makes brightness depth, then the photo
+   * appears and the model is asked for real depth.
+   */
   private expose(held: Held): void {
-    const { renderer } = this.ctx
-    const hw = held.width * 0.5
-    const hh = held.height * 0.5
-    const quad = this.rig.projectGroup(held.group, hw, hh)
-    const raster = this.rig.grabRaster()
-    if (!quad || !raster) {
-      this.note('The frame is outside the camera')
-      console.info('[frame] capture missed the camera')
+    const { captures, renderer } = this.ctx
+    const quad = this.rig.projectGroup(held.group, held.width * 0.5, held.height * 0.5)
+    const picture = quad ? this.rig.takePicture(quad) : null
+    if (!quad || !picture) {
+      this.missed(held)
       return
     }
     const size = cropSize(held.width / held.height, CROP_LONG)
-    const cropped = cropQuad(raster, quad, size.width, size.height)
-    if (!cropped) {
-      this.note('The frame is outside the camera')
-      return
-    }
-    held.raster = cropped
-    applyPhoto(held.mat, cropped)
-    held.photo.visible = true
-    renderer.initTexture(held.mat.uniforms.uPhoto.value)
-    console.info(`[frame] capture ${held.width.toFixed(2)}x${held.height.toFixed(2)}m`)
-    if (held.flat) return
-    developModelDepth(held, cropped)
+    const started = performance.now()
+    let pictured = started
+    void picture
+      .then(({ source, quad: framed }) => {
+        pictured = performance.now()
+        return develop(source, framed, size.width, size.height)
+      })
+      .then((developed) => {
+        if (!captures.includes(held)) return
+        if (!developed) {
+          this.missed(held)
+          return
+        }
+        held.raster = developed.photo
+        held.preview = developed.preview
+        held.age = 0
+        applyPhoto(held.mat, developed.photo)
+        held.photo.visible = true
+        renderer.initTexture(held.mat.uniforms.uPhoto.value)
+        const done = performance.now()
+        console.info(
+          `[frame] capture ${held.width.toFixed(2)}x${held.height.toFixed(2)}m ` +
+            `picture ${Math.round(pictured - started)} ms, darkroom ${Math.round(done - pictured)} ms`,
+        )
+        if (held.flat) return
+        developModelDepth(held, developed.photo)
+      })
+      .catch((error: unknown) => {
+        console.warn('[frame] capture', error)
+        if (captures.includes(held)) this.missed(held)
+      })
+  }
+
+  /** The frame was not in the camera's view: say so and take the empty frame away. */
+  private missed(held: Held): void {
+    this.note('The frame is outside the camera')
+    console.info('[frame] capture missed the camera')
+    this.discard(held)
   }
 
   /** Is any hand joint (or the forearm behind it) inside the patch of camera image this frame covers? */

@@ -5,6 +5,11 @@
  * The dynamic import stays inside the worker so the model never joins the XR bundle.
  */
 
+import { detrendDepth, fitDepth, settleDepth, softenField } from './brightness-depth.js'
+
+/** Long side of the depth map sent back. The relief mesh has ~72 segments; more only costs time. */
+const DEPTH_LONG = 256
+
 interface DepthImage {
   data: Uint8Array | Uint8ClampedArray
   width: number
@@ -145,7 +150,12 @@ async function estimate(id: number, width: number, height: number, data: Uint8Cl
     if (!depth) throw new Error('model returned no depth map')
     const channels = depth.channels || 1
     const gray = stretch(depth.data, channels, depth.width * depth.height)
-    post({ type: 'depth', id, width: depth.width, height: depth.height, data: gray }, [gray.buffer])
+    // Everything up to the texture happens here, off the render thread.
+    const field = fitDepth({ width: depth.width, height: depth.height, data: gray }, DEPTH_LONG)
+    detrendDepth(field)
+    settleDepth(field)
+    softenField(field, 2)
+    post({ type: 'depth', id, width: field.width, height: field.height, data: field.data }, [field.data.buffer])
   } catch (err) {
     post({ type: 'error', id, message: err instanceof Error ? err.message : 'depth failed' })
   }

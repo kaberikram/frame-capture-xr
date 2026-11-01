@@ -19,6 +19,7 @@ import type { Ctx } from '../app/context.js'
 import { WEBCAM_REQUESTED } from '../app/experience.js'
 import { CameraFeed, rasterFromPixels } from './camera-feed.js'
 import type { Quad, Raster } from './crop.js'
+import { snapshot } from './darkroom.js'
 import { HeadsetLens, cameraMount, projectPixel } from './lens.js'
 
 export interface Clip {
@@ -177,9 +178,22 @@ export class CameraRig {
     return { clip: this.viewClip, width: size.width, height: size.height }
   }
 
-  grabRaster(): Raster | null {
-    if (this.ctx.renderer.xr.isPresenting || this.useWebcam) return this.feed.grab()
-    return this.grabRoom()
+  /**
+   * The camera image under a quad, taken now. A live camera hands back an
+   * ImageBitmap of just that region, which the darkroom worker reads, so its
+   * pixels never touch this thread. The desk's stand-in room is a render read
+   * back as pixels.
+   */
+  takePicture(quad: Quad): Promise<{ source: { bitmap: ImageBitmap } | { raster: Raster }; quad: Quad }> | null {
+    if (this.ctx.renderer.xr.isPresenting || this.useWebcam) {
+      const video = this.feed.video
+      const shot = video ? snapshot(video, quad) : null
+      if (shot) return shot.then(({ bitmap, quad: shifted }) => ({ source: { bitmap }, quad: shifted }))
+      const raster = this.feed.grab()
+      return raster ? Promise.resolve({ source: { raster }, quad }) : null
+    }
+    const raster = this.grabRoom()
+    return raster ? Promise.resolve({ source: { raster }, quad }) : null
   }
 
   dispose(): void {

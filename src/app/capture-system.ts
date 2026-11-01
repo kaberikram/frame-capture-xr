@@ -1,5 +1,6 @@
 import { Color, Group, Matrix4, XRMesh, XRPlane, createSystem, type BufferAttribute, type Object3D } from '@iwsdk/core'
 import { CameraRig } from '../capture/camera-rig.js'
+import { prepareDarkroom } from '../capture/darkroom.js'
 import { prepareDepthModel } from '../capture/depth-model.js'
 import { stepDevelop } from '../capture/develop.js'
 import { heldLook, type Held } from '../capture/held.js'
@@ -121,6 +122,7 @@ export class CaptureSystem extends createSystem({
       }, true)
     })
     publishApi()
+    prepareDarkroom()
     if (WEBCAM_REQUESTED) this.rig.openWebcam()
     void prepareDepthModel().catch((error: unknown) => {
       console.warn('[frame] depth model', error)
@@ -154,8 +156,10 @@ export class CaptureSystem extends createSystem({
       this.shot.update(dt)
     }
     this.syncDrag()
-    this.surfaces.collect(this.queries.planes.entities, this.queries.meshes.entities)
-    this.snap.update(this.drivenSticker(), presenting ? this.surfaces.list : DESK_SURFACES)
+    // Surfaces only matter while a sticker is being carried toward one.
+    const driven = this.drivenSticker()
+    if (driven) this.surfaces.collect(this.queries.planes.entities, this.queries.meshes.entities)
+    this.snap.update(driven, presenting ? this.surfaces.list : DESK_SURFACES)
     this.interaction.contact()
     this.animate(dt)
     this.status.hud.visible = presenting

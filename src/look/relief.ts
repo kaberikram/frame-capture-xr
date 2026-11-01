@@ -11,7 +11,7 @@ import {
   Vector2,
   type Texture,
 } from '@iwsdk/core'
-import { softenField, type DepthField } from '../capture/brightness-depth.js'
+import type { DepthField } from '../capture/brightness-depth.js'
 import type { Raster } from '../capture/crop.js'
 
 /**
@@ -51,6 +51,9 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
     uniforms: {
       uPhoto: { value: null as Texture | null },
       uDepth: { value: depth },
+      /** The depth being faded out while a new map fades in. */
+      uDepthPrev: { value: depth },
+      uDepthMix: { value: 1 },
       uTexel: { value: new Vector2(1, 1) },
       uRelief: { value: 0 },
       uHasDepth: { value: 0 },
@@ -68,6 +71,8 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
     },
     vertexShader: /* glsl */ `
       uniform sampler2D uDepth;
+      uniform sampler2D uDepthPrev;
+      uniform float uDepthMix;
       uniform vec2 uTexel;
       uniform float uRelief;
       uniform float uHasDepth;
@@ -84,7 +89,10 @@ export function reliefMaterial(contentsFn = PHOTO_CONTENTS): ShaderMaterial {
       varying vec2 vUv;
       varying float vKeep;
       varying float vSide;
-      float raw(vec2 q) { return texture(uDepth, clamp(q, vec2(0.002), vec2(0.998))).r; }
+      float raw(vec2 q) {
+        vec2 c = clamp(q, vec2(0.002), vec2(0.998));
+        return mix(texture(uDepthPrev, c).r, texture(uDepth, c).r, uDepthMix);
+      }
       float depthAt(vec2 q) {
         vec2 r = uTexel * 1.5;
         return (raw(q) * 2.0
@@ -205,8 +213,12 @@ export function applyPhoto(mat: ShaderMaterial, raster: Raster): CanvasTexture {
   return tex
 }
 
-export function applyDepth(mat: ShaderMaterial, field: DepthField): void {
-  softenField(field, 2)
+/**
+ * Upload a depth map (already softened by the worker that made it). With
+ * `crossfade` the old map stays bound as uDepthPrev and setDepthMix fades
+ * between them, so a better depth reshapes the relief instead of snapping.
+ */
+export function applyDepth(mat: ShaderMaterial, field: DepthField, crossfade = false): void {
   const rgba = new Uint8Array(field.width * field.height * 4)
   for (let i = 0; i < field.data.length; i++) {
     const v = field.data[i]
@@ -223,11 +235,34 @@ export function applyDepth(mat: ShaderMaterial, field: DepthField): void {
   tex.generateMipmaps = false
   tex.flipY = true
   tex.needsUpdate = true
-  const prev = mat.uniforms.uDepth.value as Texture
-  if (prev !== tex) prev.dispose()
-  mat.uniforms.uDepth.value = tex
-  ;(mat.uniforms.uTexel.value as Vector2).set(1 / field.width, 1 / field.height)
-  mat.uniforms.uHasDepth.value = 1
+  const u = mat.uniforms
+  const current = u.uDepth.value as Texture
+  const prev = u.uDepthPrev.value as Texture
+  if (crossfade && u.uHasDepth.value > 0.5) {
+    if (prev !== current) prev.dispose()
+    u.uDepthPrev.value = current
+    u.uDepthMix.value = 0
+  } else {
+    if (prev !== current) prev.dispose()
+    current.dispose()
+    u.uDepthPrev.value = tex
+    u.uDepthMix.value = 1
+  }
+  u.uDepth.value = tex
+  ;(u.uTexel.value as Vector2).set(1 / field.width, 1 / field.height)
+  u.uHasDepth.value = 1
+}
+
+/** 0 shows the previous depth, 1 the newest. At 1 the previous map is released. */
+export function setDepthMix(mat: ShaderMaterial, mix: number): void {
+  const u = mat.uniforms
+  u.uDepthMix.value = mix
+  if (mix < 1) return
+  const prev = u.uDepthPrev.value as Texture
+  const current = u.uDepth.value as Texture
+  if (prev === current) return
+  prev.dispose()
+  u.uDepthPrev.value = current
 }
 
 export function setRelief(mat: ShaderMaterial, amount: number): void {

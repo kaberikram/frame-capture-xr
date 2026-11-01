@@ -53,6 +53,10 @@ export class Sheets {
     const mat = held.mat
     const sheets = held.mode === 'sheets' && !held.flat && !held.frameGone
     if (held.frameGone) return sheets
+    // Closed sheets are hidden. Only touch the 32 materials while they are open or closing.
+    const open = sheets && held.spread > 0.02
+    if (!open && !held.sheetsOpen) return sheets
+    held.sheetsOpen = open
     const photo = mat.uniforms.uPhoto.value as Texture | null
     const depth = mat.uniforms.uDepth.value as Texture | null
     const texel = mat.uniforms.uTexel.value as Vector2

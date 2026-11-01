@@ -4,6 +4,7 @@ import { makeHandle, placeHandle } from '../interaction/handle.js'
 import { makePeel, type PeelRig } from '../interaction/peel.js'
 import { makeBorder, writeBorder } from '../look/frame-border.js'
 import { applyLook, bindMesh, reliefGeometry, reliefMaterial, type ReliefLook } from '../look/relief.js'
+import type { DepthField } from './brightness-depth.js'
 import type { Raster } from './crop.js'
 
 export type DepthKind = 'wait' | 'brightness' | 'model'
@@ -16,8 +17,21 @@ export interface Held {
   photo: Mesh
   mat: ShaderMaterial
   raster: Raster | null
+  /** Brightness depth from the darkroom, shown while the model works. */
+  preview: DepthField | null
+  /** The model has been asked and has not answered or failed yet. */
+  modelPending: boolean
+  /** 0..1 progress through the current bloom, without the overshoot. Gates read this. */
   pop: number
   popping: boolean
+  /** Relief amount the current bloom starts from and heads to. */
+  reliefFrom: number
+  reliefTo: number
+  bloomT: number
+  /** 0..1 crossfade from the previous depth map to the newest. */
+  depthMix: number
+  /** The depth sheets were laid out open last frame. */
+  sheetsOpen: boolean
   flat: boolean
   age: number
   depth: DepthKind
@@ -78,7 +92,9 @@ export function makeHeld(look: Look, halfW: number, halfH: number, holdFlat: boo
   placeHandle(handle, halfH, look.strip)
   group.add(handle)
   return {
-    group, photo, mat, raster: null, pop: 0, popping: false, flat: holdFlat, age: 0, depth: 'wait', token,
+    group, photo, mat, raster: null, preview: null, modelPending: false, pop: 0, popping: false,
+    reliefFrom: 0, reliefTo: 0, bloomT: 0, depthMix: 1, sheetsOpen: false,
+    flat: holdFlat, age: 0, depth: 'wait', token,
     width, height, peel, handle, spread: 0, spreadV: 0, holding: false,
     mode: 'idle', curl: 0, curlV: 0, axisX: 1, axisY: 0, cornerX: width * 0.5, cornerY: height * 0.5,
     frameGone: false, squishT: 1, shadow: null,
@@ -111,8 +127,10 @@ export function disposeHeld(held: Held): void {
   held.photo.geometry.dispose()
   const photo = held.mat.uniforms.uPhoto.value as { dispose(): void } | null
   const depth = held.mat.uniforms.uDepth.value as { dispose(): void } | null
+  const prev = held.mat.uniforms.uDepthPrev.value as { dispose(): void } | null
   photo?.dispose()
   depth?.dispose()
+  if (prev !== depth) prev?.dispose()
   held.mat.dispose()
 }
 

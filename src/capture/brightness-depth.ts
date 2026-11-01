@@ -35,25 +35,66 @@ export function brightnessDepth(raster: Raster, longSide = 160): DepthField {
   return { width, height, data: gray }
 }
 
+/**
+ * Minimum over a (2r+1)² square, clipped at the edges. A square window is
+ * separable: the minimum of row minimums is the same number, at a fraction of the work.
+ */
 function erode(src: Uint8Array, width: number, height: number, radius: number): void {
-  const copy = new Uint8Array(src)
+  const rows = new Uint8Array(src.length)
   for (let y = 0; y < height; y++) {
+    const row = y * width
     for (let x = 0; x < width; x++) {
+      let lo = 255
+      const x0 = Math.max(0, x - radius)
+      const x1 = Math.min(width - 1, x + radius)
+      for (let xx = x0; xx <= x1; xx++) {
+        const v = src[row + xx]
+        if (v < lo) lo = v
+      }
+      rows[row + x] = lo
+    }
+  }
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) {
       let lo = 255
       const y0 = Math.max(0, y - radius)
       const y1 = Math.min(height - 1, y + radius)
-      const x0 = Math.max(0, x - radius)
-      const x1 = Math.min(width - 1, x + radius)
       for (let yy = y0; yy <= y1; yy++) {
-        const row = yy * width
-        for (let xx = x0; xx <= x1; xx++) {
-          const v = copy[row + xx]
-          if (v < lo) lo = v
-        }
+        const v = rows[yy * width + x]
+        if (v < lo) lo = v
       }
       src[y * width + x] = lo
     }
   }
+}
+
+/**
+ * Shrink a depth map so its long side is at most `longSide`, averaging the
+ * pixels each output pixel covers. The relief mesh has ~72 segments, so a
+ * full-resolution map only costs time.
+ */
+export function fitDepth(field: DepthField, longSide: number): DepthField {
+  const { width, height, data } = field
+  const scale = longSide / Math.max(width, height)
+  if (scale >= 1) return field
+  const w = Math.max(8, Math.round(width * scale))
+  const h = Math.max(8, Math.round(height * scale))
+  const out = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    const sy0 = Math.floor((y * height) / h)
+    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * height) / h))
+    for (let x = 0; x < w; x++) {
+      const sx0 = Math.floor((x * width) / w)
+      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * width) / w))
+      let sum = 0
+      for (let yy = sy0; yy < sy1; yy++) {
+        const row = yy * width
+        for (let xx = sx0; xx < sx1; xx++) sum += data[row + xx]
+      }
+      out[y * w + x] = Math.round(sum / ((sy1 - sy0) * (sx1 - sx0)))
+    }
+  }
+  return { width: w, height: h, data: out }
 }
 
 /**
@@ -121,24 +162,30 @@ export function softenField(field: DepthField, radius = 2): void {
   blur(field.data, field.width, field.height, radius)
 }
 
+/**
+ * Mean over a (2r+1)² square, clipped at the edges. Also separable: the mean of
+ * row means over a clipped rectangle equals the mean of the rectangle.
+ */
 function blur(src: Uint8Array, width: number, height: number, radius: number): void {
-  const copy = new Uint8Array(src)
+  const rows = new Float32Array(src.length)
+  const prefix = new Float64Array(Math.max(width, height) + 1)
   for (let y = 0; y < height; y++) {
+    const row = y * width
+    prefix[0] = 0
+    for (let x = 0; x < width; x++) prefix[x + 1] = prefix[x] + src[row + x]
     for (let x = 0; x < width; x++) {
-      let sum = 0
-      let n = 0
-      const y0 = Math.max(0, y - radius)
-      const y1 = Math.min(height - 1, y + radius)
       const x0 = Math.max(0, x - radius)
       const x1 = Math.min(width - 1, x + radius)
-      for (let yy = y0; yy <= y1; yy++) {
-        const row = yy * width
-        for (let xx = x0; xx <= x1; xx++) {
-          sum += copy[row + xx]
-          n++
-        }
-      }
-      src[y * width + x] = Math.round(sum / n)
+      rows[row + x] = (prefix[x1 + 1] - prefix[x0]) / (x1 - x0 + 1)
+    }
+  }
+  for (let x = 0; x < width; x++) {
+    prefix[0] = 0
+    for (let y = 0; y < height; y++) prefix[y + 1] = prefix[y] + rows[y * width + x]
+    for (let y = 0; y < height; y++) {
+      const y0 = Math.max(0, y - radius)
+      const y1 = Math.min(height - 1, y + radius)
+      src[y * width + x] = Math.round((prefix[y1 + 1] - prefix[y0]) / (y1 - y0 + 1))
     }
   }
 }
