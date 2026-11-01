@@ -10,6 +10,15 @@ export const WEBCAM_REQUESTED = typeof location !== 'undefined' && new URLSearch
 /** `?hands=1` shows IWSDK's tracked hand models over the passthrough hands. */
 export const HAND_MODELS = typeof location !== 'undefined' && new URLSearchParams(location.search).get('hands') === '1'
 
+/**
+ * `?peel=1.3` makes a sticker take 30% more pull to peel and pop free, `?peel=0.8`
+ * less. 1 by default, kept within 0.5–2.
+ */
+export const PEEL_SCALE = (() => {
+  const value = typeof location === 'undefined' ? NaN : Number(new URLSearchParams(location.search).get('peel'))
+  return Number.isFinite(value) && value > 0 ? Math.min(2, Math.max(0.5, value)) : 1
+})()
+
 /** `?ui=0` hides the launch card. `?at=draw|photo|side` and `?shot=1` drive the desk demo. */
 export function queryFlag(name: string): string | null {
   if (typeof location === 'undefined') return null

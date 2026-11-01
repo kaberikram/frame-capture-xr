@@ -1,5 +1,6 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from '@iwsdk/core'
 import { LIFT_CURL, REDUCE_MOTION, STICK_GAP, type Ctx } from '../app/context.js'
+import { PEEL_SCALE } from '../app/experience.js'
 import { canPeel, dropFrame, setMode, type Held } from '../capture/held.js'
 import { makeContactRing, makeContactShadow } from '../look/contact.js'
 import { motesEffect } from '../look/effects.js'
@@ -10,7 +11,7 @@ import { clamp, easeOut } from '../util/math.js'
 import { stickBasis, type Snap } from '../world/surfaces.js'
 import type { Grip } from './grip.js'
 import { hitPlane } from './handle.js'
-import { axisExtent, curlFromPull, foldForPeel, nearestCorner, springStep, type CornerGrab } from './peel-math.js'
+import { axisExtent, curlFromPull, foldForPeel, nearestCorner, peelsFree, springStep, type CornerGrab } from './peel-math.js'
 
 /**
  * The sticker story: curl a corner off the frame, come free, float in the
@@ -46,7 +47,11 @@ export class Stickers {
     held.axisY = corner.axisY
   }
 
-  beginCurl(held: Held, at: Vector3): void {
+  /**
+   * `at` is on the frame and picks the corner. `from` is where the pinch really
+   * is, which the pull is measured from; a hand pinches a little in front of the frame.
+   */
+  beginCurl(held: Held, at: Vector3, from: Vector3 = at): void {
     if (!canPeel(held)) return
     const grip = this.grip
     const local = grip.local.copy(at)
@@ -58,7 +63,7 @@ export class Stickers {
     grip.held = held
     held.holding = true
     held.curlV = 0
-    grip.grabPinch.copy(at)
+    grip.grabPinch.copy(from)
     grip.frameAxes(held)
     this.aimInward(held)
   }
@@ -70,10 +75,11 @@ export class Stickers {
       this.moveSticker(at)
       return
     }
-    const peeled = curlFromPull(this.pullAmount(at))
+    const pull = this.pullAmount(at) / PEEL_SCALE
+    const peeled = curlFromPull(pull, this.ctx.look.detach)
     held.curl = held.frameGone && peeled < LIFT_CURL ? LIFT_CURL : peeled
     held.curlV = 0
-    if (held.curl >= this.ctx.look.detach) {
+    if (peelsFree(pull)) {
       if (held.frameGone) this.releaseFromWall(held, at)
       else this.detach(held, at)
       grip.touch = 'sticker'
@@ -163,8 +169,8 @@ export class Stickers {
     this.detach(held, grip.pickAt)
   }
 
-  /** Pinch the lifted corner and peel a stuck sticker back into the hand. */
-  beginUnstick(held: Held, at: Vector3): void {
+  /** Pinch the lifted corner and peel a stuck sticker back into the hand. `from` is as in {@link beginCurl}. */
+  beginUnstick(held: Held, at: Vector3, from: Vector3 = at): void {
     if (held.mode !== 'stuck') return
     const grip = this.grip
     setMode(held, 'curl')
@@ -172,7 +178,7 @@ export class Stickers {
     held.curlV = 0
     grip.touch = 'curl'
     grip.held = held
-    grip.grabPinch.copy(at)
+    grip.grabPinch.copy(from)
     grip.frameAxes(held)
     this.aimInward(held)
   }
@@ -298,13 +304,13 @@ export class Stickers {
     })
   }
 
-  /** A pull counts toward the head and toward the photo's center. */
+  /** How far, in metres, the pinch has moved toward the head and toward the photo's center. */
   private pullAmount(at: Vector3): number {
     const grip = this.grip
     grip.local.copy(at).sub(grip.grabPinch)
     const toward = Math.max(0, grip.local.dot(grip.forward))
     const inward = Math.max(0, grip.local.dot(grip.inward))
-    return toward + inward
+    return Math.hypot(toward, inward)
   }
 
   private aimInward(held: Held): void {
