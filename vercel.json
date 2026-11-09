@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    { "source": "/clean", "destination": "/index.html" },
+    { "source": "/clean/", "destination": "/index.html" },
+    { "source": "/clean/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/clean/scenes/:path*", "destination": "/scenes/:path*" }
+  ]
+}

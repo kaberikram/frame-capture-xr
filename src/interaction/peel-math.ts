@@ -19,17 +19,7 @@ export const CORNER_REACH = 0.06
 const HANDLE_W = 0.062
 const HANDLE_H = 0.012
 
-/** How far the mode mark sits above the top edge, clear of a corner peel on a small frame. */
-const GEM_LIFT = 0.056
-/** Pinch radius around the mode mark, in metres. */
-const GEM_REACH = 0.028
-
-export type FrameHit = 'handle' | 'corner' | 'photo' | 'gem' | 'miss'
-
-/** Local point of the mode mark above a frame. */
-export function gemPoint(halfH: number, strip: number): { x: number; y: number } {
-  return { x: 0, y: halfH + strip + GEM_LIFT }
-}
+export type FrameHit = 'handle' | 'corner' | 'photo' | 'miss'
 
 export interface CornerGrab {
   /** 0 top-right, then counter-clockwise. */
@@ -47,10 +37,6 @@ export function classifyHit(x: number, y: number, halfW: number, halfH: number, 
   const hy = HANDLE_H * 1.6
   const handleY = -halfH - strip - HANDLE_H * 0.35
   if (Math.abs(x) <= hx && Math.abs(y - handleY) <= hy) return 'handle'
-  const gem = gemPoint(halfH, strip)
-  const gdx = x - gem.x
-  const gdy = y - gem.y
-  if (gdx * gdx + gdy * gdy <= GEM_REACH * GEM_REACH) return 'gem'
   if (nearestCorner(x, y, halfW, halfH)) return 'corner'
   if (Math.abs(x) <= halfW && Math.abs(y) <= halfH) return 'photo'
   return 'miss'

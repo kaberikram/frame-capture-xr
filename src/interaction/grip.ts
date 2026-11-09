@@ -2,7 +2,7 @@ import { Matrix4, Quaternion, Vector3, type Object3D } from '@iwsdk/core'
 import { DRAW_DISTANCE, type Ctx } from '../app/context.js'
 import type { Held } from '../capture/held.js'
 
-export type Touch = 'none' | 'peel' | 'grab' | 'curl' | 'sticker' | 'time'
+export type Touch = 'none' | 'peel' | 'grab' | 'curl' | 'sticker'
 
 /**
  * What the hand (or mouse) is holding and the frame it pulls against. One

@@ -1,4 +1,4 @@
-import { PREVIEW_FORCED, queryFlag } from '../app/experience.js'
+import { CLEAN, PREVIEW_FORCED, queryFlag } from '../app/experience.js'
 import type { Held } from '../capture/held.js'
 import type { Phase } from '../debug/api.js'
 import type { Touch } from '../interaction/grip.js'
@@ -28,7 +28,6 @@ export function statusLine(s: StatusInputs): string {
   if (last?.mode === 'stuck') return 'Pinch the lifted corner to peel it off'
   if (s.touch === 'peel') return 'Both hands pull the depth apart'
   if (s.touch === 'grab') return 'The handle moves and tilts the frame'
-  if (s.touch === 'time') return 'Slide sideways to change the strength. A tap changes the mode'
   if (s.drawing) return 'Release to take the photo'
   if (s.waitingOnHands) return 'Let your hands fall away from the frame'
   if (last?.depth === 'wait' && !last.flat) return 'Reading depth'
@@ -38,8 +37,8 @@ export function statusLine(s: StatusInputs): string {
   if (s.presenting && s.camera) return s.camera
   if (s.phase === 'photo') return 'Photo in the frame'
   return s.presenting
-    ? `${s.warp} inside the frame. Pinch the mark above it to change time, or a corner to peel.`
-    : 'Drag to draw. Drag a corner to peel. Keys 1–5 change the time inside the frame, [ and ] the strength. Right-drag looks around.'
+    ? `${s.warp} inside the frame. Turn a palm toward you, or flick a hand through it. Pinch a corner to peel.`
+    : 'Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame. Right-drag looks around.'
 }
 
 /** The launch card's status line on the page. In a headset the captions carry the words. */
@@ -81,17 +80,18 @@ export function wireLaunch(onEnter: () => void): void {
   const hint = document.getElementById('hint')
   const card = document.getElementById('launch')
   if (queryFlag('ui') === '0' && card) card.hidden = true
-  if (PREVIEW_FORCED && hint) hint.textContent = 'Preview is on. Drag in the view. Right-drag orbits.'
+  if (CLEAN && enter) enter.textContent = 'Enter'
+  if (PREVIEW_FORCED && hint && !CLEAN) hint.textContent = 'Preview is on. Drag in the view. Right-drag orbits.'
   const xr = navigator.xr
   if (!enter) return
   enter.disabled = true
   enter.addEventListener('click', onEnter)
   if (!xr) {
-    if (hint && !PREVIEW_FORCED) hint.textContent = 'Open this page in the Meta Quest browser for passthrough.'
+    if (hint && !PREVIEW_FORCED && !CLEAN) hint.textContent = 'Open this page in the Meta Quest browser for passthrough.'
     return
   }
   void xr.isSessionSupported('immersive-ar').then((ok) => {
     enter.disabled = !ok
-    if (!ok && hint && !PREVIEW_FORCED) hint.textContent = 'Open this page in the Meta Quest browser for passthrough.'
+    if (!ok && hint && !PREVIEW_FORCED && !CLEAN) hint.textContent = 'Open this page in the Meta Quest browser for passthrough.'
   })
 }

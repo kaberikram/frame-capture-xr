@@ -1,11 +1,7 @@
 /**
- * These two stay local so the mode math can run under `node --experimental-strip-types`
- * without pulling the app graph in. They match `clamp` and `queryFlag`.
+ * Stays local so the mode math can run under `node --experimental-strip-types`
+ * without pulling the app graph in. It matches `queryFlag`.
  */
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v
-}
-
 function queryFlag(name: string): string | null {
   if (typeof location === 'undefined') return null
   return new URLSearchParams(location.search).get(name)
@@ -14,8 +10,9 @@ function queryFlag(name: string): string | null {
 /**
  * How the glass inside a frame treats the recent camera frames.
  * `live` is the camera now, so a photo is the ordinary picture.
+ * Each effect always runs at full strength.
  */
-export const WARP_MODES = ['slow', 'echo', 'slit', 'ripple', 'live'] as const
+export const WARP_MODES = ['echo', 'slit', 'ripple', 'live'] as const
 export type WarpMode = (typeof WARP_MODES)[number]
 
 /** Slots in the ring. The atlas is a square grid of this many cells. */
@@ -26,13 +23,13 @@ export const TIME_COLS = 4
 export const TIME_CELL = 320
 
 export function isWarpMode(value: string | null): value is WarpMode {
-  return value === 'slow' || value === 'echo' || value === 'slit' || value === 'ripple' || value === 'live'
+  if (!value) return false
+  for (let i = 0; i < WARP_MODES.length; i++) if (WARP_MODES[i] === value) return true
+  return false
 }
 
 export function warpName(mode: WarpMode): string {
   switch (mode) {
-    case 'slow':
-      return 'Slow motion'
     case 'echo':
       return 'Echo'
     case 'slit':
@@ -50,16 +47,14 @@ export function warpName(mode: WarpMode): string {
 
 export function warpIndex(mode: WarpMode): number {
   switch (mode) {
-    case 'slow':
-      return 0
     case 'echo':
-      return 1
+      return 0
     case 'slit':
-      return 2
+      return 1
     case 'ripple':
-      return 3
+      return 2
     case 'live':
-      return 4
+      return 3
     default: {
       const never: never = mode
       return never
@@ -69,8 +64,6 @@ export function warpIndex(mode: WarpMode): number {
 
 export function nextWarp(mode: WarpMode): WarpMode {
   switch (mode) {
-    case 'slow':
-      return 'echo'
     case 'echo':
       return 'slit'
     case 'slit':
@@ -78,7 +71,7 @@ export function nextWarp(mode: WarpMode): WarpMode {
     case 'ripple':
       return 'live'
     case 'live':
-      return 'slow'
+      return 'echo'
     default: {
       const never: never = mode
       return never
@@ -86,18 +79,9 @@ export function nextWarp(mode: WarpMode): WarpMode {
   }
 }
 
-/** How many slots back from the newest the effect may reach. */
-export function warpReach(intensity: number, count: number): number {
-  const span = Math.max(0, count - 1)
-  return (0.3 + 0.7 * clamp(intensity, 0, 1)) * span
-}
-
-/**
- * Fraction of real time the slow playback moves through the ring.
- * 0.5 is a gentle lag; 0.12 stretches the buffered moment out.
- */
-export function slowPlayback(intensity: number): number {
-  return 0.5 - 0.38 * clamp(intensity, 0, 1)
+/** How many slots back from the newest the effect reaches. Always the whole ring. */
+export function warpReach(count: number): number {
+  return Math.max(0, count - 1)
 }
 
 /** Slot `back` steps behind `head`, wrapping through the ring. */
@@ -106,30 +90,15 @@ export function slotBehind(head: number, back: number, slots = TIME_SLOTS): numb
   return ((head - b) % slots + slots) % slots
 }
 
-/** Advance a playback head that loops inside `reach` slots. */
-export function advancePlay(play: number, dt: number, slotsPerSec: number, reach: number): number {
-  if (reach <= 0.001) return 0
-  const next = play + Math.max(0, dt) * Math.max(0, slotsPerSec)
-  if (next < reach) return next
-  return next % reach
-}
-
-export function clampIntensity(value: number): number {
-  return clamp(value, 0.12, 1)
-}
-
 function reducedMotion(): boolean {
   return typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
-/** `?warp=echo&warpamt=0.8`. Reduced motion starts on live unless the URL asks. */
-export function initialWarp(): { mode: WarpMode; intensity: number } {
+/** `?warp=echo`. Reduced motion starts on live unless the URL asks. An unknown mode is echo. */
+export function initialWarp(): WarpMode {
   const asked = queryFlag('warp')
-  const mode = isWarpMode(asked) ? asked : reducedMotion() ? 'live' : 'slow'
-  const raw = queryFlag('warpamt')
-  const amount = raw === null ? Number.NaN : Number(raw)
-  const intensity = Number.isFinite(amount) ? clampIntensity(amount) : 0.62
-  return { mode, intensity }
+  if (isWarpMode(asked)) return asked
+  return reducedMotion() ? 'live' : 'echo'
 }
 
 export interface GlassState {
@@ -170,11 +139,4 @@ export function timeMessage(ready: boolean, presenting: boolean, problem: string
   if (problem) return problem
   if (!ready) return 'Waiting for the camera'
   return null
-}
-
-/** What a pinch on the mode mark talks to. The slide is in the frame's local x, metres. */
-export interface TimeControls {
-  beginSlide(originX: number): void
-  slide(x: number): void
-  finishSlide(): void
 }

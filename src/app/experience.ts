@@ -1,4 +1,10 @@
 /**
+ * `/clean` is the same experience with no guide, captions, or step prompts.
+ * The path is what the page was opened as, so a refresh stays clean.
+ */
+export const CLEAN = typeof location !== 'undefined' && /\/clean\/?$/.test(location.pathname)
+
+/**
  * `?preview=1` keeps the desk stand-in even when the dev server’s emulator
  * makes the page look like a headset.
  */

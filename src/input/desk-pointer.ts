@@ -5,7 +5,6 @@ import type { DeskCamera } from '../desk/desk-camera.js'
 import type { FrameGrab } from '../interaction/frame-grab.js'
 import type { Grip } from '../interaction/grip.js'
 import { spreadFromPull } from '../interaction/peel.js'
-import { hitPlane } from '../interaction/handle.js'
 import { routeHit, type Interaction } from '../interaction/router.js'
 import type { Stickers } from '../interaction/stickers.js'
 import { clamp } from '../util/math.js'
@@ -21,8 +20,6 @@ export class DeskPointer {
   private readonly at = new Vector3()
   private drawing = false
   private view: HTMLElement | null = null
-  /** A click that never grew into a frame: cycle the time window. */
-  onTap: (() => void) | null = null
 
   private readonly onDown = (event: PointerEvent): void => {
     if (this.ctx.renderer.xr.isPresenting) return
@@ -52,12 +49,6 @@ export class DeskPointer {
     const grip = this.grip
     if (this.deskCamera.orbiting) {
       this.deskCamera.orbitTo(event.clientX, event.clientY)
-      return
-    }
-    if (grip.touch === 'time' && grip.held) {
-      this.aim(event)
-      const ray = this.raycaster.ray
-      if (hitPlane(grip.held.group, ray.origin, ray.direction, this.at)) this.interaction.move(this.at)
       return
     }
     const held = grip.held
@@ -107,10 +98,8 @@ export class DeskPointer {
       return
     }
     if (!this.drawing || event.button !== 0) return
-    const tiny = this.ctx.gesture.rect.halfW < 0.012 && this.ctx.gesture.rect.halfH < 0.012
     this.drawing = false
     this.shutter.finishGesture()
-    if (tiny) this.onTap?.()
   }
 
   private readonly onContextMenu = (event: Event): void => {

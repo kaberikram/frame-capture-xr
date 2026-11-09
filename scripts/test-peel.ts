@@ -1,5 +1,4 @@
 import {
-  gemPoint,
   PEEL_MARK,
   PEEL_POP,
   PEEL_TACK,
@@ -20,10 +19,9 @@ const strip = 0.008
 const photo = classifyHit(0, 0, halfW, halfH, strip)
 const handle = classifyHit(0, -halfH - strip - 0.004, halfW, halfH, strip)
 const outside = classifyHit(0.4, 0, halfW, halfH, strip)
-const gem = gemPoint(halfH, strip)
-const mark = classifyHit(gem.x, gem.y, halfW, halfH, strip)
-if (photo !== 'photo' || handle !== 'handle' || outside !== 'miss' || mark !== 'gem') {
-  throw new Error(`hit ${photo} ${handle} ${outside} ${mark}`)
+const above = classifyHit(0, halfH + strip + 0.056, halfW, halfH, strip)
+if (photo !== 'photo' || handle !== 'handle' || outside !== 'miss' || above !== 'miss') {
+  throw new Error(`hit ${photo} ${handle} ${outside} ${above}`)
 }
 
 if (spreadFromPull(-0.05) !== 0) throw new Error('push should stay closed')
