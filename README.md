@@ -1,6 +1,6 @@
 # Frame capture
 
-On a Meta Quest 3 you pinch a rectangle in the air. Letting go leaves it where you made it, photographs the passthrough inside it, and eases that photo forward into a depth relief. Draw another frame and the earlier ones stay put.
+On a Meta Quest 3 you pinch a rectangle in the air. While you hold it, the world inside the rectangle falls behind time, and everything outside stays live. Letting go leaves the frame where you made it, photographs that view, and eases the photo forward into a depth relief. Draw another frame and the earlier ones stay put.
 
 The desk preview does the same thing without a headset: the mouse draws the frame, and a stand-in room (or a webcam) stands in for the passthrough camera.
 
@@ -19,7 +19,7 @@ If the camera cannot start, the launch card and the frame say why: blocked (allo
 
 `?debug=1` adds a small panel with the frame rate, the worst frame, long main-thread tasks, the camera (asking, starting, active, or error), the hands, and how long each step of the last capture took. `?sound=0` keeps it silent. Your real hands show through passthrough, so IWSDK's hand models are hidden; `?hands=1` draws them, tracking every finger.
 
-Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to.
+Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. Keys `1`–`5` set the time inside the frame (slow, echo, slit, ripple, live), `t` cycles them, and `[` `]` change the strength. A click that never grows into a frame cycles the mode too. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to. `?warp=echo&warpamt=0.8` starts in a chosen mode. `prefers-reduced-motion` starts on live unless the URL asks otherwise.
 
 ## First headset run
 
@@ -27,9 +27,10 @@ Open the page with `?debug=1` the first time.
 
 1. **Enter passthrough.** The panel should show about 72 or 90 fps. The console has a `[frame] session` line listing the granted features, and `[frame] camera` lines once the camera runs.
 2. **Wait for depth.** The first visit downloads the depth model (about 25 MB) in the background. Until it is ready, frames use brightness depth.
-3. **Draw a frame with one hand, let go, and let your hand fall.** The photo should not include your fingers. The `[frame] capture` line gives the picture and darkroom times, and `[frame] depth model in … ms` how long the model took.
-4. **Check the photo lines up with the room.** Look at the edge of the captured frame against the real room behind it. If the photo sits a little off, trim the lens with the URL fields under Tuning.
-5. **Peel a corner, pull past the mark, and touch the sticker to a wall.** It should land flat with a soft thup.
+3. **Draw a frame with one hand and look through it.** The room inside should lag. Pinch the diamond above the frame to cycle slow motion, echo, slit scan, ripple, and live. Slide that pinch sideways to change how far back it reaches, and let go.
+4. **Let go of the frame, and let your hand fall.** The photo is whatever the window was showing, so a slow-motion frame can still hold a hand that has since moved away. Live mode takes the ordinary camera photo. The `[frame] capture` line gives the picture and darkroom times, and `[frame] depth model in … ms` how long the model took.
+5. **Check the photo lines up with the room.** Look at the edge of the captured frame against the real room behind it. If the photo sits a little off, trim the lens with the URL fields under Tuning.
+6. **Peel a corner, pull past the mark, and touch the sticker to a wall.** The time window steps aside and the print peels. It should land flat with a soft thup.
 
 If the panel's long-task count climbs while you capture, or the worst frame is above about 20 ms, note which step was running. Those numbers are what to tune next.
 
@@ -42,6 +43,7 @@ A frame is whatever size and shape you drag. It is not snapped to a wall. It sit
 - Let go, and if both sides are at least 12 cm the frame is anchored in the world and the photo is taken. A smaller drag is dropped.
 - After a two-hand frame, open both hands before starting another, so the hand that is still pinching does not immediately draw again.
 - On the desk, the left mouse button is the pinch. Drag a corner of a finished frame to peel it. Shift-drag fans the depth sheets.
+- A pinch that stays smaller than about 1.2 cm, or a tap on the diamond above a finished frame, changes the time mode. Sliding that pinch sideways changes the strength.
 
 Once the photo has eased into a relief, pinch within about 6 cm of a corner and pull. The photo curls off the frame like a vinyl sticker: a soft cylinder bend along a fold perpendicular to the pull, with the depth relief still on the sheet and a shadow on the part that is still stuck. The pull is measured from where your fingers pinched, toward you and toward the middle of the photo. The first 1.5 cm or so does nothing, like the tack of the glue. Then the peel follows your hand and gets firmer as it nears the mark, about 16 cm of pull. Past the mark the last bit holds and stretches a little, and at about 19 cm it pops free, a slightly curved sticker in your hand. Let go any time before the pop and it springs flat. `?peel=1.3` makes it take 30% more pull, `?peel=0.8` less. The empty white frame breaks into a few short pieces and fades, about 0.6 seconds, then it is gone.
 
@@ -53,7 +55,7 @@ You do not need to move your hands out of the way. After you let go, the photo w
 
 Pinches are smoothed so tracking jitter does not shake a corner, and a fast drag still follows closely. The pinch is measured between your fingertip surfaces, so it suits any hand size. When you let go, the corner stays where your fingers were tightest, not where opening them dragged it.
 
-The photo is the camera frame cropped to the rectangle, reprojected with the Quest 3 lens. In the desk preview the same crop uses the view camera.
+The photo is the camera frame cropped to the rectangle, reprojected with the Quest 3 lens. In the desk preview the same crop uses the view camera. While a time mode other than live is on, the photo is a picture of the window instead, so the print keeps the lag, the trails, or the smear.
 
 The photo is developed off the render thread. The shutter takes an image of just the frame's part of the camera view. A worker warps it into the photo and makes a brightness depth map, so taking a picture costs the headset no frames.
 
@@ -71,6 +73,8 @@ Each visual cue means something:
 | --- | --- |
 | A small warm light between thumb and index | Your fingers are about to meet. It blooms when the pinch registers |
 | A line of light with a faint warm wash inside | The frame you are drawing |
+| The world inside the frame is late, trailed, or smeared | The time window. Outside it, the room is live |
+| A small diamond above the frame | The time mode. Its colour is the mode. Pinch it to change mode, slide it to change strength |
 | The line inhales, brighter for a moment | The frame is anchored. If it keeps breathing, the photo is waiting for your hands to clear |
 | The photo resolves out of a peach haze | It has been taken and is developing |
 | A glossy band sweeping across | Depth is still on its way |
@@ -81,7 +85,25 @@ Each visual cue means something:
 
 A carried sticker trails your hand slightly and tilts with the motion. Let go in open air and it bobs gently where you left it.
 
-In a headset, hints appear as a line of light text that drifts along a little below where you look, with no box behind it. Each shows once, when it helps: draw a frame, then peel a corner, then bring it to a wall. After about 45 seconds of nothing happening, the hint for that moment can show again. The launch card shows how far the depth model has downloaded.
+In a headset, hints appear as a line of light text that drifts along a little below where you look, with no box behind it. Each shows once, when it helps: draw a frame, then the mark above it, then peel a corner, then bring it to a wall. The time hint steps aside after about eight seconds, or as soon as you change the mode. After about 45 seconds of nothing happening, the hint for that moment can show again. The launch card shows how far the depth model has downloaded.
+
+If the headset camera cannot start, the glass says why, the same sentence as the launch card. Until the first frame arrives it says it is waiting. On the desk the stand-in room fills the window, so there is no camera message.
+
+## Time window
+
+The rectangle is a pane of glass over the live view. It keeps the last 16 camera frames on the GPU, each 320 px in a 1280² atlas (about 6.3 MB), with the lens matrix that posed it. A point on the pane is projected back through those matrices, so a still room stays put and only what moved is late. The desk paints its stand-in the same way, a few times a second. Nothing outside the pane is touched.
+
+| Mode | What you see | Strength |
+| --- | --- | --- |
+| Slow motion | The pane plays the recent frames back at a fraction of their speed, and loops | Further toward 100% is slower, down to about an eighth of real time |
+| Echo | Moving things leave a few ghosts. Still parts stay single | More ghosts, and they fade more slowly |
+| Slit scan | Each column is a different moment. The right edge is now; the left is the furthest back. A moving hand stretches | How far apart the columns are in time |
+| Ripple | Rings of different moments spread from the middle of the frame | Tighter rings |
+| Live | The camera now, with no warm grade. A photo from this mode is the ordinary full-resolution picture | — |
+
+The other modes carry a light warm grade so the window reads as the same sunlit world, a moment removed. Pinch the diamond to cycle, or pinch the air without drawing a frame. On the desk, `1`–`5`, `t`, and `[` `]`. The diamond is there while the frame is, including while the photo blooms. During the bloom the print has the frame to itself. Once it has settled, the window returns and the print steps aside, until you peel, fan the sheets, or take the sticker. A flat demo photo (`?at=photo`) is never covered.
+
+A slow-motion photo can include a hand that was in the pane a moment ago, even after the shutter waited for your hands to leave. Switch to live for a picture of the room as it is.
 
 ## Sound
 
@@ -121,10 +143,6 @@ The **Capture settings** entity in the scene carries `CaptureLook`. The same fie
 
 The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in front of the eye and tilted 11.8° down. A headset check can trim it without a rebuild: `?lensf=863&yaw=-0.23&pitch=-11.77&roll=0.14&tau=0.025`. The console line `[frame] lens` shows which values came from the URL.
 
-## Later modes
-
-The relief shader samples the photo through one function, `frameContents(vec2 uv)`, in `src/look/relief.ts` (`PHOTO_CONTENTS`). `reliefMaterial(contentsFn)` injects a replacement. Slit-scan and slow motion belong there. They are not built yet.
-
 ## How it is built
 
 `src/app/capture-system.ts` wires the parts together and fixes the order they run in each frame. Each area has its own folder:
@@ -132,17 +150,17 @@ The relief shader samples the photo through one function, `frameContents(vec2 uv
 | Folder | What lives there |
 | --- | --- |
 | `app/` | the system, the shared context, the `CaptureLook` knobs, URL flags |
-| `capture/` | camera rig and lens, the shutter (hands-clear wait), the darkroom and depth workers, crop, develop (depth stages and the bloom) |
+| `capture/` | camera rig and lens, the shutter (hands-clear wait), the time-window modes and the GPU ring, the darkroom and depth workers, crop, develop (depth stages and the bloom) |
 | `input/` | hand pinches (filtering, release rewind) and the desk pointer. Both feed one router |
 | `interaction/` | what is held (`Grip`), the router, stickers (curl, detach, stick, unstick), depth sheets, the frame handle |
-| `look/` | relief shader, bloom spring, frame border, dissolve |
+| `look/` | relief shader, the time-window glass, bloom spring, frame border, dissolve |
 | `world/` | surfaces from the room scan, the landing outline, the stand-in room |
 | `sound/` | the synthesized soundscape and the cues that trigger it |
 | `desk/`, `ui/`, `debug/` | desk camera and scripted demo, status line, `__capture` and the `?debug=1` panel |
 
 ## Checks
 
-- `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), and the bloom spring.
+- `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), the bloom spring, and the time-window modes.
 - `npm run typecheck` and `npm run build` compile the app.
 - `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
 - `npm run check` runs typecheck, tests, and build.

@@ -8,11 +8,13 @@ import { cropQuad, type Quad, type Raster } from './crop.js'
 
 interface DevelopMsg {
   id: number
-  quad: Quad
-  outW: number
-  outH: number
+  quad?: Quad
+  outW?: number
+  outH?: number
   bitmap?: ImageBitmap
   raster?: Raster
+  /** The raster is already the framed photo. Only the depth is needed. */
+  framed?: boolean
 }
 
 interface DarkroomScope {
@@ -26,6 +28,19 @@ scope.onmessage = (event) => {
   const msg = event.data
   try {
     const t0 = performance.now()
+    if (msg.framed && msg.raster) {
+      const photo = msg.raster
+      if (photo.width < 2 || photo.height < 2) {
+        scope.postMessage({ id: msg.id, error: 'outside' })
+        return
+      }
+      const depth: DepthField = brightnessDepth(photo)
+      softenField(depth, 2)
+      const timing = { read: 0, crop: 0, depth: performance.now() - t0, read_px: photo.width * photo.height }
+      scope.postMessage({ id: msg.id, photo, depth, timing }, [photo.data.buffer, depth.data.buffer])
+      return
+    }
+    if (!msg.quad || !msg.outW || !msg.outH) throw new Error('nothing to develop')
     const source = msg.raster ? { raster: msg.raster, quad: msg.quad } : msg.bitmap ? readBitmap(msg.bitmap, msg.quad) : null
     if (!source) throw new Error('nothing to develop')
     const t1 = performance.now()

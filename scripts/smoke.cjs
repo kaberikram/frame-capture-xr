@@ -102,6 +102,7 @@ function check(ok, message, failures) {
 
 async function desk(browser, failures) {
   const { context, page, errors } = await openPage(browser, '?preview=1&shot=1&ui=0', { fixedClock: true })
+  check((await page.evaluate(() => window.__capture.warp)) === 'slow', 'desk: the time window starts in slow motion', failures)
   const seen = []
   for (let i = 0; i < 60 * 26; i += 6) {
     await frames(page, 6)
@@ -156,12 +157,12 @@ async function headset(browser, failures, leaveHandInFrame) {
     await page.waitForTimeout(40)
   }
   check((await page.evaluate(() => window.__capture.phase)) === 'drawing', 'headset: a pinch-drag draws a frame', failures)
-  await device((inside) => {
-    const h = window.IWER_DEVICE.hands.right
-    h.updatePinchValue(0)
-    if (inside) h.position.set(0.05, 1.42, -0.42)
-  }, leaveHandInFrame)
+  // Open the pinch before moving the hand. A teleport while the pinch is still
+  // closed drags the corner with it, and the frame comes out too small to keep.
+  await device(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+  await page.waitForFunction(() => window.__capture.phase !== 'drawing', null, { timeout: 4000 })
   if (leaveHandInFrame) {
+    await device(() => window.IWER_DEVICE.hands.right.position.set(0.05, 1.42, -0.42))
     let nudged = false
     for (let i = 0; i < 12 && !nudged; i++) {
       await page.waitForTimeout(100)
@@ -179,6 +180,18 @@ async function headset(browser, failures, leaveHandInFrame) {
   check(api.count === 1 && api.relief > 0.9, `headset: the photo is taken and blooms ${label} (count ${api.count}, relief ${api.relief.toFixed(2)})`, failures)
   if (leaveHandInFrame) check(logs.some((l) => l.includes('hand still in the frame')), 'headset: the shutter gives up waiting after its timeout', failures)
   check(errors.length === 0, `headset: no page errors ${label}${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  if (!leaveHandInFrame) {
+    const switched = await page.evaluate(() => new Promise((resolve) => {
+      const before = window.__capture.amount
+      const mode = window.__capture.cycle()
+      window.__capture.nudge(0.2)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        resolve({ mode, warp: window.__capture.warp, before, after: window.__capture.amount })
+      }))
+    }))
+    check(switched.mode === 'echo' && switched.warp === 'echo', `headset: the time mode cycles to echo (got ${switched.mode} / ${switched.warp})`, failures)
+    check(switched.after > switched.before + 0.05, `headset: the time strength can be raised (${switched.before} → ${switched.after})`, failures)
+  }
   const timing = logs.find((l) => l.includes('darkroom'))
   if (timing) console.log(`     ${timing}`)
   await context.close()

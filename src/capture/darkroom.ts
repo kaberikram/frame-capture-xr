@@ -16,6 +16,12 @@ interface Reply {
   timing?: Record<string, number>
 }
 
+interface FramedMsg {
+  id: number
+  framed: true
+  raster: Raster
+}
+
 let worker: Worker | null = null
 let broken = false
 let nextId = 0
@@ -99,6 +105,31 @@ export function develop(source: { bitmap: ImageBitmap } | { raster: Raster }, qu
     console.warn('[frame] darkroom', error)
     return 'raster' in source && source.raster.data.byteLength > 0 ? developHere(source, quad, outW, outH) : null
   })
+}
+
+/**
+ * The raster is already the framed photo (a time-warped glass). Depth only,
+ * no second resample. The worker does it off the render thread when it can.
+ */
+export function developFramed(raster: Raster): Promise<Developed | null> {
+  if (raster.width < 2 || raster.height < 2) return Promise.resolve(null)
+  const thread = darkroom()
+  if (!thread) return Promise.resolve(framedHere(raster))
+  const id = ++nextId
+  const msg: FramedMsg = { id, framed: true, raster }
+  return new Promise<Developed | null>((resolve, reject) => {
+    waiting.set(id, { resolve, reject })
+    thread.postMessage(msg, [raster.data.buffer])
+  }).catch((error: unknown) => {
+    console.warn('[frame] darkroom', error)
+    return raster.data.byteLength > 0 ? framedHere(raster) : null
+  })
+}
+
+function framedHere(raster: Raster): Developed {
+  const preview = brightnessDepth(raster)
+  softenField(preview, 2)
+  return { photo: raster, preview }
 }
 
 function developHere(source: { bitmap: ImageBitmap } | { raster: Raster }, quad: Quad, outW: number, outH: number): Developed | null {

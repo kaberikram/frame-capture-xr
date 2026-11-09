@@ -249,6 +249,36 @@ export class CameraRig {
     return raster ? Promise.resolve({ source: { raster }, quad }) : null
   }
 
+  /** Headset or webcam image, or null when the desk should paint the stand-in. */
+  liveVideo(): HTMLVideoElement | null {
+    if (!(this.ctx.renderer.xr.isPresenting || this.useWebcam)) return null
+    const video = this.feed.video
+    if (!video || video.readyState < 2 || video.videoWidth < 2) return null
+    return video
+  }
+
+  frameStamp(): number | null {
+    return this.feed.stamp
+  }
+
+  /** Copy the clip the current photo would use. False when the camera cannot be posed. */
+  copyClip(out: Matrix4): boolean {
+    const clip = this.currentClip()
+    if (!clip) return false
+    out.copy(clip.clip)
+    return true
+  }
+
+  /** Paint the stand-in room into `target` from the view camera, and write that clip. */
+  paintStandIn(target: WebGLRenderTarget, outClip: Matrix4): boolean {
+    const { camera } = this.ctx
+    if (!(camera.aspect > 0.05)) return false
+    camera.updateMatrixWorld()
+    this.paintRoom(target)
+    outClip.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse)
+    return true
+  }
+
   dispose(): void {
     this.stop()
     this.webcamStream?.getTracks().forEach((track) => track.stop())
@@ -319,6 +349,13 @@ export class CameraRig {
       this.target.texture.colorSpace = SRGBColorSpace
       this.pixelBuf = new Uint8Array(width * height * 4)
     }
+    this.paintRoom(this.target)
+    this.ctx.renderer.readRenderTargetPixels(this.target, 0, 0, width, height, this.pixelBuf)
+    return rasterFromPixels(this.pixelBuf, width, height)
+  }
+
+  /** Render the stand-in with the app's own meshes hidden, then restore the renderer. */
+  private paintRoom(target: WebGLRenderTarget): void {
     const hidden = this.overlays()
     const shown: boolean[] = []
     for (let i = 0; i < hidden.length; i++) {
@@ -331,15 +368,16 @@ export class CameraRig {
     const prevAlpha = renderer.getClearAlpha()
     renderer.getClearColor(this.prevClear)
     renderer.xr.enabled = false
-    renderer.setClearColor(this.deskColor, 1)
-    renderer.setRenderTarget(this.target)
-    renderer.clear()
-    renderer.render(scene, camera)
-    renderer.readRenderTargetPixels(this.target, 0, 0, width, height, this.pixelBuf)
-    renderer.setRenderTarget(prev)
-    renderer.setClearColor(this.prevClear, prevAlpha)
-    renderer.xr.enabled = prevXr
-    for (let i = 0; i < hidden.length; i++) hidden[i].visible = shown[i]
-    return rasterFromPixels(this.pixelBuf, width, height)
+    try {
+      renderer.setClearColor(this.deskColor, 1)
+      renderer.setRenderTarget(target)
+      renderer.clear()
+      renderer.render(scene, camera)
+    } finally {
+      renderer.setRenderTarget(prev)
+      renderer.setClearColor(this.prevClear, prevAlpha)
+      renderer.xr.enabled = prevXr
+      for (let i = 0; i < hidden.length; i++) hidden[i].visible = shown[i]
+    }
   }
 }

@@ -1,6 +1,7 @@
 import type { Vector3 } from '@iwsdk/core'
 import type { Ctx } from '../app/context.js'
 import { canPeel, type Held } from '../capture/held.js'
+import type { TimeControls } from '../capture/time-mode.js'
 import type { SnapPreview } from '../world/snap.js'
 import type { FrameGrab } from './frame-grab.js'
 import type { Grip } from './grip.js'
@@ -15,7 +16,7 @@ export interface Aim {
 }
 
 /** What a new pinch or click does. */
-export type Route = 'unstick' | 'ignore' | 'sticker' | 'grab' | 'sheets' | 'curl' | 'draw'
+export type Route = 'unstick' | 'ignore' | 'sticker' | 'grab' | 'sheets' | 'curl' | 'time' | 'draw'
 
 /**
  * One decision for hands and mouse alike. `twoHanded` is a second pinch on the
@@ -23,6 +24,7 @@ export type Route = 'unstick' | 'ignore' | 'sticker' | 'grab' | 'sheets' | 'curl
  */
 export function routeHit(hit: Aim | null, twoHanded: boolean): Route {
   if (!hit) return 'draw'
+  if (hit.kind === 'gem') return hit.held.mode === 'idle' && !hit.held.frameGone ? 'time' : 'ignore'
   if (hit.kind === 'corner' && hit.held.mode === 'stuck') return 'unstick'
   if (hit.kind === 'sticker' && hit.held.mode === 'stuck') return 'ignore'
   if (hit.kind === 'sticker') return 'sticker'
@@ -45,6 +47,7 @@ export class Interaction {
     private readonly sheets: Sheets,
     private readonly frameGrab: FrameGrab,
     private readonly snap: SnapPreview,
+    private readonly time: TimeControls,
   ) {}
 
   get touching(): boolean {
@@ -103,6 +106,12 @@ export class Interaction {
       case 'curl':
         this.stickers.beginCurl(held, at, from)
         return
+      case 'time':
+        this.grip.touch = 'time'
+        this.grip.held = held
+        held.group.worldToLocal(this.grip.local.copy(at))
+        this.time.beginSlide(this.grip.local.x)
+        return
       case 'ignore':
       case 'draw':
         return
@@ -125,6 +134,13 @@ export class Interaction {
       case 'curl':
         this.stickers.moveCurl(at)
         return
+      case 'time': {
+        const held = this.grip.held
+        if (!held) return
+        held.group.worldToLocal(this.grip.local.copy(at))
+        this.time.slide(this.grip.local.x)
+        return
+      }
       case 'peel':
       case 'none':
         this.sheets.move(at)
@@ -141,6 +157,7 @@ export class Interaction {
     const grip = this.grip
     const held = grip.held
     const snap = this.snap.snap
+    if (grip.touch === 'time') this.time.finishSlide()
     if (grip.touch === 'sticker' && held && held.mode === 'free' && snap) this.stickers.stick(held, snap)
     if (held && held.mode !== 'stuck') held.holding = false
     grip.touch = 'none'
