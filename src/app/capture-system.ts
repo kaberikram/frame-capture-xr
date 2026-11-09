@@ -5,7 +5,7 @@ import { onDepthProgress, prepareDepthModel } from '../capture/depth-model.js'
 import { stepDevelop } from '../capture/develop.js'
 import { heldLook, layoutBorder, type Held } from '../capture/held.js'
 import { Shutter } from '../capture/shutter.js'
-import { computePhase, publishApi, publishPhase, type Phase } from '../debug/api.js'
+import { bindWarpApi, computePhase, publishApi, publishPhase, type Phase } from '../debug/api.js'
 import { DEBUG } from '../debug/metrics.js'
 import { DebugOverlay } from '../debug/overlay.js'
 import { DeskCamera } from '../desk/desk-camera.js'
@@ -23,6 +23,7 @@ import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
 import { PALETTE, voice } from '../look/palette.js'
 import { PinchLights } from '../look/pinch-light.js'
 import { applyLook } from '../look/relief.js'
+import { TimeWarp } from '../look/time-glass.js'
 import { SoundCues } from '../sound/cues.js'
 import { Soundscape } from '../sound/soundscape.js'
 import { Captions, type Hint } from '../ui/captions.js'
@@ -59,6 +60,7 @@ export class CaptureSystem extends createSystem({
   private readonly basis = new Matrix4()
   private ctx!: Ctx
   private rig!: CameraRig
+  private warp!: TimeWarp
   private shutter!: Shutter
   private grip!: Grip
   private stickers!: Stickers
@@ -76,6 +78,8 @@ export class CaptureSystem extends createSystem({
   private sawDrawing = false
   private sawCurl = false
   private sawStuck = 0
+  /** When the time hint started showing, so it can retire and the peel hint can follow. */
+  private timeHintAt = -1
   private session: XRSession | null = null
   private phase: Phase = 'ready'
   private debug: DebugOverlay | null = null
@@ -120,11 +124,12 @@ export class CaptureSystem extends createSystem({
     root.add(this.snap.group)
 
     this.rig = new CameraRig(ctx, this.deskColor, () => this.overlays())
-    this.shutter = new Shutter(ctx, this.rig, (text, seconds) => this.status.flash(text, seconds))
+    this.warp = new TimeWarp(this.renderer, this.dragGroup, this.rig)
+    this.shutter = new Shutter(ctx, this.rig, (text, seconds) => this.status.flash(text, seconds), this.warp)
     this.stickers = new Stickers(ctx, this.grip, () => this.snap.clear())
     this.sheets = new Sheets(ctx, this.grip)
     const frameGrab = new FrameGrab(this.grip)
-    this.interaction = new Interaction(ctx, this.grip, this.stickers, this.sheets, frameGrab, this.snap)
+    this.interaction = new Interaction(ctx, this.grip, this.stickers, this.sheets, frameGrab, this.snap, this.warp)
     this.hands = new HandInput(ctx, this.grip, this.interaction, this.sheets, this.shutter)
     this.shot = new DeskShot(ctx, this.deskCamera, this.stickers, this.grip, this.shutter)
     this.pointer = new DeskPointer(ctx, this.grip, this.interaction, this.stickers, frameGrab, this.deskCamera, this.shutter, () => this.shot.blocksDraw)
@@ -139,6 +144,12 @@ export class CaptureSystem extends createSystem({
     }
 
     this.hands.onPinch = (at) => this.sound.pinch(at)
+    this.hands.onTap = () => this.warp.cycle()
+    this.pointer.onTap = () => this.warp.cycle()
+    this.warp.onNote = (line) => {
+      this.captions.retire('time')
+      this.status.flash(line, 2.6)
+    }
     this.shutter.onExpose = (held) => this.cues.shutter(held)
     // Browsers start audio only from a gesture: the Enter button, or the first click on the desk.
     const view = document.getElementById('scene-container')
@@ -148,6 +159,10 @@ export class CaptureSystem extends createSystem({
       void this.enter()
     })
     publishApi()
+    bindWarpApi(
+      () => this.warp.cycle(),
+      (delta) => this.warp.nudge(delta),
+    )
     if (DEBUG) {
       this.debug = new DebugOverlay()
       this.debug.mount(this.player.head)
@@ -182,8 +197,11 @@ export class CaptureSystem extends createSystem({
       this.player.updateWorldMatrix(true, false)
       this.rig.lens.recordHead(this.player.head, this.world.xrFrame?.predictedDisplayTime, now)
       this.rig.watchQuest()
+      // Hands and the shutter read this frame's poses. The time window's blit
+      // borrows the renderer afterwards, so it cannot move those poses.
       this.hands.update(now)
       this.shutter.step(now, this.hands)
+      this.warp.update(dt, now, true, this.camera.aspect)
       this.rig.rearm(now)
       this.surfaces.arm(this.session)
     } else {
@@ -191,6 +209,7 @@ export class CaptureSystem extends createSystem({
       this.standIn.visible = true
       this.rig.watchWebcam()
       this.deskCamera.apply(this.camera)
+      this.warp.update(dt, now, false, this.camera.aspect)
       this.shot.update(dt)
     }
     this.syncDrag(now)
@@ -200,6 +219,7 @@ export class CaptureSystem extends createSystem({
     this.snap.update(driven, presenting ? this.surfaces.list : DESK_SURFACES, dt)
     this.interaction.contact()
     this.animate(dt, now)
+    this.warp.sync(this.gesture.drawing, this.gesture.rect, this.captures, this.look.strip, now)
     this.updatePinchLights(presenting, dt)
     this.cues.listen(presenting ? this.player.head : this.camera)
     this.cues.step(this.captures, dt)
@@ -217,6 +237,8 @@ export class CaptureSystem extends createSystem({
         presenting,
         count: this.captures.length,
         waitingOnHands: this.shutter.waitingOnHands,
+        warp: this.warp.mode,
+        camera: presenting ? this.rig.problem : null,
       }),
     )
   }
@@ -336,17 +358,28 @@ export class CaptureSystem extends createSystem({
     if (drawing || touch !== 'none') this.captions.active()
     if (drawing && !this.sawDrawing) this.captions.retire('draw')
     if (touch === 'curl' && !this.sawCurl) this.captions.retire('peel')
+    if (touch === 'time') this.captions.retire('time')
     let stuck = 0
     for (let i = 0; i < this.captures.length; i++) if (this.captures[i].mode === 'stuck') stuck++
     if (stuck > this.sawStuck) this.captions.retire('wall')
     this.sawDrawing = drawing
     this.sawCurl = touch === 'curl'
     this.sawStuck = stuck
+    const settled = last && !last.frameGone && last.mode === 'idle' && last.pop >= 1 && last.depth !== 'wait'
     let hint: Hint | null = null
-    if (drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
+    if (drawing || touch === 'curl' || touch === 'grab' || touch === 'peel' || touch === 'time') hint = null
     else if (touch === 'sticker' || last?.mode === 'free') hint = 'wall'
-    else if (last && !last.frameGone && last.mode === 'idle' && last.pop >= 1 && last.depth !== 'wait') hint = 'peel'
+    else if (settled && this.captions.hint('time')) hint = 'time'
+    else if (settled) hint = 'peel'
     else if (!last || last.frameGone) hint = 'draw'
+    if (hint === 'time') {
+      const now = performance.now() / 1000
+      if (this.timeHintAt < 0) this.timeHintAt = now
+      if (now - this.timeHintAt > 8) {
+        this.captions.retire('time')
+        hint = 'peel'
+      }
+    } else this.timeHintAt = -1
     return this.captions.hint(hint)
   }
 
@@ -360,7 +393,7 @@ export class CaptureSystem extends createSystem({
       this.sheets.step(held, dt)
       const fanned = this.sheets.layout(held)
       this.stickers.layout(held)
-      held.photo.visible = held.raster !== null && !(fanned && held.spread >= 0.035)
+      held.photo.visible = held.raster !== null && !(fanned && held.spread >= 0.035) && !this.warp.covers(held)
     }
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const effect = this.effects[i]
@@ -397,7 +430,7 @@ export class CaptureSystem extends createSystem({
       previewing: this.snap.previewing,
       yaw: this.deskCamera.yaw,
     })
-    publishPhase(this.phase, this.captures.length, last)
+    publishPhase(this.phase, this.captures.length, last, { mode: this.warp.mode, intensity: this.warp.intensity })
   }
 
   private paintDebug(presenting: boolean, last: Held | undefined): void {
@@ -419,6 +452,7 @@ export class CaptureSystem extends createSystem({
         `camera ${this.rig.state} ${feed.width}x${feed.height}${stamp === null ? '' : `  frame age ${Math.round(nowMs - stamp * 1000)} ms`}`,
         `hands L ${hand('left')}  R ${hand('right')}`,
         `frames ${this.captures.length}  phase ${this.phase}  depth ${last?.depth ?? '-'}`,
+        this.warp.debugLine(),
       ],
       presenting,
     )
@@ -433,5 +467,6 @@ export class CaptureSystem extends createSystem({
     this.hands.dispose()
     this.pointer.detach()
     this.rig.dispose()
+    this.warp.dispose()
   }
 }

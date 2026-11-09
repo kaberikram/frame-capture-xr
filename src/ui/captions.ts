@@ -7,10 +7,11 @@ const H = 160
 const FONT = '"Hanken Grotesk", "Segoe UI", system-ui, sans-serif'
 
 /** Hints that each show once, at the moment they help, and then retire. */
-export type Hint = 'draw' | 'peel' | 'wall'
+export type Hint = 'draw' | 'peel' | 'wall' | 'time'
 
 const HINTS: Record<Hint, string> = {
   draw: 'Pinch the air and draw a frame',
+  time: 'Pinch the mark above the frame to change time',
   peel: 'Pinch a corner to peel',
   wall: 'Bring it to a wall',
 }

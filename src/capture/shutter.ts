@@ -5,10 +5,11 @@ import { applyPhoto, setDevelop } from '../look/relief.js'
 import type { CameraRig } from './camera-rig.js'
 import { insideQuad, quadMargin } from './clearance.js'
 import { cropSize, type Quad } from './crop.js'
-import { develop } from './darkroom.js'
+import { develop, developFramed, type Developed } from './darkroom.js'
 import { developModelDepth } from './develop.js'
 import { disposeHeld, makeHeld, type Held } from './held.js'
 import { projectPixel } from './lens.js'
+import type { TimeWarp } from '../look/time-glass.js'
 
 /** Long side of the cropped photo, in pixels. */
 const CROP_LONG = 640
@@ -56,6 +57,7 @@ export class Shutter {
     private readonly ctx: Ctx,
     private readonly rig: CameraRig,
     private readonly note: (text: string, seconds?: number) => void,
+    private readonly warp: TimeWarp,
   ) {}
 
   /** A hand has stayed in the photo long enough that the person should hear about it. */
@@ -149,23 +151,45 @@ export class Shutter {
    * appears and the model is asked for real depth.
    */
   private expose(held: Held): void {
-    const { captures, renderer } = this.ctx
+    const started = performance.now()
+    const warped = this.warp.capture(held)
+    if (warped) {
+      this.present(held, started, performance.now(), `warp ${this.warp.mode}`, developFramed(warped))
+      return
+    }
     const quad = this.rig.projectGroup(held.group, held.width * 0.5, held.height * 0.5)
     const picture = quad ? this.rig.takePicture(quad) : null
     if (!quad || !picture) {
       this.missed(held)
       return
     }
-    this.onExpose?.(held)
     const size = cropSize(held.width / held.height, CROP_LONG)
-    const started = performance.now()
-    let pictured = started
-    void picture
-      .then(({ source, quad: framed }) => {
-        pictured = performance.now()
+    const clock = { pictured: started }
+    this.present(
+      held,
+      started,
+      clock,
+      'camera',
+      picture.then(({ source, quad: framed }) => {
+        clock.pictured = performance.now()
         return develop(source, framed, size.width, size.height)
-      })
+      }),
+    )
+  }
+
+  /** The darkroom has a photo. Ease it into the frame and ask the depth model. */
+  private present(
+    held: Held,
+    started: number,
+    pictured: number | { pictured: number },
+    tag: string,
+    pending: Promise<Developed | null>,
+  ): void {
+    this.onExpose?.(held)
+    const { captures, renderer } = this.ctx
+    void pending
       .then((developed) => {
+        const shot = typeof pictured === 'number' ? pictured : pictured.pictured
         if (!captures.includes(held)) return
         if (!developed) {
           this.missed(held)
@@ -181,11 +205,11 @@ export class Shutter {
         held.photo.visible = true
         renderer.initTexture(held.mat.uniforms.uPhoto.value)
         const done = performance.now()
-        metric('picture', pictured - started, ' ms')
-        metric('darkroom', done - pictured, ' ms')
+        metric('picture', shot - started, ' ms')
+        metric('darkroom', done - shot, ' ms')
         console.info(
-          `[frame] capture ${held.width.toFixed(2)}x${held.height.toFixed(2)}m ` +
-            `picture ${Math.round(pictured - started)} ms, darkroom ${Math.round(done - pictured)} ms`,
+          `[frame] capture ${held.width.toFixed(2)}x${held.height.toFixed(2)}m ${tag} ` +
+            `picture ${Math.round(shot - started)} ms, darkroom ${Math.round(done - shot)} ms`,
         )
         if (held.flat) return
         developModelDepth(held, developed.photo)

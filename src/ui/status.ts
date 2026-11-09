@@ -13,6 +13,10 @@ export interface StatusInputs {
   count: number
   /** A hand has been in a waiting frame's photo for a moment. */
   waitingOnHands: boolean
+  /** Name of the time mode inside the frame. */
+  warp: string
+  /** Why the headset camera is not running, or null. */
+  camera: string | null
 }
 
 /** One line that says what is happening or what to do next. */
@@ -24,16 +28,18 @@ export function statusLine(s: StatusInputs): string {
   if (last?.mode === 'stuck') return 'Pinch the lifted corner to peel it off'
   if (s.touch === 'peel') return 'Both hands pull the depth apart'
   if (s.touch === 'grab') return 'The handle moves and tilts the frame'
+  if (s.touch === 'time') return 'Slide sideways to change the strength. A tap changes the mode'
   if (s.drawing) return 'Release to take the photo'
   if (s.waitingOnHands) return 'Let your hands fall away from the frame'
   if (last?.depth === 'wait' && !last.flat) return 'Reading depth'
   if (last?.depth === 'model') return `${s.count} captured · depth model`
   if (last?.depth === 'brightness') return `${s.count} captured · brightness depth`
   if (last?.flat) return 'Photo held flat'
+  if (s.presenting && s.camera) return s.camera
   if (s.phase === 'photo') return 'Photo in the frame'
   return s.presenting
-    ? 'Pinch a corner and pull. Bring the sticker to a wall to stick it.'
-    : 'Drag to draw. Drag a corner to peel. Drag a free sticker up onto the wall. Right-drag looks around.'
+    ? `${s.warp} inside the frame. Pinch the mark above it to change time, or a corner to peel.`
+    : 'Drag to draw. Drag a corner to peel. Keys 1–5 change the time inside the frame, [ and ] the strength. Right-drag looks around.'
 }
 
 /** The launch card's status line on the page. In a headset the captions carry the words. */

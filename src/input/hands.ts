@@ -33,6 +33,8 @@ const FOREARM = [0.08, 0.16, 0.24] as const
 export class HandInput implements JointSource {
   /** Fingers met: the soundscape ticks here. */
   onPinch: ((at: Vector3) => void) | null = null
+  /** A pinch that never grew into a frame: cycle the time window. */
+  onTap: (() => void) | null = null
   private session: XRSession | null = null
   private now = 0
   private readonly selectHeld = { left: false, right: false }
@@ -289,10 +291,12 @@ export class HandInput implements JointSource {
     const gesture = this.ctx.gesture
     if (!gesture.drawing) return
     if (side !== this.primary && !this.dual) return
+    const tiny = !this.dual && gesture.rect.halfW < 0.012 && gesture.rect.halfH < 0.012
     if (rewound) gesture.move(this.dual && side !== this.primary ? 'b' : 'a', this.rewound, this.headPos)
     this.primary = null
     this.dual = false
     this.waitClear = true
     this.shutter.finishGesture()
+    if (tiny) this.onTap?.()
   }
 }

@@ -190,6 +190,8 @@ export function dropFrame(held: Held): void {
   for (let i = 0; i < held.group.children.length; i++) {
     const child = held.group.children[i]
     if (child === held.peel.root || child === held.handle || child === held.photo) continue
+    // The time glass shares its geometry and material across frames.
+    if (child.userData.timeGlass) continue
     const mesh = child as Mesh
     mesh.geometry?.dispose()
     const mat = mesh.material
