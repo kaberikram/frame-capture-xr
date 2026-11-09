@@ -8,6 +8,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500&display=swap" />
+    <script>
+      ;(function () {
+        var path = location.pathname.replace(/\/+$/, '')
+        if (path === '/clean' || path.endsWith('/clean')) document.documentElement.classList.add('clean')
+      })()
+    </script>
     <style>
       :root {
         color-scheme: dark;
@@ -69,6 +75,18 @@
       }
       button:focus-visible { outline: 2px solid var(--glow); outline-offset: 3px; }
       button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+      html.clean h1,
+      html.clean #hint,
+      html.clean #status,
+      html.clean #depth { display: none !important; }
+      html.clean #launch {
+        width: auto;
+        padding: 10px 12px;
+        background: transparent;
+        border: 0;
+        box-shadow: none;
+        backdrop-filter: none;
+      }
       @media (max-width: 640px) {
         h1 { font-size: 22px; }
       }
@@ -79,11 +97,22 @@
     <section id="launch" aria-labelledby="title">
       <h1 id="title">frame capture</h1>
       <p id="hint">Pinch the air to frame a moment. What you see through the frame falls behind time. Let go and it becomes a photo with depth, one you can peel off and stick anywhere in your room.</p>
-      <p id="status">Drag to draw. Drag a corner to peel. Keys 1–5 change the time inside the frame, [ and ] the strength. Right-drag looks around.</p>
+      <p id="status">Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame. Right-drag looks around.</p>
       <p id="depth"></p>
       <p id="camera" role="status"></p>
       <button id="enter" type="button">Enter passthrough</button>
     </section>
+    <script>
+      ;(function () {
+        if (!document.documentElement.classList.contains('clean')) return
+        ;['hint', 'status', 'title', 'depth'].forEach(function (id) {
+          var el = document.getElementById(id)
+          if (el) el.textContent = ''
+        })
+        var enter = document.getElementById('enter')
+        if (enter) enter.textContent = 'Enter'
+      })()
+    </script>
     <script type="module" src="/src/index.ts"></script>
   </body>
 </html>

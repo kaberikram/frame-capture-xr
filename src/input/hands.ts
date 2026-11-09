@@ -1,13 +1,26 @@
-import { Vector3 } from '@iwsdk/core'
+import { Quaternion, Vector3 } from '@iwsdk/core'
 import { WORLD_UP, type Ctx } from '../app/context.js'
 import type { JointSource, Shutter } from '../capture/shutter.js'
 import type { Grip } from '../interaction/grip.js'
 import { routeHit, type Interaction } from '../interaction/router.js'
 import type { Sheets } from '../interaction/sheets.js'
+import type { TimePlay } from '../interaction/time-play.js'
 import { OneEuro3, type Point3 } from './one-euro.js'
 import { PinchTrail } from './pinch-trail.js'
 
-type Side = 'left' | 'right'
+export type Side = 'left' | 'right'
+
+/** One hand, in world space, after this frame's joint poses. */
+export interface HandSample {
+  tracked: boolean
+  pinching: boolean
+  readonly pinch: Vector3
+  readonly index: Vector3
+  readonly wrist: Vector3
+  readonly palm: Vector3
+  readonly fingers: Vector3
+  readonly thumb: Vector3
+}
 
 const SIDES: readonly Side[] = ['left', 'right']
 /** Gap between the thumb and index fingertip surfaces, in metres, that starts a pinch. */
@@ -33,8 +46,8 @@ const FOREARM = [0.08, 0.16, 0.24] as const
 export class HandInput implements JointSource {
   /** Fingers met: the soundscape ticks here. */
   onPinch: ((at: Vector3) => void) | null = null
-  /** A pinch that never grew into a frame: cycle the time window. */
-  onTap: (() => void) | null = null
+  /** Stretch, flick, and the palm menu. Set after both exist. */
+  play: TimePlay | null = null
   private session: XRSession | null = null
   private now = 0
   private readonly selectHeld = { left: false, right: false }
@@ -45,6 +58,12 @@ export class HandInput implements JointSource {
   private readonly trails = { left: new PinchTrail(), right: new PinchTrail() }
   private readonly handA = new Vector3()
   private readonly handB = new Vector3()
+  readonly pose: { left: HandSample; right: HandSample } = {
+    left: sampleOf(this.handA),
+    right: sampleOf(this.handB),
+  }
+  private readonly jointQ = new Quaternion()
+  private readonly playerQ = new Quaternion()
   private readonly headPos = new Vector3()
   private readonly aimDir = new Vector3()
   private readonly rewound = new Vector3()
@@ -102,6 +121,8 @@ export class HandInput implements JointSource {
     this.ctx.player.head.getWorldPosition(this.headPos)
     this.tracked.left = this.fillPinch('left')
     this.tracked.right = this.fillPinch('right')
+    this.pose.left.pinching = this.isPinching('left')
+    this.pose.right.pinching = this.isPinching('right')
     if (this.waitClear) {
       let still = false
       for (let i = 0; i < SIDES.length; i++) if (this.isPinching(SIDES[i])) still = true
@@ -203,7 +224,11 @@ export class HandInput implements JointSource {
     const index = hand?.get('index-finger-tip')
     const thumbPose = thumb && space ? frame?.getJointPose?.(thumb, space) : undefined
     const indexPose = index && space ? frame?.getJointPose?.(index, space) : undefined
+    const pose = this.pose[side]
     if (!thumbPose || !indexPose) {
+      pose.tracked = false
+      pose.palm.set(0, 0, 0)
+      pose.thumb.set(0, 0, 0)
       this.filters[side].reset()
       this.trails[side].clear()
       return false
@@ -214,6 +239,24 @@ export class HandInput implements JointSource {
     this.filters[side].filter(this.raw.x, this.raw.y, this.raw.z, this.now, this.smooth)
     const store = this.point(side)
     store.set(this.smooth.x, this.smooth.y, this.smooth.z)
+    pose.tracked = true
+    pose.index.set(ip.x, ip.y, ip.z).applyMatrix4(player.matrixWorld)
+    const wristJoint = hand?.get('wrist')
+    const wristPose = wristJoint && space ? frame?.getJointPose?.(wristJoint, space) : undefined
+    if (wristPose) {
+      const wp = wristPose.transform.position
+      const o = wristPose.transform.orientation
+      pose.wrist.set(wp.x, wp.y, wp.z).applyMatrix4(player.matrixWorld)
+      this.jointQ.set(o.x, o.y, o.z, o.w)
+      player.getWorldQuaternion(this.playerQ)
+      pose.palm.set(0, -1, 0).applyQuaternion(this.jointQ).applyQuaternion(this.playerQ).normalize()
+      pose.fingers.set(0, 0, -1).applyQuaternion(this.jointQ).applyQuaternion(this.playerQ).normalize()
+      pose.thumb.set(1, 0, 0).applyQuaternion(this.jointQ).applyQuaternion(this.playerQ).normalize()
+    } else {
+      pose.palm.set(0, 0, 0)
+      pose.thumb.set(0, 0, 0)
+      pose.fingers.set(0, 0, -1)
+    }
     const radii = (thumbPose.radius ?? 0) + (indexPose.radius ?? 0)
     const gap = Math.hypot(tp.x - ip.x, tp.y - ip.y, tp.z - ip.z) - (radii > 0.004 ? radii : TIP_RADII)
     this.pinchGap[side] = gap
@@ -243,6 +286,11 @@ export class HandInput implements JointSource {
     }
     if (grip.touch !== 'none') return
     if (!gesture.drawing) {
+      if (this.play?.claim(side)) {
+        this.primary = side
+        return
+      }
+      if (!this.otherPinching(side) && this.play?.onFrameRim(side)) return
       this.ctx.player.head.getWorldPosition(this.headPos)
       this.aimDir.copy(at).sub(this.headPos)
       const hit = this.interaction.aim(this.headPos, this.aimDir)
@@ -264,6 +312,7 @@ export class HandInput implements JointSource {
   }
 
   private moved(side: Side): void {
+    if (this.play?.stretching) return
     const at = this.point(side)
     if (this.grip.touch !== 'none') {
       if (side !== this.primary) return
@@ -280,6 +329,13 @@ export class HandInput implements JointSource {
   }
 
   private ended(side: Side): void {
+    if (this.grip.touch === 'none' && this.play?.stretching) {
+      this.play.release()
+      this.primary = null
+      this.dual = false
+      this.waitClear = true
+      return
+    }
     // Opening the fingers moved the point; go back to where they were tightest.
     const rewound = this.trails[side].rewind(this.now, REWIND, this.rewound)
     if (this.grip.touch !== 'none') {
@@ -291,12 +347,23 @@ export class HandInput implements JointSource {
     const gesture = this.ctx.gesture
     if (!gesture.drawing) return
     if (side !== this.primary && !this.dual) return
-    const tiny = !this.dual && gesture.rect.halfW < 0.012 && gesture.rect.halfH < 0.012
     if (rewound) gesture.move(this.dual && side !== this.primary ? 'b' : 'a', this.rewound, this.headPos)
     this.primary = null
     this.dual = false
     this.waitClear = true
     this.shutter.finishGesture()
-    if (tiny) this.onTap?.()
+  }
+}
+
+function sampleOf(pinch: Vector3): HandSample {
+  return {
+    tracked: false,
+    pinching: false,
+    pinch,
+    index: new Vector3(),
+    wrist: new Vector3(),
+    palm: new Vector3(),
+    fingers: new Vector3(),
+    thumb: new Vector3(),
   }
 }

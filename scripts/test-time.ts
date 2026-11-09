@@ -1,12 +1,9 @@
 import {
-  advancePlay,
-  clampIntensity,
   glassCoversPhoto,
   glassVisible,
   initialWarp,
   nextWarp,
   slotBehind,
-  slowPlayback,
   timeMessage,
   warpIndex,
   warpName,
@@ -15,38 +12,64 @@ import {
   type GlassState,
   type WarpMode,
 } from '../src/capture/time-mode.ts'
+import {
+  easeToward,
+  flickCross,
+  onRim,
+  palmShown,
+  stretchScale,
+  tileCenter,
+  tilePick,
+} from '../src/interaction/time-gestures.ts'
 
 function assert(ok: boolean, message: string): void {
   if (!ok) throw new Error(message)
 }
 
-const order: WarpMode[] = ['slow', 'echo', 'slit', 'ripple', 'live']
+const order: WarpMode[] = ['echo', 'slit', 'ripple', 'live']
 assert(WARP_MODES.join() === order.join(), 'the mode list drifted')
-let mode: WarpMode = 'slow'
+let mode: WarpMode = 'echo'
 for (let i = 0; i < order.length; i++) {
   assert(warpIndex(mode) === i, `${mode} index`)
   assert(warpName(mode).length > 0, `${mode} name`)
   mode = nextWarp(mode)
 }
-assert(mode === 'slow', 'the cycle returns to slow motion')
+assert(mode === 'echo', 'the cycle returns to echo')
 
 assert(slotBehind(3, 5, 16) === 14, `slot 5 behind 3 should be 14, got ${slotBehind(3, 5, 16)}`)
 assert(slotBehind(5, 15, 16) === 6, `the oldest full-ring slot should be just after the head, got ${slotBehind(5, 15, 16)}`)
 assert(slotBehind(0, 0) === 0, 'zero steps back is the head')
 
-let play = 0
-for (let i = 0; i < 10; i++) play = advancePlay(play, 0.5, 2, 4)
-assert(play >= 0 && play < 4, `playback stays inside the reach, got ${play}`)
-assert(advancePlay(0, 1, 0, 3) === 0, 'a stopped playback stays')
-assert(advancePlay(1, 1, 1, 0) === 0, 'an empty ring has nothing to play')
+assert(warpReach(16) === 15, 'a full ring reaches the oldest slot')
+assert(warpReach(1) === 0, 'one frame has no past')
+assert(initialWarp() === 'echo', `a plain launch is echo, got ${initialWarp()}`)
 
-assert(Math.abs(warpReach(0, 16) - 0.3 * 15) < 1e-6, 'low intensity still reaches into the ring')
-assert(warpReach(1, 1) === 0, 'one frame has no past')
-assert(slowPlayback(0) === 0.5, 'slow motion starts at half speed')
-assert(slowPlayback(1) < 0.15, 'full intensity is much slower')
-assert(clampIntensity(-1) === 0.12 && clampIntensity(4) === 1, 'strength stays in range')
-const boot = initialWarp()
-assert(boot.mode === 'slow' && boot.intensity === 0.62, `a plain launch is slow at 62%, got ${boot.mode} ${boot.intensity}`)
+assert(stretchScale(0.2, 0.2) === 1, 'hands that have not moved leave the pattern alone')
+assert(stretchScale(0.2, 0.4) === 1.8, 'pulling apart widens the pattern, up to a limit')
+assert(stretchScale(0.2, 0.08) === 0.55, 'pushing together narrows it, down to a limit')
+assert(easeToward(0, 1, 0, 0.1) === 0, 'no time means no change')
+assert(easeToward(0, 1, 1, 0.0001) === 1, 'a tiny tau snaps')
+
+assert(!flickCross(0.02, -0.02, 0.1), 'a hitch is not a flick')
+assert(!flickCross(0.02, 0.01, 0.016), 'staying on one side is not a flick')
+assert(flickCross(0.02, -0.01, 0.016), 'a quick crossing is a flick')
+assert(!flickCross(0.2, -0.01, 0.016), 'a hand arriving from far away is not a flick')
+
+assert(palmShown(0.8, false), 'a palm facing the viewer opens the menu')
+assert(!palmShown(0.6, false), 'a palm that is only partly turned stays quiet')
+assert(palmShown(0.5, true), 'once open, the menu stays until the palm turns further')
+assert(!palmShown(0.3, true), 'turning the palm away closes the menu')
+
+assert(onRim(0.15, 0, 0.16, 0.11), 'the edge of a frame is a rim')
+assert(!onRim(0, 0, 0.16, 0.11), 'the middle of a frame is not a rim')
+assert(!onRim(0.16, 0.11, 0.16, 0.11), 'a corner belongs to the peel')
+
+const top = tileCenter(0, 4)
+const hit = tilePick(0, top.y, 0, 4)
+assert(hit.index === 0 && hit.touch && hit.near > 0.9, 'a fingertip on the top tile touches it')
+assert(tilePick(0, top.y, 0.05, 4).index === -1, 'a fingertip off the plane misses')
+assert(!tilePick(0.06, top.y, 0, 4).touch && tilePick(0.06, top.y, 0, 4).index === 0, 'a fingertip just beside a tile is near it')
+assert(tilePick(0.2, 0, 0, 4).index === -1, 'a fingertip far from the stack misses')
 
 const empty: GlassState = { frameGone: false, flat: false, idle: true, photoReady: false, pop: 0, developT: -1 }
 assert(glassVisible(empty) && !glassCoversPhoto(empty), 'an empty frame shows the glass and has no photo to cover')

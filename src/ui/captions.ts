@@ -11,7 +11,7 @@ export type Hint = 'draw' | 'peel' | 'wall' | 'time'
 
 const HINTS: Record<Hint, string> = {
   draw: 'Pinch the air and draw a frame',
-  time: 'Pinch the mark above the frame to change time',
+  time: 'Turn a palm toward you, or flick a hand through the frame',
   peel: 'Pinch a corner to peel',
   wall: 'Bring it to a wall',
 }

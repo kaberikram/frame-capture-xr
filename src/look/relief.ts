@@ -17,9 +17,8 @@ import type { Raster } from '../capture/crop.js'
 import { PALETTE, linear } from './palette.js'
 
 /**
- * Per-frame contents. Slit-scan and slow motion replace this GLSL function
- * (`vec4 frameContents(vec2 uv)`) and can read extra uniforms on the material.
- * The default samples the captured photo.
+ * Per-frame contents. The time window is a separate pane, not this photo.
+ * `vec4 frameContents(vec2 uv)` samples the captured photo.
  */
 export const PHOTO_CONTENTS = `
 vec4 frameContents(vec2 uv) {

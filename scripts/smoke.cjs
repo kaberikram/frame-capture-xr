@@ -100,9 +100,29 @@ function check(ok, message, failures) {
   if (!ok) failures.push(message)
 }
 
+async function clean(browser, failures) {
+  const { context, page, errors } = await openPage(browser, 'clean?preview=1')
+  const dom = await page.evaluate(() => {
+    const hint = document.getElementById('hint')
+    const status = document.getElementById('status')
+    const guide = `${hint?.textContent ?? ''} ${status?.textContent ?? ''}`
+    return {
+      clean: document.documentElement.classList.contains('clean'),
+      hintHidden: hint ? getComputedStyle(hint).display === 'none' : false,
+      warp: window.__capture.warp,
+      guide,
+    }
+  })
+  check(dom.clean && dom.hintHidden && dom.guide.trim() === '', 'clean: the guide and status are not on the page', failures)
+  check(dom.warp === 'echo', `clean: the time window still starts in echo (got ${dom.warp})`, failures)
+  check(!/pinch the mark|diamond|drag to draw/i.test(dom.guide), 'clean: no instructions about drawing or the old mark', failures)
+  check(errors.length === 0, `clean: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  await context.close()
+}
+
 async function desk(browser, failures) {
   const { context, page, errors } = await openPage(browser, '?preview=1&shot=1&ui=0', { fixedClock: true })
-  check((await page.evaluate(() => window.__capture.warp)) === 'slow', 'desk: the time window starts in slow motion', failures)
+  check((await page.evaluate(() => window.__capture.warp)) === 'echo', 'desk: the time window starts in echo', failures)
   const seen = []
   for (let i = 0; i < 60 * 26; i += 6) {
     await frames(page, 6)
@@ -182,15 +202,12 @@ async function headset(browser, failures, leaveHandInFrame) {
   check(errors.length === 0, `headset: no page errors ${label}${errors.length ? `: ${errors[0]}` : ''}`, failures)
   if (!leaveHandInFrame) {
     const switched = await page.evaluate(() => new Promise((resolve) => {
-      const before = window.__capture.amount
       const mode = window.__capture.cycle()
-      window.__capture.nudge(0.2)
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        resolve({ mode, warp: window.__capture.warp, before, after: window.__capture.amount })
+        resolve({ mode, warp: window.__capture.warp })
       }))
     }))
-    check(switched.mode === 'echo' && switched.warp === 'echo', `headset: the time mode cycles to echo (got ${switched.mode} / ${switched.warp})`, failures)
-    check(switched.after > switched.before + 0.05, `headset: the time strength can be raised (${switched.before} → ${switched.after})`, failures)
+    check(switched.mode === 'slit' && switched.warp === 'slit', `headset: the time mode cycles to slit scan (got ${switched.mode} / ${switched.warp})`, failures)
   }
   const timing = logs.find((l) => l.includes('darkroom'))
   if (timing) console.log(`     ${timing}`)
@@ -203,6 +220,7 @@ async function headset(browser, failures, leaveHandInFrame) {
   const browser = await chromium.launch({ args: [...GL, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] })
   const failures = []
   try {
+    await clean(browser, failures)
     await desk(browser, failures)
     await headset(browser, failures, false)
     await headset(browser, failures, true)

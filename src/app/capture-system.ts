@@ -18,6 +18,7 @@ import { Grip } from '../interaction/grip.js'
 import { Interaction } from '../interaction/router.js'
 import { Sheets } from '../interaction/sheets.js'
 import { Stickers } from '../interaction/stickers.js'
+import { TimePlay } from '../interaction/time-play.js'
 import type { Effect } from '../look/effects.js'
 import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
 import { PALETTE, voice } from '../look/palette.js'
@@ -34,7 +35,7 @@ import { buildStandIn } from '../world/stand-in.js'
 import { DESK_SURFACES } from '../world/surfaces.js'
 import { CaptureLook } from './capture-look.js'
 import { defaultLook, firstEntity, readLook, type Ctx } from './context.js'
-import { HAND_MODELS, WEBCAM_REQUESTED, launchSession } from './experience.js'
+import { CLEAN, HAND_MODELS, WEBCAM_REQUESTED, launchSession } from './experience.js'
 
 /**
  * Draw a rectangle in the air, anchor it, photograph what it frames, and ease
@@ -67,6 +68,7 @@ export class CaptureSystem extends createSystem({
   private sheets!: Sheets
   private interaction!: Interaction
   private hands!: HandInput
+  private timePlay!: TimePlay
   private pointer!: DeskPointer
   private shot!: DeskShot
   private surfaces!: LiveSurfaces
@@ -129,8 +131,10 @@ export class CaptureSystem extends createSystem({
     this.stickers = new Stickers(ctx, this.grip, () => this.snap.clear())
     this.sheets = new Sheets(ctx, this.grip)
     const frameGrab = new FrameGrab(this.grip)
-    this.interaction = new Interaction(ctx, this.grip, this.stickers, this.sheets, frameGrab, this.snap, this.warp)
+    this.interaction = new Interaction(ctx, this.grip, this.stickers, this.sheets, frameGrab, this.snap)
     this.hands = new HandInput(ctx, this.grip, this.interaction, this.sheets, this.shutter)
+    this.timePlay = new TimePlay(ctx, this.hands, this.grip, this.warp, root, this.renderer)
+    this.hands.play = this.timePlay
     this.shot = new DeskShot(ctx, this.deskCamera, this.stickers, this.grip, this.shutter)
     this.pointer = new DeskPointer(ctx, this.grip, this.interaction, this.stickers, frameGrab, this.deskCamera, this.shutter, () => this.shot.blocksDraw)
     this.pointer.attach(document.getElementById('scene-container'))
@@ -144,11 +148,9 @@ export class CaptureSystem extends createSystem({
     }
 
     this.hands.onPinch = (at) => this.sound.pinch(at)
-    this.hands.onTap = () => this.warp.cycle()
-    this.pointer.onTap = () => this.warp.cycle()
     this.warp.onNote = (line) => {
       this.captions.retire('time')
-      this.status.flash(line, 2.6)
+      if (!CLEAN) this.status.flash(line, 2.6)
     }
     this.shutter.onExpose = (held) => this.cues.shutter(held)
     // Browsers start audio only from a gesture: the Enter button, or the first click on the desk.
@@ -159,10 +161,7 @@ export class CaptureSystem extends createSystem({
       void this.enter()
     })
     publishApi()
-    bindWarpApi(
-      () => this.warp.cycle(),
-      (delta) => this.warp.nudge(delta),
-    )
+    bindWarpApi(() => this.warp.cycle())
     if (DEBUG) {
       this.debug = new DebugOverlay()
       this.debug.mount(this.player.head)
@@ -170,6 +169,7 @@ export class CaptureSystem extends createSystem({
     prepareDarkroom()
     if (WEBCAM_REQUESTED) this.rig.openWebcam()
     onDepthProgress((state, percent) => {
+      if (CLEAN) return
       const el = document.getElementById('depth')
       if (!el) return
       el.textContent = voice(
@@ -200,6 +200,7 @@ export class CaptureSystem extends createSystem({
       // Hands and the shutter read this frame's poses. The time window's blit
       // borrows the renderer afterwards, so it cannot move those poses.
       this.hands.update(now)
+      this.timePlay.step(dt)
       this.shutter.step(now, this.hands)
       this.warp.update(dt, now, true, this.camera.aspect)
       this.rig.rearm(now)
@@ -209,6 +210,7 @@ export class CaptureSystem extends createSystem({
       this.standIn.visible = true
       this.rig.watchWebcam()
       this.deskCamera.apply(this.camera)
+      this.timePlay.step(dt)
       this.warp.update(dt, now, false, this.camera.aspect)
       this.shot.update(dt)
     }
@@ -219,28 +221,34 @@ export class CaptureSystem extends createSystem({
     this.snap.update(driven, presenting ? this.surfaces.list : DESK_SURFACES, dt)
     this.interaction.contact()
     this.animate(dt, now)
-    this.warp.sync(this.gesture.drawing, this.gesture.rect, this.captures, this.look.strip, now)
+    this.warp.sync(this.gesture.drawing, this.gesture.rect, this.captures)
     this.updatePinchLights(presenting, dt)
     this.cues.listen(presenting ? this.player.head : this.camera)
     this.cues.step(this.captures, dt)
     this.publishPhase()
     const last = this.captures[this.captures.length - 1]
-    this.captions.update(this.captionLine(last), this.player.head, presenting, dt)
+    const problem = presenting ? this.rig.problem : null
+    if (CLEAN) {
+      this.captions.update(problem, this.player.head, presenting, dt)
+      this.status.note(problem ?? '')
+    } else {
+      this.captions.update(this.captionLine(last), this.player.head, presenting, dt)
+      this.status.note(
+        statusLine({
+          touch: this.grip.touch,
+          previewing: this.snap.previewing,
+          last,
+          drawing: this.gesture.drawing,
+          phase: this.phase,
+          presenting,
+          count: this.captures.length,
+          waitingOnHands: this.shutter.waitingOnHands,
+          warp: this.warp.mode,
+          camera: problem,
+        }),
+      )
+    }
     if (this.debug) this.paintDebug(presenting, last)
-    this.status.note(
-      statusLine({
-        touch: this.grip.touch,
-        previewing: this.snap.previewing,
-        last,
-        drawing: this.gesture.drawing,
-        phase: this.phase,
-        presenting,
-        count: this.captures.length,
-        waitingOnHands: this.shutter.waitingOnHands,
-        warp: this.warp.mode,
-        camera: presenting ? this.rig.problem : null,
-      }),
-    )
   }
 
   /**
@@ -257,18 +265,19 @@ export class CaptureSystem extends createSystem({
         void this.rig.arm()
       } else {
         this.cameraAsked = true
-        launchNote(voice('Allow the headset cameras when asked. The frame uses them to take its photo.'))
+        if (!CLEAN) launchNote(voice('Allow the headset cameras when asked. The frame uses them to take its photo.'))
         if (button) button.disabled = true
         const ok = await this.rig.arm()
         if (button) button.disabled = false
         if (!ok) {
-          launchNote(voice(`${this.rig.problem ?? 'The camera did not start'}. Press Enter passthrough to go in without photos.`))
+          const problem = this.rig.problem ?? 'The camera did not start'
+          launchNote(voice(CLEAN ? problem : `${problem}. Press Enter passthrough to go in without photos.`))
           return
         }
         launchNote('')
         // Entering needs a recent tap. A prompt answered slowly uses it up, so ask for one more.
         if (navigator.userActivation && !navigator.userActivation.isActive) {
-          launchNote(voice('Camera allowed. Press Enter passthrough.'))
+          if (!CLEAN) launchNote(voice('Camera allowed. Press Enter passthrough.'))
           return
         }
       }
@@ -358,7 +367,6 @@ export class CaptureSystem extends createSystem({
     if (drawing || touch !== 'none') this.captions.active()
     if (drawing && !this.sawDrawing) this.captions.retire('draw')
     if (touch === 'curl' && !this.sawCurl) this.captions.retire('peel')
-    if (touch === 'time') this.captions.retire('time')
     let stuck = 0
     for (let i = 0; i < this.captures.length; i++) if (this.captures[i].mode === 'stuck') stuck++
     if (stuck > this.sawStuck) this.captions.retire('wall')
@@ -367,7 +375,7 @@ export class CaptureSystem extends createSystem({
     this.sawStuck = stuck
     const settled = last && !last.frameGone && last.mode === 'idle' && last.pop >= 1 && last.depth !== 'wait'
     let hint: Hint | null = null
-    if (drawing || touch === 'curl' || touch === 'grab' || touch === 'peel' || touch === 'time') hint = null
+    if (drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
     else if (touch === 'sticker' || last?.mode === 'free') hint = 'wall'
     else if (settled && this.captions.hint('time')) hint = 'time'
     else if (settled) hint = 'peel'
@@ -430,7 +438,7 @@ export class CaptureSystem extends createSystem({
       previewing: this.snap.previewing,
       yaw: this.deskCamera.yaw,
     })
-    publishPhase(this.phase, this.captures.length, last, { mode: this.warp.mode, intensity: this.warp.intensity })
+    publishPhase(this.phase, this.captures.length, last, { mode: this.warp.mode })
   }
 
   private paintDebug(presenting: boolean, last: Held | undefined): void {
@@ -465,6 +473,7 @@ export class CaptureSystem extends createSystem({
     this.sound.dispose()
     this.surfaces.clear()
     this.hands.dispose()
+    this.timePlay.dispose()
     this.pointer.detach()
     this.rig.dispose()
     this.warp.dispose()

@@ -10,14 +10,10 @@ export interface CaptureApi {
   depth: string
   relief: number
   peel: number
-  /** Time mode inside the frame: slow, echo, slit, ripple, or live. */
+  /** Time mode inside the frame: echo, slit, ripple, or live. */
   warp: string
-  /** 0..1 strength of the current time mode. */
-  amount: number
   /** Cycle the time mode and return the new one. Used by the smoke check. */
   cycle: () => string
-  /** Add to the time strength. */
-  nudge: (delta: number) => void
 }
 
 export interface PhaseInputs {
@@ -38,20 +34,17 @@ export function publishApi(): void {
     depth: 'none',
     relief: 0,
     peel: 0,
-    warp: 'slow',
-    amount: 0.62,
-    cycle: () => 'slow',
-    nudge: () => undefined,
+    warp: 'echo',
+    cycle: () => 'echo',
   }
   ;(window as unknown as { __capture: CaptureApi }).__capture = api
 }
 
 /** Point the debug hook at the live time window. */
-export function bindWarpApi(cycle: () => string, nudge: (delta: number) => void): void {
+export function bindWarpApi(cycle: () => string): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return
   api.cycle = cycle
-  api.nudge = nudge
 }
 
 export function reliefOf(held: Held | undefined): number {
@@ -79,7 +72,7 @@ export function computePhase(s: PhaseInputs): Phase {
   return 'ready'
 }
 
-export function publishPhase(phase: Phase, count: number, last: Held | undefined, warp?: { mode: string; intensity: number }): void {
+export function publishPhase(phase: Phase, count: number, last: Held | undefined, warp?: { mode: string }): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return
   api.phase = phase
@@ -89,7 +82,6 @@ export function publishPhase(phase: Phase, count: number, last: Held | undefined
   api.peel = last?.mode === 'free' || last?.mode === 'stuck' ? 1 : last?.mode === 'curl' ? last.curl : last?.spread ?? 0
   if (!warp) return
   api.warp = warp.mode
-  api.amount = warp.intensity
 }
 
 function resting(hold: Hold, yaw: number, relief: number, spread: number, curl: number): boolean {
