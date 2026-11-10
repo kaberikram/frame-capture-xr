@@ -5,7 +5,7 @@ import { onDepthProgress, prepareDepthModel } from '../capture/depth-model.js'
 import { stepDevelop } from '../capture/develop.js'
 import { heldLook, layoutBorder, type Held } from '../capture/held.js'
 import { Shutter } from '../capture/shutter.js'
-import { bindWarpApi, computePhase, publishApi, publishPhase, type Phase } from '../debug/api.js'
+import { bindWarpApi, computePhase, publishApi, publishPhase, publishRoom, type Phase } from '../debug/api.js'
 import { DEBUG } from '../debug/metrics.js'
 import { DebugOverlay } from '../debug/overlay.js'
 import { DeskCamera } from '../desk/desk-camera.js'
@@ -19,6 +19,7 @@ import { Interaction } from '../interaction/router.js'
 import { Sheets } from '../interaction/sheets.js'
 import { Stickers } from '../interaction/stickers.js'
 import { TimePlay } from '../interaction/time-play.js'
+import { bindRoomSpace, RoomScan } from '../room/room-scan.js'
 import type { Effect } from '../look/effects.js'
 import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
 import { PALETTE, voice } from '../look/palette.js'
@@ -35,7 +36,7 @@ import { buildStandIn } from '../world/stand-in.js'
 import { DESK_SURFACES } from '../world/surfaces.js'
 import { CaptureLook } from './capture-look.js'
 import { defaultLook, firstEntity, readLook, type Ctx } from './context.js'
-import { CLEAN, HAND_MODELS, WEBCAM_REQUESTED, launchSession } from './experience.js'
+import { CLEAN, HAND_MODELS, WEBCAM_REQUESTED, launchSession, queryFlag } from './experience.js'
 
 /**
  * Draw a rectangle in the air, anchor it, photograph what it frames, and ease
@@ -69,6 +70,7 @@ export class CaptureSystem extends createSystem({
   private interaction!: Interaction
   private hands!: HandInput
   private timePlay!: TimePlay
+  private room!: RoomScan
   private pointer!: DeskPointer
   private shot!: DeskShot
   private surfaces!: LiveSurfaces
@@ -135,8 +137,12 @@ export class CaptureSystem extends createSystem({
     this.hands = new HandInput(ctx, this.grip, this.interaction, this.sheets, this.shutter)
     this.timePlay = new TimePlay(ctx, this.hands, this.grip, this.warp, root, this.renderer)
     this.hands.play = this.timePlay
+    this.room = new RoomScan(root, this.renderer)
+    this.hands.room = this.room
+    if (queryFlag('warp') === 'peel') this.room.setActive(true)
     this.shot = new DeskShot(ctx, this.deskCamera, this.stickers, this.grip, this.shutter)
     this.pointer = new DeskPointer(ctx, this.grip, this.interaction, this.stickers, frameGrab, this.deskCamera, this.shutter, () => this.shot.blocksDraw)
+    this.pointer.room = this.room
     this.pointer.attach(document.getElementById('scene-container'))
     this.surfaces = new LiveSurfaces(ctx)
     // Passthrough shows your real hands; IWSDK's hand models would sit on top of them.
@@ -149,9 +155,16 @@ export class CaptureSystem extends createSystem({
 
     this.hands.onPinch = (at) => this.sound.pinch(at)
     this.warp.onNote = (line) => {
+      this.room.setActive(false)
       this.captions.retire('time')
       if (!CLEAN) this.status.flash(line, 2.6)
     }
+    this.timePlay.onMode = (mode) => {
+      if (mode !== 'peel') return
+      this.room.setActive(true)
+      if (!CLEAN) this.status.flash('Peel', 2.2)
+    }
+    window.addEventListener('keydown', this.onRoomKey)
     this.shutter.onExpose = (held) => this.cues.shutter(held)
     // Browsers start audio only from a gesture: the Enter button, or the first click on the desk.
     const view = document.getElementById('scene-container')
@@ -214,6 +227,9 @@ export class CaptureSystem extends createSystem({
       this.warp.update(dt, now, false, this.camera.aspect)
       this.shot.update(dt)
     }
+    this.room.liveVideo = this.rig.liveVideo()
+    const depthFrame = this.world.xrFrame as Parameters<RoomScan['step']>[2]
+    this.room.step(dt, presenting, presenting ? depthFrame : null, this.camera, this.standIn)
     this.syncDrag(now)
     // Surfaces only matter while a sticker is being carried toward one.
     const driven = this.drivenSticker()
@@ -229,8 +245,9 @@ export class CaptureSystem extends createSystem({
     const last = this.captures[this.captures.length - 1]
     const problem = presenting ? this.rig.problem : null
     if (CLEAN) {
-      this.captions.update(problem, this.player.head, presenting, dt)
-      this.status.note(problem ?? '')
+      const roomNote = this.room.active ? this.room.depthNote : null
+      this.captions.update(problem ?? roomNote, this.player.head, presenting, dt)
+      this.status.note(problem ?? roomNote ?? '')
     } else {
       this.captions.update(this.captionLine(last), this.player.head, presenting, dt)
       this.status.note(
@@ -245,6 +262,8 @@ export class CaptureSystem extends createSystem({
           waitingOnHands: this.shutter.waitingOnHands,
           warp: this.warp.mode,
           camera: problem,
+          room: this.room.active,
+          roomNote: this.room.depthNote,
         }),
       )
     }
@@ -313,6 +332,7 @@ export class CaptureSystem extends createSystem({
     if (session === this.session) return
     this.session = session
     this.hands.bind(session)
+    bindRoomSpace(session ? this.renderer.xr.getReferenceSpace() : null)
     this.gesture.cancel()
     this.rig.lens.clear()
     this.surfaces.clear()
@@ -375,7 +395,7 @@ export class CaptureSystem extends createSystem({
     this.sawStuck = stuck
     const settled = last && !last.frameGone && last.mode === 'idle' && last.pop >= 1 && last.depth !== 'wait'
     let hint: Hint | null = null
-    if (drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
+    if (this.room.active || drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
     else if (touch === 'sticker' || last?.mode === 'free') hint = 'wall'
     else if (settled && this.captions.hint('time')) hint = 'time'
     else if (settled) hint = 'peel'
@@ -439,6 +459,7 @@ export class CaptureSystem extends createSystem({
       yaw: this.deskCamera.yaw,
     })
     publishPhase(this.phase, this.captures.length, last, { mode: this.warp.mode })
+    publishRoom(this.room.active, this.room.chunkCount, this.room.patchCount)
   }
 
   private paintDebug(presenting: boolean, last: Held | undefined): void {
@@ -466,14 +487,23 @@ export class CaptureSystem extends createSystem({
     )
   }
 
+  private readonly onRoomKey = (event: KeyboardEvent): void => {
+    if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return
+    if (event.key !== '5') return
+    this.room.setActive(true)
+    if (!CLEAN) this.status.flash('Peel', 2.2)
+  }
+
   private dispose(): void {
     this.debug?.dispose()
     this.captions.dispose()
     this.pinchLights.dispose()
     this.sound.dispose()
     this.surfaces.clear()
+    window.removeEventListener('keydown', this.onRoomKey)
     this.hands.dispose()
     this.timePlay.dispose()
+    this.room.dispose()
     this.pointer.detach()
     this.rig.dispose()
     this.warp.dispose()

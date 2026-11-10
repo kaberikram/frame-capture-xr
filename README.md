@@ -19,7 +19,7 @@ If the camera cannot start, the launch card and the frame say why: blocked (allo
 
 `?debug=1` adds a small panel with the frame rate, the worst frame, long main-thread tasks, the camera (asking, starting, active, or error), the hands, and how long each step of the last capture took. `?sound=0` keeps it silent. Your real hands show through passthrough, so IWSDK's hand models are hidden; `?hands=1` draws them, tracking every finger.
 
-Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. Keys `1`–`4` set the time inside the frame (echo, slit, ripple, live) and `t` cycles them. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to. `?warp=ripple` starts in a chosen mode. `prefers-reduced-motion` starts on live unless the URL asks otherwise.
+Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. Keys `1`–`4` set the time inside the frame (echo, slit, ripple, live) and `t` cycles them. Key `5` (or `?warp=peel`) turns on Peel: the stand-in room is scanned into a faint mesh, and a click on that shimmer peels a patch off it. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to. `?warp=ripple` starts in a chosen mode. `prefers-reduced-motion` starts on live unless the URL asks otherwise.
 
 ## First headset run
 
@@ -27,7 +27,7 @@ Open the page with `?debug=1` the first time.
 
 1. **Enter passthrough.** The panel should show about 72 or 90 fps. The console has a `[frame] session` line listing the granted features, and `[frame] camera` lines once the camera runs.
 2. **Wait for depth.** The first visit downloads the depth model (about 25 MB) in the background. Until it is ready, frames use brightness depth.
-3. **Draw a frame with one hand and look through it.** The room inside should echo. Turn the other palm toward you and a small stack of tiles appears on the thumb side: Echo, Slit scan, Ripple, Live. Bring a fingertip close and a thin line joins it to a tile; touch the tile and that mode drops into the frame. A quick flick of an open hand through the glass cycles to the next one. Pinch both rims and pull, and the pattern stretches with your hands. It always runs at full strength.
+3. **Draw a frame with one hand and look through it.** The room inside should echo. Turn the other palm toward you and a small stack of tiles appears on the thumb side: Echo, Slit scan, Ripple, Live, Peel. Bring a fingertip close and a thin line joins it to a tile; touch the tile and that mode drops into the frame. A quick flick of an open hand through the glass cycles the time modes. Pinch both rims and pull, and the pattern stretches with your hands. It always runs at full strength.
 4. **Let go of the frame, and let your hand fall.** The photo is whatever the window was showing, so an echo can still hold a hand that has since moved away. Live mode takes the ordinary camera photo. The `[frame] capture` line gives the picture and darkroom times, and `[frame] depth model in … ms` how long the model took.
 5. **Check the photo lines up with the room.** Look at the edge of the captured frame against the real room behind it. If the photo sits a little off, trim the lens with the URL fields under Tuning.
 6. **Peel a corner, pull past the mark, and touch the sticker to a wall.** The time window steps aside and the print peels. It should land flat with a soft thup.
@@ -75,7 +75,7 @@ Each visual cue means something:
 | A small warm light between thumb and index | Your fingers are about to meet. It blooms when the pinch registers |
 | A line of light with a faint warm wash inside | The frame you are drawing |
 | The world inside the frame is late, trailed, or smeared | The time window. Outside it, the room is live |
-| A short stack of frosted tiles on an upturned palm | The time modes. A thin line follows your fingertip; a touch drops that mode into the frame |
+| A short stack of frosted tiles on an upturned palm | Echo, Slit scan, Ripple, Live, and Peel. A thin line follows your fingertip; a touch chooses that tile |
 | The line inhales, brighter for a moment | The frame is anchored. If it keeps breathing, the photo is waiting for your hands to clear |
 | The photo resolves out of a peach haze | It has been taken and is developing |
 | A glossy band sweeping across | Depth is still on its way |
@@ -101,9 +101,17 @@ The rectangle is a pane of glass over the live view. It keeps the last 16 camera
 | Ripple | Rings of different moments spread from the middle of the frame |
 | Live | The camera now, with no warm grade. A photo from this mode is the ordinary full-resolution picture |
 
-Each one always uses the whole ring. The other modes carry a light warm grade so the window reads as the same sunlit world, a moment removed. On a headset, turn one palm toward you. A short stack of frosted tiles floats just off the thumb side of the palm and fades in over about a sixth of a second. As the other index finger approaches a tile, a thin white line joins the tile's edge to the fingertip and the tile turns from translucent tan to solid beige. Touch it and the tile presses in, then a copy of it travels into the frame and that mode lands. Turn the palm away and the stack scales away. Pulling two pinches apart on the rim stretches the pattern in the glass; it eases back when you let go. A flick through the pane cycles the modes. On the desk, `1`–`4` and `t`. The glass is there while the frame is. During the bloom the print has the frame to itself. Once it has settled, the window returns and the print steps aside, until you peel, fan the sheets, or take the sticker. A flat demo photo (`?at=photo`) is never covered.
+Each one always uses the whole ring. The other modes carry a light warm grade so the window reads as the same sunlit world, a moment removed. On a headset, turn one palm toward you. A short stack of frosted tiles floats just off the thumb side of the palm and fades in over about a sixth of a second. As the other index finger approaches a tile, a thin white line joins the tile's edge to the fingertip and the tile turns from translucent tan to solid beige. Touch it and the tile presses in, then a copy of it travels into the frame and that mode lands. Turn the palm away and the stack scales away. Pulling two pinches apart on the rim stretches the pattern in the glass; it eases back when you let go. A flick through the pane cycles the time modes. On the desk, `1`–`4` and `t`. `5` is Peel. The glass is there while the frame is. During the bloom the print has the frame to itself. Once it has settled, the window returns and the print steps aside, until you peel, fan the sheets, or take the sticker. A flat demo photo (`?at=photo`) is never covered.
 
 An echo photo can include a hand that was in the pane a moment ago, even after the shutter waited for your hands to leave. Switch to live for a picture of the room as it is.
+
+## Peel the room
+
+Peel, on the palm stack and on key `5`, watches the real room. On a Quest it asks for WebXR depth sensing and fuses those depth frames into a sparse distance field, about 4 cm to a voxel and a few metres out. The mesh is only the surface, drawn as a faint warm wire with a slow scan, brighter where it was just filled in, so you can see where a peel will catch. It is not a solid model of the room. Quest Browser is WebGL, so the fusion runs on the CPU in small batches and the shader does the shimmer. A chunk can be copied out on its own; a later ghost replay can keep those copies and mesh them again.
+
+Pinch a shimmering surface, or click one on the desk. The patch curls off the way a sticker does. The spot it left goes a little dark and stays empty, because new depth is not allowed to heal a place you have already peeled. Pull it free and let go on another reconstructed surface and the patch lies down on that shape. Let go in the air and it floats. The camera frame, when there is one, is what the patch shows. Without a camera it is a warm film of the surface colour. Frames, the time modes, and peeling a captured photo are unchanged. `/clean` has the same Peel tile and the same gesture, with no extra instructions. If the browser has no depth sensing, Peel says so in one line.
+
+On the desk, `?warp=peel` scans the stand-in room with rays instead of a headset depth camera, so the same mesh and the same peel can be tried with the mouse.
 
 ## Sound
 
@@ -152,6 +160,7 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 | `app/` | the system, the shared context, the `CaptureLook` knobs, URL flags |
 | `capture/` | camera rig and lens, the shutter (hands-clear wait), the time-window modes and the GPU ring, the darkroom and depth workers, crop, develop (depth stages and the bloom) |
 | `input/` | hand pinches (filtering, release rewind) and the desk pointer. Both feed one router |
+| `room/` | the sparse room field, the shimmer mesh, and peeling a patch off it |
 | `interaction/` | what is held (`Grip`), the router, stickers (curl, detach, stick, unstick), depth sheets, the frame handle, stretch, flick, and the palm menu |
 | `look/` | relief shader, the time-window glass, the palm menu, bloom spring, frame border, dissolve |
 | `world/` | surfaces from the room scan, the landing outline, the stand-in room |
@@ -160,7 +169,7 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 
 ## Checks
 
-- `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), the bloom spring, the time-window modes, and the stretch, flick, and palm-menu math.
+- `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), the bloom spring, the time-window modes, the stretch, flick, and palm-menu math, and the room field.
 - `npm run typecheck` and `npm run build` compile the app.
 - `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
 - `npm run check` runs typecheck, tests, and build.

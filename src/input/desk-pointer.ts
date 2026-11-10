@@ -7,6 +7,7 @@ import type { Grip } from '../interaction/grip.js'
 import { spreadFromPull } from '../interaction/peel.js'
 import { routeHit, type Interaction } from '../interaction/router.js'
 import type { Stickers } from '../interaction/stickers.js'
+import type { RoomScan } from '../room/room-scan.js'
 import { clamp } from '../util/math.js'
 
 /**
@@ -20,6 +21,10 @@ export class DeskPointer {
   private readonly at = new Vector3()
   private drawing = false
   private view: HTMLElement | null = null
+  /** Peel a patch off the reconstructed room. Set after both exist. */
+  room: RoomScan | null = null
+  private roomY = 0
+  private roomDist = 0.8
 
   private readonly onDown = (event: PointerEvent): void => {
     if (this.ctx.renderer.xr.isPresenting) return
@@ -36,6 +41,15 @@ export class DeskPointer {
     const hit = this.interaction.aim(ray.origin, ray.direction)
     const route = routeHit(hit, event.shiftKey)
     if (route === 'ignore') return
+    if ((route === 'draw' || !hit) && this.room) {
+      const surface = this.room.ray(ray.origin, ray.direction)
+      if (surface) {
+        this.roomY = event.clientY
+        this.roomDist = surface.dist
+        this.room.begin(surface, null, ray.origin)
+        return
+      }
+    }
     if (route === 'draw' || !hit) {
       this.drawing = true
       this.place(event, true)
@@ -49,6 +63,14 @@ export class DeskPointer {
     const grip = this.grip
     if (this.deskCamera.orbiting) {
       this.deskCamera.orbitTo(event.clientX, event.clientY)
+      return
+    }
+    if (this.room?.holding) {
+      this.aim(event)
+      const ray = this.raycaster.ray
+      const dist = clamp(this.roomDist - (this.roomY - event.clientY) * 0.004, 0.25, 3.2)
+      this.at.copy(ray.origin).addScaledVector(ray.direction, dist)
+      this.room.drag(this.at)
       return
     }
     const held = grip.held
@@ -91,6 +113,10 @@ export class DeskPointer {
   private readonly onUp = (event: PointerEvent): void => {
     if (this.deskCamera.orbiting && (event.button === 2 || event.altKey || event.button === 0)) {
       this.deskCamera.orbiting = false
+      return
+    }
+    if (this.room?.holding && event.button === 0) {
+      this.room.end()
       return
     }
     if (this.grip.touch !== 'none' && event.button === 0) {

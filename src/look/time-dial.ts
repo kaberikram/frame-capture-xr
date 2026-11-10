@@ -21,7 +21,7 @@ import {
   type WebGLRenderer,
 } from '@iwsdk/core'
 import { REDUCE_MOTION } from '../app/context.js'
-import { WARP_MODES, warpName, type WarpMode } from '../capture/time-mode.js'
+import { DIAL_MODES, dialName, type DialMode } from '../capture/time-mode.js'
 import {
   TILE_H,
   TILE_W,
@@ -82,7 +82,7 @@ export class TimeDial {
     this.group.visible = false
     parent.add(this.group)
     this.shadowMat = tileFill(PALETTE.shadow, 0.2, (TILE_W * 1.08) / (TILE_H * 1.2))
-    for (let i = 0; i < WARP_MODES.length; i++) this.addTile(WARP_MODES[i], i)
+    for (let i = 0; i < DIAL_MODES.length; i++) this.addTile(DIAL_MODES[i], i)
     this.dropMat = tileFill(PALETTE.sheen, 0.92, TILE_W / TILE_H)
     this.drop = new Mesh(new PlaneGeometry(1, 1), this.dropMat)
     this.drop.name = 'time-dial-drop'
@@ -134,7 +134,7 @@ export class TimeDial {
     }
     this.group.updateWorldMatrix(true, false)
     this.group.worldToLocal(this.fingerLocal.copy(world))
-    this.hover = tilePick(this.fingerLocal.x, this.fingerLocal.y, this.fingerLocal.z, WARP_MODES.length)
+    this.hover = tilePick(this.fingerLocal.x, this.fingerLocal.y, this.fingerLocal.z, DIAL_MODES.length)
     return this.hover
   }
 
@@ -200,11 +200,11 @@ export class TimeDial {
     shadowGeo = null
   }
 
-  private addTile(mode: WarpMode, index: number): void {
+  private addTile(mode: DialMode, index: number): void {
     const fill = tileFill(PALETTE.haze, 0.42, TILE_W / TILE_H)
     fill.uniforms.uHot.value = new Vector3(PALETTE.sheen[0], PALETTE.sheen[1], PALETTE.sheen[2])
     const tile = new Mesh(sharedTileGeo(), fill)
-    const c = tileCenter(index, WARP_MODES.length)
+    const c = tileCenter(index, DIAL_MODES.length)
     tile.position.set(c.x, c.y, 0)
     tile.renderOrder = 9
     tile.frustumCulled = false
@@ -233,7 +233,7 @@ export class TimeDial {
       fill.uniforms.uSolid.value = solid
       fill.uniforms.uFade.value = this.fade
       const lift = pressed > 0 ? -0.0035 * pressed : 0.003 * hot
-      const c = tileCenter(i, WARP_MODES.length)
+      const c = tileCenter(i, DIAL_MODES.length)
       const sink = pressed > 0 ? 0.96 : 1
       this.tiles[i].position.set(c.x, c.y, lift)
       this.tiles[i].scale.setScalar(sink)
@@ -302,7 +302,7 @@ export class TimeDial {
   private paintLabels(): void {
     for (let i = 0; i < this.chromes.length; i++) {
       const mat = this.chromes[i].material
-      const mode = WARP_MODES[i]
+      const mode = DIAL_MODES[i]
       if (mat instanceof MeshBasicMaterial && mat.map && mode) paintChrome(mat.map.image as HTMLCanvasElement, mode)
       if (mat instanceof MeshBasicMaterial && mat.map) mat.map.needsUpdate = true
     }
@@ -322,7 +322,7 @@ export class TimeDial {
 const CHROME_W = 512
 const CHROME_H = 214
 
-function paintChrome(canvas: HTMLCanvasElement, mode: WarpMode): void {
+function paintChrome(canvas: HTMLCanvasElement, mode: DialMode): void {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.clearRect(0, 0, CHROME_W, CHROME_H)
@@ -334,7 +334,7 @@ function paintChrome(canvas: HTMLCanvasElement, mode: WarpMode): void {
   ctx.fillStyle = '#3b241c'
   ctx.lineWidth = 2
   drawIcon(ctx, mode)
-  const label = warpName(mode).toUpperCase()
+  const label = dialName(mode).toUpperCase()
   ctx.fillStyle = '#3b241c'
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
@@ -348,7 +348,7 @@ function paintChrome(canvas: HTMLCanvasElement, mode: WarpMode): void {
   ctx.fillText(label, 108, CHROME_H / 2 + 1)
 }
 
-function drawIcon(ctx: CanvasRenderingContext2D, mode: WarpMode): void {
+function drawIcon(ctx: CanvasRenderingContext2D, mode: DialMode): void {
   ctx.save()
   ctx.translate(58, CHROME_H / 2)
   ctx.lineCap = 'round'
@@ -384,6 +384,14 @@ function drawIcon(ctx: CanvasRenderingContext2D, mode: WarpMode): void {
       ctx.fillStyle = '#3b241c'
       ctx.fill()
       break
+    case 'peel':
+      ctx.strokeRect(-14, -12, 28, 22)
+      ctx.beginPath()
+      ctx.moveTo(2, -12)
+      ctx.lineTo(14, -2)
+      ctx.lineTo(2, -2)
+      ctx.stroke()
+      break
     default: {
       const never: never = mode
       void never
@@ -402,7 +410,7 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath()
 }
 
-function chromeMaterial(mode: WarpMode): MeshBasicMaterial {
+function chromeMaterial(mode: DialMode): MeshBasicMaterial {
   const canvas = document.createElement('canvas')
   canvas.width = CHROME_W
   canvas.height = CHROME_H
