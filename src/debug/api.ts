@@ -14,6 +14,12 @@ export interface CaptureApi {
   warp: string
   /** Cycle the time mode and return the new one. Used by the smoke check. */
   cycle: () => string
+  /** Peel-the-room is the active palm mode. */
+  room: boolean
+  /** Chunks of reconstructed room. */
+  roomChunks: number
+  /** Sheets peeled off the room and still in the scene. */
+  roomPatches: number
 }
 
 export interface PhaseInputs {
@@ -36,11 +42,22 @@ export function publishApi(): void {
     peel: 0,
     warp: 'echo',
     cycle: () => 'echo',
+    room: false,
+    roomChunks: 0,
+    roomPatches: 0,
   }
   ;(window as unknown as { __capture: CaptureApi }).__capture = api
 }
 
 /** Point the debug hook at the live time window. */
+export function publishRoom(active: boolean, chunks: number, patches: number): void {
+  const api = (window as unknown as { __capture?: CaptureApi }).__capture
+  if (!api) return
+  api.room = active
+  api.roomChunks = chunks
+  api.roomPatches = patches
+}
+
 export function bindWarpApi(cycle: () => string): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return

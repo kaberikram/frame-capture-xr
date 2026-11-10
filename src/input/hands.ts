@@ -5,6 +5,7 @@ import type { Grip } from '../interaction/grip.js'
 import { routeHit, type Interaction } from '../interaction/router.js'
 import type { Sheets } from '../interaction/sheets.js'
 import type { TimePlay } from '../interaction/time-play.js'
+import type { RoomScan } from '../room/room-scan.js'
 import { OneEuro3, type Point3 } from './one-euro.js'
 import { PinchTrail } from './pinch-trail.js'
 
@@ -48,6 +49,8 @@ export class HandInput implements JointSource {
   onPinch: ((at: Vector3) => void) | null = null
   /** Stretch, flick, and the palm menu. Set after both exist. */
   play: TimePlay | null = null
+  /** Peel a patch off the reconstructed room. Set after both exist. */
+  room: RoomScan | null = null
   private session: XRSession | null = null
   private now = 0
   private readonly selectHeld = { left: false, right: false }
@@ -280,6 +283,7 @@ export class HandInput implements JointSource {
     const grip = this.grip
     const gesture = this.ctx.gesture
     this.onPinch?.(at)
+    if (this.room?.holding) return
     if (grip.touch === 'curl' && grip.held && side !== this.primary && grip.held.curl < 0.18) {
       this.sheets.begin(grip.held, at)
       return
@@ -298,6 +302,11 @@ export class HandInput implements JointSource {
       if (route === 'ignore') return
       this.primary = side
       if (route === 'draw' || !hit) {
+        const surface = this.room?.touch(at)
+        if (surface) {
+          this.room?.begin(surface, null, this.headPos)
+          return
+        }
         this.dual = false
         gesture.begin(at, this.headPos, WORLD_UP)
         return
@@ -312,6 +321,10 @@ export class HandInput implements JointSource {
   }
 
   private moved(side: Side): void {
+    if (this.room?.holding) {
+      if (side === this.primary) this.room.drag(this.point(side))
+      return
+    }
     if (this.play?.stretching) return
     const at = this.point(side)
     if (this.grip.touch !== 'none') {
@@ -329,6 +342,14 @@ export class HandInput implements JointSource {
   }
 
   private ended(side: Side): void {
+    if (this.room?.holding) {
+      if (side !== this.primary) return
+      this.room.end()
+      this.primary = null
+      this.dual = false
+      this.waitClear = true
+      return
+    }
     if (this.grip.touch === 'none' && this.play?.stretching) {
       this.play.release()
       this.primary = null

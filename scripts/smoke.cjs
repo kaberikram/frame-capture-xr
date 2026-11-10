@@ -100,6 +100,31 @@ function check(ok, message, failures) {
   if (!ok) failures.push(message)
 }
 
+async function room(browser, failures) {
+  const { context, page, errors } = await openPage(browser, '?preview=1&warp=peel&ui=0')
+  await frames(page, 90)
+  const state = await page.evaluate(() => ({
+    room: window.__capture.room,
+    chunks: window.__capture.roomChunks,
+    warp: window.__capture.warp,
+  }))
+  check(state.room === true, 'room: peel mode is on', failures)
+  check(state.chunks > 0, `room: the stand-in room builds a mesh (chunks ${state.chunks})`, failures)
+  check(state.warp === 'echo', `room: the frame stays on echo (got ${state.warp})`, failures)
+  const box = await page.locator('#scene-container').boundingBox()
+  const x = (box?.x ?? 0) + (box?.width ?? 960) / 2
+  const y = (box?.y ?? 0) + (box?.height ?? 640) / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y - 160, { steps: 10 })
+  await page.mouse.up()
+  await frames(page, 8)
+  const peeled = await page.evaluate(() => window.__capture.roomPatches)
+  check(peeled > 0, `room: a click peels a patch off the stand-in (patches ${peeled})`, failures)
+  check(errors.length === 0, `room: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  await context.close()
+}
+
 async function clean(browser, failures) {
   const { context, page, errors } = await openPage(browser, 'clean?preview=1')
   const dom = await page.evaluate(() => {
@@ -221,6 +246,7 @@ async function headset(browser, failures, leaveHandInFrame) {
   const failures = []
   try {
     await clean(browser, failures)
+    await room(browser, failures)
     await desk(browser, failures)
     await headset(browser, failures, false)
     await headset(browser, failures, true)

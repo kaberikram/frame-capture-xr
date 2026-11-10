@@ -17,6 +17,10 @@ export interface StatusInputs {
   warp: string
   /** Why the headset camera is not running, or null. */
   camera: string | null
+  /** Peel-the-room is the mode on the palm. */
+  room: boolean
+  /** Set when the headset session has no depth sensing. */
+  roomNote: string | null
 }
 
 /** One line that says what is happening or what to do next. */
@@ -35,10 +39,16 @@ export function statusLine(s: StatusInputs): string {
   if (last?.depth === 'brightness') return `${s.count} captured · brightness depth`
   if (last?.flat) return 'Photo held flat'
   if (s.presenting && s.camera) return s.camera
+  if (s.room && s.roomNote) return s.roomNote
+  if (s.room) {
+    return s.presenting
+      ? 'Pinch a shimmering surface and pull. Release it on another surface, or in the air.'
+      : 'Peel is on. Click a shimmering surface and drag it off. Keys 1–4 return to the frame.'
+  }
   if (s.phase === 'photo') return 'Photo in the frame'
   return s.presenting
     ? `${s.warp} inside the frame. Turn a palm toward you, or flick a hand through it. Pinch a corner to peel.`
-    : 'Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame. Right-drag looks around.'
+    : 'Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame, 5 peels the room. Right-drag looks around.'
 }
 
 /** The launch card's status line on the page. In a headset the captions carry the words. */

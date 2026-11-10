@@ -32,8 +32,9 @@ export function queryFlag(name: string): string | null {
 }
 
 /**
- * `camera-access` is optional: Quest Browser rejects the session when it is required,
- * and ignores a session that never asks. If a build rejects the token, start again without it.
+ * `camera-access` and `depth-sensing` are optional. Quest Browser rejects the
+ * session when either is required, and ignores a session that never asks.
+ * A build that refuses one of them is started again without that token.
  */
 export function launchSession(launch: () => void, requestCamera: boolean): void {
   const xr = navigator.xr
@@ -50,18 +51,45 @@ export function launchSession(launch: () => void, requestCamera: boolean): void 
   }
   xr.requestSession = ((sessionMode, init) => {
     restore()
-    const optional = [...(init?.optionalFeatures ?? [])]
-    if (!optional.includes('camera-access')) optional.push('camera-access')
-    return original(sessionMode, { ...init, optionalFeatures: optional }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!/camera-access/i.test(message)) throw error
-      console.warn(`[frame] session refused camera-access, retrying without it: ${message}`)
-      return original(sessionMode, init)
-    })
+    return requestWith(original, sessionMode, init, true, true)
   }) as typeof xr.requestSession
   try {
     launch()
   } finally {
     restore()
   }
+}
+
+type SessionInit = XRSessionInit & {
+  depthSensing?: { usagePreference: string[]; dataFormatPreference: string[] }
+}
+
+function requestWith(
+  original: XRSystem['requestSession'],
+  mode: XRSessionMode,
+  init: XRSessionInit | undefined,
+  camera: boolean,
+  depth: boolean,
+): Promise<XRSession> {
+  const next: SessionInit = { ...init, optionalFeatures: [...(init?.optionalFeatures ?? [])] }
+  if (camera && !next.optionalFeatures?.includes('camera-access')) next.optionalFeatures?.push('camera-access')
+  if (depth && !next.optionalFeatures?.includes('depth-sensing')) next.optionalFeatures?.push('depth-sensing')
+  if (depth) {
+    next.depthSensing = {
+      usagePreference: ['cpu-optimized', 'gpu-optimized'],
+      dataFormatPreference: ['luminance-alpha', 'float32'],
+    }
+  }
+  return original(mode, next).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    if (depth && /depth/i.test(message)) {
+      console.warn(`[frame] session refused depth-sensing, retrying without it: ${message}`)
+      return requestWith(original, mode, init, camera, false)
+    }
+    if (camera && /camera-access/i.test(message)) {
+      console.warn(`[frame] session refused camera-access, retrying without it: ${message}`)
+      return requestWith(original, mode, init, false, depth)
+    }
+    throw error
+  })
 }

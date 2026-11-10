@@ -10,7 +10,7 @@
     "dev:status": "iwsdk dev status",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
-    "test": "node --experimental-strip-types scripts/test-crop.ts && node --experimental-strip-types scripts/test-peel.ts && node --experimental-strip-types scripts/test-stick.ts && node --experimental-strip-types scripts/test-input.ts && node --experimental-strip-types scripts/test-depth.ts && node --experimental-strip-types scripts/test-look.ts && node --experimental-strip-types scripts/test-time.ts",
+    "test": "node --experimental-strip-types scripts/test-crop.ts && node --experimental-strip-types scripts/test-peel.ts && node --experimental-strip-types scripts/test-stick.ts && node --experimental-strip-types scripts/test-input.ts && node --experimental-strip-types scripts/test-depth.ts && node --experimental-strip-types scripts/test-look.ts && node --experimental-strip-types scripts/test-time.ts && node --experimental-strip-types scripts/test-room.ts",
     "smoke": "node scripts/smoke.cjs",
     "check": "npm run typecheck && npm test && npm run build"
   },
