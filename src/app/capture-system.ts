@@ -36,7 +36,7 @@ import { buildStandIn } from '../world/stand-in.js'
 import { DESK_SURFACES } from '../world/surfaces.js'
 import { CaptureLook } from './capture-look.js'
 import { defaultLook, firstEntity, readLook, type Ctx } from './context.js'
-import { CLEAN, HAND_MODELS, WEBCAM_REQUESTED, launchSession, queryFlag } from './experience.js'
+import { CLEAN, HAND_MODELS, PEEL, WEBCAM_REQUESTED, launchSession } from './experience.js'
 
 /**
  * Draw a rectangle in the air, anchor it, photograph what it frames, and ease
@@ -136,13 +136,15 @@ export class CaptureSystem extends createSystem({
     this.interaction = new Interaction(ctx, this.grip, this.stickers, this.sheets, frameGrab, this.snap)
     this.hands = new HandInput(ctx, this.grip, this.interaction, this.sheets, this.shutter)
     this.timePlay = new TimePlay(ctx, this.hands, this.grip, this.warp, root, this.renderer)
-    this.hands.play = this.timePlay
     this.room = new RoomScan(root, this.renderer)
-    this.hands.room = this.room
-    if (queryFlag('warp') === 'peel') this.room.setActive(true)
+    // Two pages, one app. The peel page hands every pinch to the room; frame capture never sees it.
+    if (PEEL) {
+      this.hands.room = this.room
+      this.room.setActive(true)
+    } else this.hands.play = this.timePlay
     this.shot = new DeskShot(ctx, this.deskCamera, this.stickers, this.grip, this.shutter)
     this.pointer = new DeskPointer(ctx, this.grip, this.interaction, this.stickers, frameGrab, this.deskCamera, this.shutter, () => this.shot.blocksDraw)
-    this.pointer.room = this.room
+    if (PEEL) this.pointer.room = this.room
     this.pointer.attach(document.getElementById('scene-container'))
     this.surfaces = new LiveSurfaces(ctx)
     // Passthrough shows your real hands; IWSDK's hand models would sit on top of them.
@@ -155,16 +157,9 @@ export class CaptureSystem extends createSystem({
 
     this.hands.onPinch = (at) => this.sound.pinch(at)
     this.warp.onNote = (line) => {
-      this.room.setActive(false)
       this.captions.retire('time')
       if (!CLEAN) this.status.flash(line, 2.6)
     }
-    this.timePlay.onMode = (mode) => {
-      if (mode !== 'peel') return
-      this.room.setActive(true)
-      if (!CLEAN) this.status.flash('Peel', 2.2)
-    }
-    window.addEventListener('keydown', this.onRoomKey)
     this.shutter.onExpose = (held) => this.cues.shutter(held)
     // Browsers start audio only from a gesture: the Enter button, or the first click on the desk.
     const view = document.getElementById('scene-container')
@@ -173,6 +168,7 @@ export class CaptureSystem extends createSystem({
       this.sound.resume()
       void this.enter()
     })
+    this.cleanupFuncs.push(() => this.dispose())
     publishApi()
     bindWarpApi(() => this.warp.cycle())
     if (DEBUG) {
@@ -181,6 +177,8 @@ export class CaptureSystem extends createSystem({
     }
     prepareDarkroom()
     if (WEBCAM_REQUESTED) this.rig.openWebcam()
+    // The peel page has no photos to give depth to, so it never downloads the model.
+    if (PEEL) return
     onDepthProgress((state, percent) => {
       if (CLEAN) return
       const el = document.getElementById('depth')
@@ -192,8 +190,6 @@ export class CaptureSystem extends createSystem({
     void prepareDepthModel().catch((error: unknown) => {
       console.warn('[frame] depth model', error)
     })
-
-    this.cleanupFuncs.push(() => this.dispose())
   }
 
   update(delta: number): void {
@@ -213,9 +209,11 @@ export class CaptureSystem extends createSystem({
       // Hands and the shutter read this frame's poses. The time window's blit
       // borrows the renderer afterwards, so it cannot move those poses.
       this.hands.update(now)
-      this.timePlay.step(dt)
-      this.shutter.step(now, this.hands)
-      this.warp.update(dt, now, true, this.camera.aspect)
+      if (!PEEL) {
+        this.timePlay.step(dt)
+        this.shutter.step(now, this.hands)
+        this.warp.update(dt, now, true, this.camera.aspect)
+      }
       this.rig.rearm(now)
       this.surfaces.arm(this.session)
     } else {
@@ -223,13 +221,17 @@ export class CaptureSystem extends createSystem({
       this.standIn.visible = true
       this.rig.watchWebcam()
       this.deskCamera.apply(this.camera)
-      this.timePlay.step(dt)
-      this.warp.update(dt, now, false, this.camera.aspect)
-      this.shot.update(dt)
+      if (!PEEL) {
+        this.timePlay.step(dt)
+        this.warp.update(dt, now, false, this.camera.aspect)
+        this.shot.update(dt)
+      }
     }
-    this.room.liveVideo = this.rig.liveVideo()
-    const depthFrame = this.world.xrFrame as Parameters<RoomScan['step']>[2]
-    this.room.step(dt, presenting, presenting ? depthFrame : null, this.camera, this.standIn)
+    if (PEEL) {
+      this.room.liveVideo = this.rig.liveVideo()
+      const depthFrame = this.world.xrFrame as Parameters<RoomScan['step']>[2]
+      this.room.step(dt, presenting, presenting ? depthFrame : null, this.camera, this.standIn)
+    }
     this.syncDrag(now)
     // Surfaces only matter while a sticker is being carried toward one.
     const driven = this.drivenSticker()
@@ -245,7 +247,7 @@ export class CaptureSystem extends createSystem({
     const last = this.captures[this.captures.length - 1]
     const problem = presenting ? this.rig.problem : null
     if (CLEAN) {
-      const roomNote = this.room.active ? this.room.depthNote : null
+      const roomNote = PEEL ? this.room.depthNote : null
       this.captions.update(problem ?? roomNote, this.player.head, presenting, dt)
       this.status.note(problem ?? roomNote ?? '')
     } else {
@@ -262,7 +264,7 @@ export class CaptureSystem extends createSystem({
           waitingOnHands: this.shutter.waitingOnHands,
           warp: this.warp.mode,
           camera: problem,
-          room: this.room.active,
+          room: PEEL,
           roomNote: this.room.depthNote,
         }),
       )
@@ -302,7 +304,7 @@ export class CaptureSystem extends createSystem({
       }
       launchSession(() => {
         this.world.launchXR()
-      }, true)
+      }, true, PEEL)
     } finally {
       this.entering = false
     }
@@ -395,7 +397,7 @@ export class CaptureSystem extends createSystem({
     this.sawStuck = stuck
     const settled = last && !last.frameGone && last.mode === 'idle' && last.pop >= 1 && last.depth !== 'wait'
     let hint: Hint | null = null
-    if (this.room.active || drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
+    if (PEEL || drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
     else if (touch === 'sticker' || last?.mode === 'free') hint = 'wall'
     else if (settled && this.captions.hint('time')) hint = 'time'
     else if (settled) hint = 'peel'
@@ -487,20 +489,12 @@ export class CaptureSystem extends createSystem({
     )
   }
 
-  private readonly onRoomKey = (event: KeyboardEvent): void => {
-    if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return
-    if (event.key !== '5') return
-    this.room.setActive(true)
-    if (!CLEAN) this.status.flash('Peel', 2.2)
-  }
-
   private dispose(): void {
     this.debug?.dispose()
     this.captions.dispose()
     this.pinchLights.dispose()
     this.sound.dispose()
     this.surfaces.clear()
-    window.removeEventListener('keydown', this.onRoomKey)
     this.hands.dispose()
     this.timePlay.dispose()
     this.room.dispose()

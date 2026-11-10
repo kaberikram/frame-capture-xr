@@ -62,35 +62,10 @@ export function warpIndex(mode: WarpMode): number {
   }
 }
 
-/** The palm stack. Peel is the room, not a time effect, so a flick does not land on it. */
-export const DIAL_MODES = ['echo', 'slit', 'ripple', 'live', 'peel'] as const
-export type DialMode = (typeof DIAL_MODES)[number]
-
-export function isDialMode(value: string | null): value is DialMode {
-  if (!value) return false
-  for (let i = 0; i < DIAL_MODES.length; i++) if (DIAL_MODES[i] === value) return true
-  return false
-}
-
-export function dialName(mode: DialMode): string {
-  switch (mode) {
-    case 'peel':
-      return 'Peel'
-    case 'echo':
-    case 'slit':
-    case 'ripple':
-    case 'live':
-      return warpName(mode)
-    default: {
-      const never: never = mode
-      return never
-    }
-  }
-}
-
-export function isTimeDial(mode: DialMode): mode is WarpMode {
-  return mode !== 'peel'
-}
+/** The palm stack: the time effects, top to bottom. The room peel has its own page. */
+export const DIAL_MODES = WARP_MODES
+export type DialMode = WarpMode
+export const dialName = warpName
 
 export function nextWarp(mode: WarpMode): WarpMode {
   switch (mode) {

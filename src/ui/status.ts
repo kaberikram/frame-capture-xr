@@ -1,4 +1,4 @@
-import { CLEAN, PREVIEW_FORCED, queryFlag } from '../app/experience.js'
+import { CLEAN, PEEL, PREVIEW_FORCED, queryFlag } from '../app/experience.js'
 import type { Held } from '../capture/held.js'
 import type { Phase } from '../debug/api.js'
 import type { Touch } from '../interaction/grip.js'
@@ -17,7 +17,7 @@ export interface StatusInputs {
   warp: string
   /** Why the headset camera is not running, or null. */
   camera: string | null
-  /** Peel-the-room is the mode on the palm. */
+  /** This is the peel page. */
   room: boolean
   /** Set when the headset session has no depth sensing. */
   roomNote: string | null
@@ -26,6 +26,13 @@ export interface StatusInputs {
 /** One line that says what is happening or what to do next. */
 export function statusLine(s: StatusInputs): string {
   const last = s.last
+  if (s.room) {
+    if (s.presenting && s.camera) return s.camera
+    if (s.roomNote) return s.roomNote
+    return s.presenting
+      ? 'Bring a hand to a surface. Pinch it and pull.'
+      : 'Press a surface and drag up to pull it off. Right-drag looks around.'
+  }
   if (s.touch === 'curl') return 'Pull the corner. Past the mark the sticker comes free'
   if (s.previewing) return 'Release to stick it on'
   if (s.touch === 'sticker') return 'The sticker follows your hand'
@@ -39,16 +46,10 @@ export function statusLine(s: StatusInputs): string {
   if (last?.depth === 'brightness') return `${s.count} captured · brightness depth`
   if (last?.flat) return 'Photo held flat'
   if (s.presenting && s.camera) return s.camera
-  if (s.room && s.roomNote) return s.roomNote
-  if (s.room) {
-    return s.presenting
-      ? 'Pinch a shimmering surface and pull. Release it on another surface, or in the air.'
-      : 'Peel is on. Click a shimmering surface and drag it off. Keys 1–4 return to the frame.'
-  }
   if (s.phase === 'photo') return 'Photo in the frame'
   return s.presenting
     ? `${s.warp} inside the frame. Turn a palm toward you, or flick a hand through it. Pinch a corner to peel.`
-    : 'Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame, 5 peels the room. Right-drag looks around.'
+    : 'Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame. Right-drag looks around.'
 }
 
 /** The launch card's status line on the page. In a headset the captions carry the words. */
@@ -91,7 +92,7 @@ export function wireLaunch(onEnter: () => void): void {
   const card = document.getElementById('launch')
   if (queryFlag('ui') === '0' && card) card.hidden = true
   if (CLEAN && enter) enter.textContent = 'Enter'
-  if (PREVIEW_FORCED && hint && !CLEAN) hint.textContent = 'Preview is on. Drag in the view. Right-drag orbits.'
+  if (PREVIEW_FORCED && hint && !CLEAN) hint.textContent = PEEL ? 'Preview is on. Press a surface and drag up. Right-drag orbits.' : 'Preview is on. Drag in the view. Right-drag orbits.'
   const xr = navigator.xr
   if (!enter) return
   enter.disabled = true

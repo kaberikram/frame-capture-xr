@@ -101,16 +101,15 @@ function check(ok, message, failures) {
 }
 
 async function room(browser, failures) {
-  const { context, page, errors } = await openPage(browser, '?preview=1&warp=peel&ui=0')
+  const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0')
   await frames(page, 90)
   const state = await page.evaluate(() => ({
     room: window.__capture.room,
     chunks: window.__capture.roomChunks,
     warp: window.__capture.warp,
   }))
-  check(state.room === true, 'room: peel mode is on', failures)
+  check(state.room === true, 'room: /peel is the peel page', failures)
   check(state.chunks > 0, `room: the stand-in room builds a mesh (chunks ${state.chunks})`, failures)
-  check(state.warp === 'echo', `room: the frame stays on echo (got ${state.warp})`, failures)
   const box = await page.locator('#scene-container').boundingBox()
   const x = (box?.x ?? 0) + (box?.width ?? 960) / 2
   const y = (box?.y ?? 0) + (box?.height ?? 640) / 2

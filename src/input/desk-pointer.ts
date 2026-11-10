@@ -21,7 +21,7 @@ export class DeskPointer {
   private readonly at = new Vector3()
   private drawing = false
   private view: HTMLElement | null = null
-  /** Peel a patch off the reconstructed room. Set after both exist. */
+  /** The peel page: the mouse only ever touches the room. Set after both exist. */
   room: RoomScan | null = null
   private roomY = 0
   private roomDist = 0.8
@@ -38,18 +38,17 @@ export class DeskPointer {
     el.setPointerCapture(event.pointerId)
     this.aim(event)
     const ray = this.raycaster.ray
+    if (this.room) {
+      const surface = this.room.ray(ray.origin, ray.direction)
+      if (!surface) return
+      this.roomY = event.clientY
+      this.roomDist = surface.dist
+      this.room.begin(surface, null, ray.origin)
+      return
+    }
     const hit = this.interaction.aim(ray.origin, ray.direction)
     const route = routeHit(hit, event.shiftKey)
     if (route === 'ignore') return
-    if ((route === 'draw' || !hit) && this.room) {
-      const surface = this.room.ray(ray.origin, ray.direction)
-      if (surface) {
-        this.roomY = event.clientY
-        this.roomDist = surface.dist
-        this.room.begin(surface, null, ray.origin)
-        return
-      }
-    }
     if (route === 'draw' || !hit) {
       this.drawing = true
       this.place(event, true)

@@ -5,6 +5,18 @@
 export const CLEAN = typeof location !== 'undefined' && /\/clean\/?$/.test(location.pathname)
 
 /**
+ * `/peel` is its own page: the room peels, and nothing else happens there.
+ * `/` is frame capture. `?mode=peel` does the same on a host without the
+ * rewrite, and the older `?warp=peel` link still lands here.
+ */
+export const PEEL = (() => {
+  if (typeof location === 'undefined') return false
+  if (/\/peel(\/clean)?\/?$/.test(location.pathname)) return true
+  const query = new URLSearchParams(location.search)
+  return query.get('mode') === 'peel' || query.get('warp') === 'peel'
+})()
+
+/**
  * `?preview=1` keeps the desk stand-in even when the dev server’s emulator
  * makes the page look like a headset.
  */
@@ -35,8 +47,9 @@ export function queryFlag(name: string): string | null {
  * `camera-access` and `depth-sensing` are optional. Quest Browser rejects the
  * session when either is required, and ignores a session that never asks.
  * A build that refuses one of them is started again without that token.
+ * Only the peel page asks for depth, so frame capture does not pay for it.
  */
-export function launchSession(launch: () => void, requestCamera: boolean): void {
+export function launchSession(launch: () => void, requestCamera: boolean, requestDepth: boolean): void {
   const xr = navigator.xr
   if (!requestCamera || !xr) {
     launch()
@@ -51,7 +64,7 @@ export function launchSession(launch: () => void, requestCamera: boolean): void 
   }
   xr.requestSession = ((sessionMode, init) => {
     restore()
-    return requestWith(original, sessionMode, init, true, true)
+    return requestWith(original, sessionMode, init, true, requestDepth)
   }) as typeof xr.requestSession
   try {
     launch()

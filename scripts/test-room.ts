@@ -1,4 +1,4 @@
-import { DIAL_MODES, dialName, isTimeDial } from '../src/capture/time-mode.ts'
+import { DIAL_MODES, WARP_MODES } from '../src/capture/time-mode.ts'
 import { transformPoint, viewFromDepthPixel } from '../src/room/depth-project.ts'
 import { MAX_CHUNKS, RoomField } from '../src/room/field.ts'
 import { curlOffset, shouldStick, tangentBasis } from '../src/room/patch.ts'
@@ -68,7 +68,6 @@ const gone = wide.takeRetired()
 assert(gone.length > 0 && wide.chunkCount <= MAX_CHUNKS, 'looking elsewhere retires old chunks')
 wide.extract(1)
 
-assert(DIAL_MODES.length === 5 && DIAL_MODES[4] === 'peel', 'the palm stack ends with Peel')
-assert(dialName('peel') === 'Peel' && !isTimeDial('peel') && isTimeDial('echo'), 'Peel is not a time effect')
+assert(DIAL_MODES.length === WARP_MODES.length && !DIAL_MODES.includes('peel' as never), 'the palm stack is only time effects; the peel has its own page')
 
 console.log('room ok')
