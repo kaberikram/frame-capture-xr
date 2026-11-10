@@ -76,8 +76,30 @@ interface Tri {
   nz: number
 }
 
+/** A surface point and the direction it faces, written into by the lookups that run every frame. */
+export interface SurfacePoint {
+  x: number
+  y: number
+  z: number
+  nx: number
+  ny: number
+  nz: number
+  dist: number
+}
+
+export function surfacePoint(): SurfacePoint {
+  return { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, dist: 0 }
+}
+
+/** One number for a chunk's place, so a lookup does not build a string. Good for ±160 m. */
+function chunkId(cx: number, cy: number, cz: number): number {
+  return (cx + 512) * 1048576 + (cy + 512) * 1024 + (cz + 512)
+}
+
 export class RoomField {
   private readonly chunks = new Map<string, Chunk>()
+  private readonly byId = new Map<number, Chunk>()
+  private readonly grad = { x: 0, y: 0, z: 0 }
   private readonly tris: Tri[] = []
   private retired: string[] = []
   private soupStale = false
@@ -137,6 +159,131 @@ export class RoomField {
       }
     }
     this.dropTrisNear(x, y, z, radius)
+  }
+
+  /** Let depth fill a carved place in again, for when a hole closes. */
+  heal(x: number, y: number, z: number, radius: number): void {
+    const r2 = radius * radius
+    const reach = Math.ceil(radius / VOXEL) + 1
+    const gx = Math.floor(x / VOXEL)
+    const gy = Math.floor(y / VOXEL)
+    const gz = Math.floor(z / VOXEL)
+    for (let iz = gz - reach; iz <= gz + reach; iz++) {
+      for (let iy = gy - reach; iy <= gy + reach; iy++) {
+        for (let ix = gx - reach; ix <= gx + reach; ix++) {
+          const dx = (ix + 0.5) * VOXEL - x
+          const dy = (iy + 0.5) * VOXEL - y
+          const dz = (iz + 0.5) * VOXEL - z
+          if (dx * dx + dy * dy + dz * dz > r2) continue
+          const cell = this.cell(ix, iy, iz, false)
+          if (!cell || cell.chunk.weight[cell.index] < 32) continue
+          cell.chunk.tsdf[cell.index] = 0
+          cell.chunk.weight[cell.index] = 0
+          cell.chunk.dirty = true
+        }
+      }
+    }
+  }
+
+  /**
+   * The field at a point, smoothly blended between voxels: 1 is clear air a
+   * truncation in front of a surface, 0 is the surface, negative is behind it.
+   * Null where the room has not been seen.
+   */
+  sdf(x: number, y: number, z: number): number | null {
+    const fx = x / VOXEL - 0.5
+    const fy = y / VOXEL - 0.5
+    const fz = z / VOXEL - 0.5
+    const gx = Math.floor(fx)
+    const gy = Math.floor(fy)
+    const gz = Math.floor(fz)
+    const tx = fx - gx
+    const ty = fy - gy
+    const tz = fz - gz
+    const c000 = this.value(gx, gy, gz)
+    const c100 = this.value(gx + 1, gy, gz)
+    const c010 = this.value(gx, gy + 1, gz)
+    const c110 = this.value(gx + 1, gy + 1, gz)
+    const c001 = this.value(gx, gy, gz + 1)
+    const c101 = this.value(gx + 1, gy, gz + 1)
+    const c011 = this.value(gx, gy + 1, gz + 1)
+    const c111 = this.value(gx + 1, gy + 1, gz + 1)
+    const sum = c000 + c100 + c010 + c110 + c001 + c101 + c011 + c111
+    if (sum !== sum) return null
+    const x00 = c000 + (c100 - c000) * tx
+    const x10 = c010 + (c110 - c010) * tx
+    const x01 = c001 + (c101 - c001) * tx
+    const x11 = c011 + (c111 - c011) * tx
+    const y0 = x00 + (x10 - x00) * ty
+    const y1 = x01 + (x11 - x01) * ty
+    return y0 + (y1 - y0) * tz
+  }
+
+  /**
+   * March a ray through the field to the first place it passes from in front
+   * of a surface to behind it. Costs a few lookups per step, whatever the size
+   * of the room, so a whole grid of these fits in a frame. Unseen space is
+   * stepped over. `out` is filled in and returned, or null when nothing is met.
+   */
+  surfaceAlong(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    reach: number,
+    out: SurfacePoint,
+  ): SurfacePoint | null {
+    const len = Math.hypot(dx, dy, dz)
+    if (len < 1e-6) return null
+    const ix = dx / len
+    const iy = dy / len
+    const iz = dz / len
+    const step = VOXEL * 0.5
+    let prev: number | null = null
+    for (let t = 0; t <= reach + step; t += step) {
+      const s = this.sdf(ox + ix * t, oy + iy * t, oz + iz * t)
+      if (s !== null && prev !== null && prev > 0 && s <= 0) {
+        const at = t - step + (step * prev) / (prev - s)
+        if (at > reach) return null
+        out.x = ox + ix * at
+        out.y = oy + iy * at
+        out.z = oz + iz * at
+        out.dist = at
+        this.face(out, -ix, -iy, -iz)
+        return out
+      }
+      prev = s
+    }
+    return null
+  }
+
+  /**
+   * The surface next to a point that is already within `maxDist` of it, for a
+   * pinch on the room. Null in open air and over a place that was peeled away.
+   */
+  near(x: number, y: number, z: number, maxDist: number, out: SurfacePoint): SurfacePoint | null {
+    const s = this.sdf(x, y, z)
+    if (s === null || s >= 0.98 || s <= -0.98) return null
+    const d = s * TRUNC
+    if (Math.abs(d) > maxDist) return null
+    out.x = x
+    out.y = y
+    out.z = z
+    if (!this.face(out, 0, 0, 0)) return null
+    out.x = x - out.nx * d
+    out.y = y - out.ny * d
+    out.z = z - out.nz * d
+    // The field is only roughly a distance, so step once more onto the surface.
+    const again = this.sdf(out.x, out.y, out.z)
+    if (again !== null && again > -0.98 && again < 0.98) {
+      out.x -= out.nx * again * TRUNC
+      out.y -= out.ny * again * TRUNC
+      out.z -= out.nz * again * TRUNC
+    }
+    out.dist = Math.abs(d)
+    return out
   }
 
   /**
@@ -285,6 +432,46 @@ export class RoomField {
     return { key, voxel: VOXEL, tsdf: new Int8Array(chunk.tsdf), weight: new Uint8Array(chunk.weight) }
   }
 
+  /** A voxel's stored value, or NaN where the room has not been seen enough. */
+  private value(gx: number, gy: number, gz: number): number {
+    const chunk = this.byId.get(chunkId(Math.floor(gx / CHUNK), Math.floor(gy / CHUNK), Math.floor(gz / CHUNK)))
+    if (!chunk) return NaN
+    const index = mod(gx, CHUNK) + mod(gy, CHUNK) * CHUNK + mod(gz, CHUNK) * CHUNK * CHUNK
+    if (chunk.weight[index] < MIN_WEIGHT) return NaN
+    return chunk.tsdf[index] / 127
+  }
+
+  /**
+   * Write the way the surface faces at `out`'s position: up the field's slope,
+   * toward the open side. Falls back to the given direction where the slope
+   * cannot be read. False when there is neither.
+   */
+  private face(out: SurfacePoint, fx: number, fy: number, fz: number): boolean {
+    const h = VOXEL * 0.75
+    const g = this.grad
+    const x1 = this.sdf(out.x + h, out.y, out.z)
+    const x0 = this.sdf(out.x - h, out.y, out.z)
+    const y1 = this.sdf(out.x, out.y + h, out.z)
+    const y0 = this.sdf(out.x, out.y - h, out.z)
+    const z1 = this.sdf(out.x, out.y, out.z + h)
+    const z0 = this.sdf(out.x, out.y, out.z - h)
+    g.x = x1 !== null && x0 !== null ? x1 - x0 : 0
+    g.y = y1 !== null && y0 !== null ? y1 - y0 : 0
+    g.z = z1 !== null && z0 !== null ? z1 - z0 : 0
+    let len = Math.hypot(g.x, g.y, g.z)
+    if (len < 0.05) {
+      g.x = fx
+      g.y = fy
+      g.z = fz
+      len = Math.hypot(fx, fy, fz)
+      if (len < 1e-6) return false
+    }
+    out.nx = g.x / len
+    out.ny = g.y / len
+    out.nz = g.z / len
+    return true
+  }
+
   private integrateOne(sample: DepthSample): boolean {
     const dx = sample.px - sample.ox
     const dy = sample.py - sample.oy
@@ -341,10 +528,11 @@ export class RoomField {
     const cx = Math.floor(gx / CHUNK)
     const cy = Math.floor(gy / CHUNK)
     const cz = Math.floor(gz / CHUNK)
-    const key = `${cx},${cy},${cz}`
-    let chunk = this.chunks.get(key)
+    const id = chunkId(cx, cy, cz)
+    let chunk = this.byId.get(id)
     if (!chunk && create) {
       if (this.chunks.size >= MAX_CHUNKS && !this.evict()) return null
+      const key = `${cx},${cy},${cz}`
       chunk = {
         key,
         ix: cx,
@@ -358,6 +546,7 @@ export class RoomField {
         normals: new Float32Array(0),
       }
       this.chunks.set(key, chunk)
+      this.byId.set(id, chunk)
     }
     if (!chunk) return null
     const lx = mod(gx, CHUNK)
@@ -377,6 +566,7 @@ export class RoomField {
     this.retired.push(oldest.key)
     this.soupStale = true
     this.chunks.delete(oldest.key)
+    this.byId.delete(chunkId(oldest.ix, oldest.iy, oldest.iz))
     return true
   }
 
@@ -395,9 +585,9 @@ export class RoomField {
     for (let z = 0; z < CHUNK; z++) {
       for (let y = 0; y < CHUNK; y++) {
         for (let x = 0; x < CHUNK; x++) {
-          this.face(ox + x, oy + y, oz + z, 1, 0, 0, positions, normals)
-          this.face(ox + x, oy + y, oz + z, 0, 1, 0, positions, normals)
-          this.face(ox + x, oy + y, oz + z, 0, 0, 1, positions, normals)
+          this.quad(ox + x, oy + y, oz + z, 1, 0, 0, positions, normals)
+          this.quad(ox + x, oy + y, oz + z, 0, 1, 0, positions, normals)
+          this.quad(ox + x, oy + y, oz + z, 0, 0, 1, positions, normals)
         }
       }
     }
@@ -407,7 +597,7 @@ export class RoomField {
     return { key: chunk.key, positions: chunk.positions, normals: chunk.normals }
   }
 
-  private face(
+  private quad(
     gx: number,
     gy: number,
     gz: number,
