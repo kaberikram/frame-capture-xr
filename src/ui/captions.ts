@@ -7,13 +7,16 @@ const H = 160
 const FONT = '"Hanken Grotesk", "Segoe UI", system-ui, sans-serif'
 
 /** Hints that each show once, at the moment they help, and then retire. */
-export type Hint = 'draw' | 'peel' | 'wall' | 'time'
+export type Hint = 'draw' | 'peel' | 'wall' | 'time' | 'reach' | 'pull' | 'carry'
 
 const HINTS: Record<Hint, string> = {
   draw: 'Pinch the air and draw a frame',
   time: 'Turn a palm toward you, or flick a hand through the frame',
   peel: 'Pinch a corner to peel',
   wall: 'Bring it to a wall',
+  reach: 'Bring a hand close to a wall or a table',
+  pull: 'Pinch it and pull',
+  carry: 'Carry it somewhere new',
 }
 
 /** After this long with nothing happening, the hint for the current moment may show again. */

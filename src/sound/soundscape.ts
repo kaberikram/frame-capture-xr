@@ -108,6 +108,16 @@ export class Soundscape {
     this.tone(voice, 118, 84, 0.003, 0.1, 0.18)
   }
 
+  /** Warm light opens where a piece of the room came away: a low, slow swell with a fifth above it. */
+  glow(at: Vector3): void {
+    const ctx = this.live()
+    if (!ctx) return
+    const voice = this.voice(at, 0.6)
+    this.tone(voice, 174.6, 196, 0.22, 1.5, 0.085)
+    this.tone(voice, 261.6, 293.7, 0.3, 1.3, 0.05, 0.06)
+    this.bell(voice, 587.3, 0.18, 0.035)
+  }
+
   dispose(): void {
     void this.ctx?.close().catch(() => undefined)
     this.ctx = null

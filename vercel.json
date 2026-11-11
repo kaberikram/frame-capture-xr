@@ -3,6 +3,14 @@
     { "source": "/clean", "destination": "/index.html" },
     { "source": "/clean/", "destination": "/index.html" },
     { "source": "/clean/assets/:path*", "destination": "/assets/:path*" },
-    { "source": "/clean/scenes/:path*", "destination": "/scenes/:path*" }
+    { "source": "/clean/scenes/:path*", "destination": "/scenes/:path*" },
+    { "source": "/peel", "destination": "/index.html" },
+    { "source": "/peel/", "destination": "/index.html" },
+    { "source": "/peel/clean", "destination": "/index.html" },
+    { "source": "/peel/clean/", "destination": "/index.html" },
+    { "source": "/peel/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/peel/scenes/:path*", "destination": "/scenes/:path*" },
+    { "source": "/peel/clean/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/peel/clean/scenes/:path*", "destination": "/scenes/:path*" }
   ]
 }

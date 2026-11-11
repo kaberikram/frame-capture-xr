@@ -2,7 +2,7 @@ import { Vector3, type Object3D, type WebGLRenderer } from '@iwsdk/core'
 import type { Ctx } from '../app/context.js'
 import { REDUCE_MOTION } from '../app/context.js'
 import type { Held } from '../capture/held.js'
-import { DIAL_MODES, isTimeDial } from '../capture/time-mode.js'
+import { DIAL_MODES } from '../capture/time-mode.js'
 import type { HandInput, Side } from '../input/hands.js'
 import { TimeDial } from '../look/time-dial.js'
 import type { TimeWarp } from '../look/time-glass.js'
@@ -32,8 +32,6 @@ const STRETCH_TAU = 0.14
  */
 export class TimePlay {
   stretching = false
-  /** A tile was chosen. Time modes also update the glass; Peel is the room. */
-  onMode: ((mode: (typeof DIAL_MODES)[number]) => void) | null = null
   private baseSpan = 0
   private stretch = 1
   private quiet = 0
@@ -186,11 +184,7 @@ export class TimePlay {
       this.latched = true
       const mode = DIAL_MODES[hit.index]
       if (!mode) return
-      const to = isTimeDial(mode) ? this.framePoint(this.target) : null
-      this.dial.press(hit.index, to, () => {
-        if (isTimeDial(mode)) this.warp.setMode(mode)
-        this.onMode?.(mode)
-      })
+      this.dial.press(hit.index, this.framePoint(this.target), () => this.warp.setMode(mode))
       return
     }
     if (hit.index < 0) this.latched = false

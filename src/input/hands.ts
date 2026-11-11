@@ -49,7 +49,7 @@ export class HandInput implements JointSource {
   onPinch: ((at: Vector3) => void) | null = null
   /** Stretch, flick, and the palm menu. Set after both exist. */
   play: TimePlay | null = null
-  /** Peel a patch off the reconstructed room. Set after both exist. */
+  /** The peel page: a pinch only ever touches the room. Set after both exist. */
   room: RoomScan | null = null
   private session: XRSession | null = null
   private now = 0
@@ -283,7 +283,13 @@ export class HandInput implements JointSource {
     const grip = this.grip
     const gesture = this.ctx.gesture
     this.onPinch?.(at)
-    if (this.room?.holding) return
+    const room = this.room
+    if (room) {
+      if (room.holding || this.primary) return
+      this.ctx.player.head.getWorldPosition(this.headPos)
+      if (room.press(at, this.headPos)) this.primary = side
+      return
+    }
     if (grip.touch === 'curl' && grip.held && side !== this.primary && grip.held.curl < 0.18) {
       this.sheets.begin(grip.held, at)
       return
@@ -302,11 +308,6 @@ export class HandInput implements JointSource {
       if (route === 'ignore') return
       this.primary = side
       if (route === 'draw' || !hit) {
-        const surface = this.room?.touch(at)
-        if (surface) {
-          this.room?.begin(surface, null, this.headPos)
-          return
-        }
         this.dual = false
         gesture.begin(at, this.headPos, WORLD_UP)
         return
@@ -321,8 +322,8 @@ export class HandInput implements JointSource {
   }
 
   private moved(side: Side): void {
-    if (this.room?.holding) {
-      if (side === this.primary) this.room.drag(this.point(side))
+    if (this.room) {
+      if (this.room.holding && side === this.primary) this.room.drag(this.point(side))
       return
     }
     if (this.play?.stretching) return
@@ -342,9 +343,13 @@ export class HandInput implements JointSource {
   }
 
   private ended(side: Side): void {
-    if (this.room?.holding) {
+    if (this.room) {
       if (side !== this.primary) return
-      this.room.end()
+      // Opening the fingers moved the point; let go from where they were tightest.
+      if (this.room.holding) {
+        if (this.trails[side].rewind(this.now, REWIND, this.rewound)) this.room.drag(this.rewound)
+        this.room.end()
+      }
       this.primary = null
       this.dual = false
       this.waitClear = true

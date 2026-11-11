@@ -384,14 +384,6 @@ function drawIcon(ctx: CanvasRenderingContext2D, mode: DialMode): void {
       ctx.fillStyle = '#3b241c'
       ctx.fill()
       break
-    case 'peel':
-      ctx.strokeRect(-14, -12, 28, 22)
-      ctx.beginPath()
-      ctx.moveTo(2, -12)
-      ctx.lineTo(14, -2)
-      ctx.lineTo(2, -2)
-      ctx.stroke()
-      break
     default: {
       const never: never = mode
       void never

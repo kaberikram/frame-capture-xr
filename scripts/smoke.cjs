@@ -1,6 +1,6 @@
 // End-to-end smoke check in headless Chromium.
 //
-//   npm run smoke            desk demo + emulated headset (IWER)
+//   npm run smoke            desk demo + emulated headset (IWER), for frame capture and for the room peel
 //   npm run smoke -- --shots out/   also save a screenshot of every ?at= stage
 //
 // Uses the dev server on https://localhost:4473, starting one if none is up.
@@ -101,27 +101,132 @@ function check(ok, message, failures) {
 }
 
 async function room(browser, failures) {
-  const { context, page, errors } = await openPage(browser, '?preview=1&warp=peel&ui=0')
-  await frames(page, 90)
-  const state = await page.evaluate(() => ({
+  const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0')
+  const api = () => page.evaluate(() => ({
     room: window.__capture.room,
     chunks: window.__capture.roomChunks,
-    warp: window.__capture.warp,
+    piece: window.__capture.roomPiece,
+    radius: window.__capture.roomRadius,
+    lights: window.__capture.roomLights,
+    pool: window.__capture.roomPool,
+    pieces: window.__capture.roomPatches,
+    count: window.__capture.count,
   }))
-  check(state.room === true, 'room: peel mode is on', failures)
-  check(state.chunks > 0, `room: the stand-in room builds a mesh (chunks ${state.chunks})`, failures)
-  check(state.warp === 'echo', `room: the frame stays on echo (got ${state.warp})`, failures)
+  const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
+  let state = await until((s) => s.chunks > 150, 20000)
+  check(state.room === true, 'peel: /peel is the peel page', failures)
+  check(state.chunks > 150, `peel: the stand-in room is read (chunks ${state.chunks})`, failures)
   const box = await page.locator('#scene-container').boundingBox()
-  const x = (box?.x ?? 0) + (box?.width ?? 960) / 2
-  const y = (box?.y ?? 0) + (box?.height ?? 640) / 2
-  await page.mouse.move(x, y)
+  const at = (fx, fy) => [(box?.x ?? 0) + (box?.width ?? 960) * fx, (box?.y ?? 0) + (box?.height ?? 640) * fy]
+  // The wall, left of the painting.
+  const [wx, wy] = at(0.2, 0.36)
+  await page.mouse.move(wx - 20, wy)
+  await page.mouse.move(wx, wy)
+  state = await until((s) => s.pool > 0.5, 5000)
+  check(state.pool > 0.5, `peel: light gathers on the wall under the cursor (level ${state.pool.toFixed(2)})`, failures)
+
+  // A small tug settles back and leaves nothing.
   await page.mouse.down()
-  await page.mouse.move(x, y - 160, { steps: 10 })
+  await page.mouse.move(wx, wy - 6, { steps: 3 })
+  await page.waitForTimeout(200)
   await page.mouse.up()
-  await frames(page, 8)
-  const peeled = await page.evaluate(() => window.__capture.roomPatches)
-  check(peeled > 0, `room: a click peels a patch off the stand-in (patches ${peeled})`, failures)
-  check(errors.length === 0, `room: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  state = await until((s) => s.pieces === 0, 4000)
+  check(state.pieces === 0 && state.lights === 0, `peel: a small tug settles back into the wall (pieces ${state.pieces})`, failures)
+
+  // A steady pull grows the piece, and a full one pops it free.
+  await page.mouse.down()
+  await page.mouse.move(wx, wy - 20, { steps: 6 })
+  await page.waitForTimeout(300)
+  const small = await api()
+  await page.mouse.move(wx, wy - 50, { steps: 8 })
+  await page.waitForTimeout(300)
+  const large = await api()
+  check(small.piece === 'lifting' && large.piece === 'lifting' && large.radius > small.radius + 0.02, `peel: the piece grows as it is pulled (${small.radius.toFixed(3)} then ${large.radius.toFixed(3)} m)`, failures)
+  await page.mouse.move(wx, wy - 100, { steps: 10 })
+  state = await until((s) => s.piece === 'carried' && s.lights === 1, 4000)
+  check(state.piece === 'carried', `peel: a full pull pops it free in the hand (got ${state.piece})`, failures)
+  check(state.lights === 1, `peel: warm light opens where it was (lights ${state.lights})`, failures)
+
+  // Carry it over the table and let go.
+  const [tx, ty] = at(0.79, 0.965)
+  await page.mouse.move(tx, ty, { steps: 24 })
+  await page.waitForTimeout(500)
+  await page.mouse.up()
+  state = await until((s) => s.piece === 'stuck', 5000)
+  check(state.piece === 'stuck', `peel: let go over the table and it lies down (got ${state.piece})`, failures)
+
+  // A pull let go part way tears free at that size and floats.
+  const [fx, fy] = at(0.72, 0.3)
+  await page.mouse.move(fx, fy, { steps: 6 })
+  await page.waitForTimeout(400)
+  await page.mouse.down()
+  await page.mouse.move(fx, fy - 36, { steps: 8 })
+  await page.waitForTimeout(300)
+  await page.mouse.up()
+  state = await until((s) => s.piece === 'free', 4000)
+  check(state.piece === 'free' && state.radius < 0.155 && state.lights === 2, `peel: let go part way and it floats at that size (got ${state.piece}, ${state.radius.toFixed(3)} m)`, failures)
+  check(state.count === 0, 'peel: no frame is ever drawn on this page', failures)
+  if (shotsDir) {
+    fs.mkdirSync(shotsDir, { recursive: true })
+    await page.screenshot({ path: path.join(shotsDir, 'peel.png') })
+  }
+  check(errors.length === 0, `peel: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  await context.close()
+}
+
+async function peelHeadset(browser, failures) {
+  const { context, page, errors, logs } = await openPage(browser, 'peel', { camera: true })
+  await page.waitForFunction(() => !!window.IWER_DEVICE, null, { timeout: 60000 })
+  await page.evaluate(() => {
+    window.IWER_DEVICE.primaryInputMode = 'hand'
+    window.IWER_DEVICE.controlMode = 'programmatic'
+  })
+  await page.waitForFunction(() => { const b = document.getElementById('enter'); return b && !b.disabled }, null, { timeout: 30000 })
+  await page.click('#enter')
+  const until = async (pred, ms) => { const end = Date.now() + ms; while (!(await pred()) && Date.now() < end) await page.waitForTimeout(200); return pred() }
+  const api = () => page.evaluate(() => ({ ...window.__capture }))
+  check(await until(async () => logs.some((l) => l.includes('depth-sensing')), 30000), 'peel headset: the session is granted depth sensing', failures)
+  check(await until(async () => (await api()).roomChunks > 100, 20000), `peel headset: depth builds the room (chunks ${(await api()).roomChunks})`, failures)
+  const hand = (p) => page.evaluate(([x, y, z]) => window.IWER_DEVICE.hands.right.position.set(x, y, z), p)
+  // Reach forward until light gathers under the fingertip: that is a surface.
+  let touch = null
+  for (let i = 0; i < 34 && !touch; i++) {
+    const p = [0.1, 1.25, -0.35 - 0.1 * i]
+    await hand(p)
+    await page.waitForTimeout(250)
+    if ((await api()).roomPool > 0.75) touch = p
+  }
+  check(touch !== null, 'peel headset: light gathers on a surface as a hand nears it', failures)
+  if (touch) {
+    // The light shows from a few centimetres away. Close the last of the gap, a little at a time, and pinch.
+    let took = false
+    for (const closer of [0.04, 0.08, 0, 0.12]) {
+      await hand([touch[0], touch[1], touch[2] - closer])
+      await page.waitForTimeout(400)
+      await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))
+      await page.waitForTimeout(500)
+      took = (await api()).roomPiece === 'lifting'
+      if (took) {
+        touch = [touch[0], touch[1], touch[2] - closer]
+        break
+      }
+      await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+      await page.waitForTimeout(400)
+    }
+    const after = await api()
+    check(took, `peel headset: a pinch on the surface takes hold of it (got ${after.roomPiece}, light ${after.roomPool.toFixed(2)})`, failures)
+    for (let i = 1; i <= 24; i++) {
+      await hand([touch[0], touch[1], touch[2] + 0.012 * i])
+      await page.waitForTimeout(80)
+    }
+    const pulled = await until(async () => (await api()).roomPiece === 'carried', 3000)
+    check(pulled, `peel headset: pulling it away pops it free (got ${(await api()).roomPiece})`, failures)
+    check((await api()).roomLights === 1, 'peel headset: warm light opens where it was', failures)
+    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+    check(await until(async () => (await api()).roomPiece === 'free', 3000), `peel headset: let go in the air and it floats (got ${(await api()).roomPiece})`, failures)
+  }
+  check((await api()).count === 0, 'peel headset: no frame is drawn', failures)
+  check(errors.length === 0, `peel headset: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
   await context.close()
 }
 
@@ -141,6 +246,7 @@ async function clean(browser, failures) {
   check(dom.clean && dom.hintHidden && dom.guide.trim() === '', 'clean: the guide and status are not on the page', failures)
   check(dom.warp === 'echo', `clean: the time window still starts in echo (got ${dom.warp})`, failures)
   check(!/pinch the mark|diamond|drag to draw/i.test(dom.guide), 'clean: no instructions about drawing or the old mark', failures)
+  check((await page.evaluate(() => window.__capture.room)) === false, 'clean: frame capture is not the peel page', failures)
   check(errors.length === 0, `clean: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
   await context.close()
 }
@@ -245,11 +351,16 @@ async function headset(browser, failures, leaveHandInFrame) {
   const browser = await chromium.launch({ args: [...GL, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] })
   const failures = []
   try {
-    await clean(browser, failures)
+    // `SMOKE_ONLY=peel` runs just the room peel checks.
+    const only = process.env.SMOKE_ONLY
+    if (only !== 'peel') await clean(browser, failures)
     await room(browser, failures)
-    await desk(browser, failures)
-    await headset(browser, failures, false)
-    await headset(browser, failures, true)
+    if (only !== 'peel') {
+      await desk(browser, failures)
+      await headset(browser, failures, false)
+      await headset(browser, failures, true)
+    }
+    await peelHeadset(browser, failures)
     if (shotsDir) await holds(browser, failures)
   } finally {
     await browser.close()

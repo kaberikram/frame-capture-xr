@@ -2,6 +2,8 @@
 
 On a Meta Quest 3 you pinch a rectangle in the air. While you hold it, the world inside the rectangle falls behind time, and everything outside stays live. Letting go leaves the frame where you made it, photographs that view, and eases the photo forward into a depth relief. Draw another frame and the earlier ones stay put.
 
+There are two pages. `/` is this, frame capture. `/peel` is the room peel: pinch a wall or a table and pull, and that piece of your room comes away in your fingers. See [Peel the room](#peel-the-room).
+
 The desk preview does the same thing without a headset: the mouse draws the frame, and a stand-in room (or a webcam) stands in for the passthrough camera.
 
 ## Run
@@ -11,7 +13,7 @@ npm install
 npm run dev
 ```
 
-The dev server is HTTPS on port 4473, which the Quest browser needs for WebXR. Open the URL it prints. `/clean` is the same session without the guide, the captions, or the status prompts. It is a rewrite of the same page, so a refresh stays there.
+The dev server is HTTPS on port 4473, which the Quest browser needs for WebXR. Open the URL it prints. `/peel` is the room peel. `/clean` and `/peel/clean` are the same sessions without the guide, the captions, or the status prompts. All of these are rewrites of the same page, so a refresh stays there. On a host without the rewrites, `?mode=peel` opens the room peel.
 
 On the headset, use the same network, accept the certificate warning, and press **Enter passthrough**. The first time, the page asks for the headset cameras before it goes in, because Quest Browser can lose that prompt once passthrough is running. Allow it, and allow hand tracking when asked. You do not need Space Setup. The session is seated. Hands only; controllers are not used.
 
@@ -19,7 +21,7 @@ If the camera cannot start, the launch card and the frame say why: blocked (allo
 
 `?debug=1` adds a small panel with the frame rate, the worst frame, long main-thread tasks, the camera (asking, starting, active, or error), the hands, and how long each step of the last capture took. `?sound=0` keeps it silent. Your real hands show through passthrough, so IWSDK's hand models are hidden; `?hands=1` draws them, tracking every finger.
 
-Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. Keys `1`–`4` set the time inside the frame (echo, slit, ripple, live) and `t` cycles them. Key `5` (or `?warp=peel`) turns on Peel: the stand-in room is scanned into a faint mesh, and a click on that shimmer peels a patch off it. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to. `?warp=ripple` starts in a chosen mode. `prefers-reduced-motion` starts on live unless the URL asks otherwise.
+Without a headset, open `https://localhost:4473/?preview=1`. Drag with the left button to draw. Right-drag (or alt-drag) looks around. Keys `1`–`4` set the time inside the frame (echo, slit, ripple, live) and `t` cycles them. `https://localhost:4473/peel?preview=1` is the room peel with the mouse. `?cam=1` uses a webcam for the photo instead of the stand-in room. `?shot=1` plays the draw, the relief, the peel, the frame dissolving, and the sticker landing on the back wall. `?at=curl` holds the curl, `?at=detached` holds the sticker floating, and `?at=stuck` holds it on the wall. `?at=rest`, `?at=peel` and `?at=open` still hold the depth-sheet fan. `?ui=0` hides the card. The stand-in wall, side wall, and table are surfaces the sticker can stick to. `?warp=ripple` starts in a chosen mode. `prefers-reduced-motion` starts on live unless the URL asks otherwise.
 
 ## First headset run
 
@@ -27,10 +29,17 @@ Open the page with `?debug=1` the first time.
 
 1. **Enter passthrough.** The panel should show about 72 or 90 fps. The console has a `[frame] session` line listing the granted features, and `[frame] camera` lines once the camera runs.
 2. **Wait for depth.** The first visit downloads the depth model (about 25 MB) in the background. Until it is ready, frames use brightness depth.
-3. **Draw a frame with one hand and look through it.** The room inside should echo. Turn the other palm toward you and a small stack of tiles appears on the thumb side: Echo, Slit scan, Ripple, Live, Peel. Bring a fingertip close and a thin line joins it to a tile; touch the tile and that mode drops into the frame. A quick flick of an open hand through the glass cycles the time modes. Pinch both rims and pull, and the pattern stretches with your hands. It always runs at full strength.
+3. **Draw a frame with one hand and look through it.** The room inside should echo. Turn the other palm toward you and a small stack of tiles appears on the thumb side: Echo, Slit scan, Ripple, Live. Bring a fingertip close and a thin line joins it to a tile; touch the tile and that mode drops into the frame. A quick flick of an open hand through the glass cycles the time modes. Pinch both rims and pull, and the pattern stretches with your hands. It always runs at full strength.
 4. **Let go of the frame, and let your hand fall.** The photo is whatever the window was showing, so an echo can still hold a hand that has since moved away. Live mode takes the ordinary camera photo. The `[frame] capture` line gives the picture and darkroom times, and `[frame] depth model in … ms` how long the model took.
 5. **Check the photo lines up with the room.** Look at the edge of the captured frame against the real room behind it. If the photo sits a little off, trim the lens with the URL fields under Tuning.
 6. **Peel a corner, pull past the mark, and touch the sticker to a wall.** The time window steps aside and the print peels. It should land flat with a soft thup.
+
+Then open `/peel?debug=1` for the room peel, which has not yet been run on a real headset:
+
+1. **Enter passthrough and look around slowly for a few seconds.** The console's `[frame] session` line should list `depth-sensing`. If it does not, or the caption says the browser cannot read the shape of the room, the peel cannot work in that browser.
+2. **Bring a fingertip toward a wall or table.** Light should gather on the surface, not in the air in front of it or behind it. If it sits off the surface, the depth is being placed wrongly.
+3. **Pinch and pull slowly.** Check the picture on the piece is that part of the wall, lined up with it at the start, and that your hand is not printed on it.
+4. **Watch the frame rate.** Depth fusion runs every frame on this page. If the panel drops well below 72 fps, note it.
 
 If the panel's long-task count climbs while you capture, or the worst frame is above about 20 ms, note which step was running. Those numbers are what to tune next.
 
@@ -75,7 +84,7 @@ Each visual cue means something:
 | A small warm light between thumb and index | Your fingers are about to meet. It blooms when the pinch registers |
 | A line of light with a faint warm wash inside | The frame you are drawing |
 | The world inside the frame is late, trailed, or smeared | The time window. Outside it, the room is live |
-| A short stack of frosted tiles on an upturned palm | Echo, Slit scan, Ripple, Live, and Peel. A thin line follows your fingertip; a touch chooses that tile |
+| A short stack of frosted tiles on an upturned palm | Echo, Slit scan, Ripple, and Live. A thin line follows your fingertip; a touch chooses that tile |
 | The line inhales, brighter for a moment | The frame is anchored. If it keeps breathing, the photo is waiting for your hands to clear |
 | The photo resolves out of a peach haze | It has been taken and is developing |
 | A glossy band sweeping across | Depth is still on its way |
@@ -101,17 +110,35 @@ The rectangle is a pane of glass over the live view. It keeps the last 16 camera
 | Ripple | Rings of different moments spread from the middle of the frame |
 | Live | The camera now, with no warm grade. A photo from this mode is the ordinary full-resolution picture |
 
-Each one always uses the whole ring. The other modes carry a light warm grade so the window reads as the same sunlit world, a moment removed. On a headset, turn one palm toward you. A short stack of frosted tiles floats just off the thumb side of the palm and fades in over about a sixth of a second. As the other index finger approaches a tile, a thin white line joins the tile's edge to the fingertip and the tile turns from translucent tan to solid beige. Touch it and the tile presses in, then a copy of it travels into the frame and that mode lands. Turn the palm away and the stack scales away. Pulling two pinches apart on the rim stretches the pattern in the glass; it eases back when you let go. A flick through the pane cycles the time modes. On the desk, `1`–`4` and `t`. `5` is Peel. The glass is there while the frame is. During the bloom the print has the frame to itself. Once it has settled, the window returns and the print steps aside, until you peel, fan the sheets, or take the sticker. A flat demo photo (`?at=photo`) is never covered.
+Each one always uses the whole ring. The other modes carry a light warm grade so the window reads as the same sunlit world, a moment removed. On a headset, turn one palm toward you. A short stack of frosted tiles floats just off the thumb side of the palm and fades in over about a sixth of a second. As the other index finger approaches a tile, a thin white line joins the tile's edge to the fingertip and the tile turns from translucent tan to solid beige. Touch it and the tile presses in, then a copy of it travels into the frame and that mode lands. Turn the palm away and the stack scales away. Pulling two pinches apart on the rim stretches the pattern in the glass; it eases back when you let go. A flick through the pane cycles the time modes. On the desk, `1`–`4` and `t`. The glass is there while the frame is. During the bloom the print has the frame to itself. Once it has settled, the window returns and the print steps aside, until you peel, fan the sheets, or take the sticker. A flat demo photo (`?at=photo`) is never covered.
 
 An echo photo can include a hand that was in the pane a moment ago, even after the shutter waited for your hands to leave. Switch to live for a picture of the room as it is.
 
 ## Peel the room
 
-Peel, on the palm stack and on key `5`, watches the real room. On a Quest it asks for WebXR depth sensing and fuses those depth frames into a sparse distance field, about 4 cm to a voxel and a few metres out. The mesh is only the surface, drawn as a faint warm wire with a slow scan, brighter where it was just filled in, so you can see where a peel will catch. It is not a solid model of the room. Quest Browser is WebGL, so the fusion runs on the CPU in small batches and the shader does the shimmer. A chunk can be copied out on its own; a later ghost replay can keep those copies and mesh them again.
+`/peel` is its own page. Nothing is drawn on the room until you reach for it.
 
-Pinch a shimmering surface, or click one on the desk. The patch curls off the way a sticker does. The spot it left goes a little dark and stays empty, because new depth is not allowed to heal a place you have already peeled. Pull it free and let go on another reconstructed surface and the patch lies down on that shape. Let go in the air and it floats. The camera frame, when there is one, is what the patch shows. Without a camera it is a warm film of the surface colour. Frames, the time modes, and peeling a captured photo are unchanged. `/clean` has the same Peel tile and the same gesture, with no extra instructions. If the browser has no depth sensing, Peel says so in one line.
+1. **Bring a hand close to a surface.** A soft pool of warm light gathers on the wall or table under your fingertip, and draws in as you get nearer. That is the only sign the room can be peeled.
+2. **Pinch it and pull.** For the first centimetre nothing gives, like the tack of glue. Then the surface lifts under your fingers and the piece grows as you pull, from a coin to about 30 cm across, with a torn paper edge. The middle is in your fingers and the rim trails behind. It shows exactly that part of your room and keeps its shape: a table edge stays an edge.
+3. **Warm light opens where it was.** Peach in the middle, coral at the rim, with a little thickness to the wall when you look in at an angle, and dust drifting out.
+4. **Let go, or keep pulling.** With less than about 3 cm of pull it settles back and the wall is whole. Past that it tears free at the size it has reached and floats where you left it. At about 18 cm it pops free at full size and follows your hand, trailing a little and leaning into the movement. `?peel=1.3` makes all of these take 30% more pull.
+5. **Lay it down.** Near another surface, an outline breathes where it will land. Let go and it lies down on that surface over about a third of a second and takes its shape, with a small squash and a ring of light. In open air it floats. Pinch any loose piece to pick it up again.
 
-On the desk, `?warp=peel` scans the stand-in room with rays instead of a headset depth camera, so the same mesh and the same peel can be tried with the mouse.
+Twelve pieces is the limit. The oldest then fades and its light closes, and the wall can be peeled there again.
+
+Hints show once each, when they help: bring a hand to a surface, pinch and pull, carry it somewhere new. `/peel/clean` has none. The page does not draw frames, has no time window or palm menu, and does not download the depth model.
+
+### How it works
+
+On a Quest the page asks for WebXR depth sensing, which frame capture does not. Depth readings are fused on the CPU, in small batches, into a sparse distance field: about 4 cm to a voxel, a few metres out. Quest Browser is WebGL, so there are no compute shaders to do it on. The field is never shown, apart from a brief sparkle where it has just filled in. Every lookup marches the field (`RoomField.surfaceAlong`, `near`), which costs the same however much of the room has been read.
+
+The piece is a 25 by 25 grid laid on the surface around the pinch, with the height of the real surface at each point. Its picture comes from the passthrough camera. The page keeps the last six camera frames, about two seconds, each with the lens pose that took it. When you pinch, your hand is in front of the spot, so the piece uses the newest frame in which no hand joint was over it, and each grid point is projected through that frame's lens to find its place in the image. Without a camera the piece is a warm film.
+
+The place a piece left is carved out of the field, so new depth does not paint the wall back in behind the light. When a hole closes, the field there is allowed to fill in again.
+
+If the browser has no depth sensing, the page says so in one line and nothing can be peeled.
+
+On the desk, `/peel?preview=1` reads the stand-in room with rays instead of a depth camera. Press a surface and drag up to pull it toward you. A free piece rides just above whatever the cursor is over, and lands there when you let go.
 
 ## Sound
 
@@ -160,9 +187,9 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 | `app/` | the system, the shared context, the `CaptureLook` knobs, URL flags |
 | `capture/` | camera rig and lens, the shutter (hands-clear wait), the time-window modes and the GPU ring, the darkroom and depth workers, crop, develop (depth stages and the bloom) |
 | `input/` | hand pinches (filtering, release rewind) and the desk pointer. Both feed one router |
-| `room/` | the sparse room field, the shimmer mesh, and peeling a patch off it |
+| `room/` | the room peel: the sparse distance field, the short memory of camera frames, and the piece that comes away |
 | `interaction/` | what is held (`Grip`), the router, stickers (curl, detach, stick, unstick), depth sheets, the frame handle, stretch, flick, and the palm menu |
-| `look/` | relief shader, the time-window glass, the palm menu, bloom spring, frame border, dissolve |
+| `look/` | relief shader, the time-window glass, the palm menu, the room piece and the light behind it, bloom spring, frame border, dissolve |
 | `world/` | surfaces from the room scan, the landing outline, the stand-in room |
 | `sound/` | the synthesized soundscape and the cues that trigger it |
 | `desk/`, `ui/`, `debug/` | desk camera and scripted demo, status line, `__capture` and the `?debug=1` panel |
@@ -171,5 +198,5 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 
 - `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), the bloom spring, the time-window modes, the stretch, flick, and palm-menu math, and the room field.
 - `npm run typecheck` and `npm run build` compile the app.
-- `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
+- `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. On `/peel` it pulls a piece off the stand-in room with the mouse (settle back, grow, pop, land on the table, float), and in the emulated headset reaches for a surface, pinches it and pulls it free. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
 - `npm run check` runs typecheck, tests, and build.

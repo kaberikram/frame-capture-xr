@@ -12,6 +12,9 @@
       ;(function () {
         var path = location.pathname.replace(/\/+$/, '')
         if (path === '/clean' || path.endsWith('/clean')) document.documentElement.classList.add('clean')
+        var query = new URLSearchParams(location.search)
+        var peel = /\/peel(\/clean)?$/.test(path) || query.get('mode') === 'peel' || query.get('warp') === 'peel'
+        if (peel) document.documentElement.classList.add('peel')
       })()
     </script>
     <style>
@@ -59,6 +62,9 @@
       #depth:empty { display: none; }
       #camera { color: var(--glow); font-size: 13px; }
       #camera:empty { display: none; }
+      #other { font-size: 13px; }
+      #other a { color: var(--glow); text-decoration: none; border-bottom: 1px solid var(--line); }
+      #other a:focus-visible { outline: 2px solid var(--glow); outline-offset: 3px; }
       button {
         margin-top: 14px;
         height: 40px;
@@ -78,6 +84,7 @@
       html.clean h1,
       html.clean #hint,
       html.clean #status,
+      html.clean #other,
       html.clean #depth { display: none !important; }
       html.clean #launch {
         width: auto;
@@ -97,14 +104,35 @@
     <section id="launch" aria-labelledby="title">
       <h1 id="title">frame capture</h1>
       <p id="hint">Pinch the air to frame a moment. What you see through the frame falls behind time. Let go and it becomes a photo with depth, one you can peel off and stick anywhere in your room.</p>
-      <p id="status">Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame, 5 peels the room. Right-drag looks around.</p>
+      <p id="status">Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame. Right-drag looks around.</p>
       <p id="depth"></p>
       <p id="camera" role="status"></p>
       <button id="enter" type="button">Enter passthrough</button>
+      <p id="other"><a id="other-link" href="/peel">Or peel the room itself</a></p>
     </section>
     <script>
       ;(function () {
-        if (!document.documentElement.classList.contains('clean')) return
+        var root = document.documentElement
+        var link = document.getElementById('other-link')
+        if (root.classList.contains('peel')) {
+          document.title = 'Room peel'
+          document.getElementById('title').textContent = 'room peel'
+          document.getElementById('hint').textContent = 'Bring a hand close to a wall, a table, anything. Pinch it and pull, and that piece of your room comes away in your fingers, with warm light where it was. Carry it somewhere new.'
+          document.getElementById('status').textContent = 'Press a surface and drag up to pull it off. Right-drag looks around.'
+          if (link) {
+            link.textContent = 'Or frame a moment in the air'
+            link.setAttribute('href', '/')
+          }
+        }
+        // Keep `?preview=1` and the like when moving between the two pages.
+        if (link) {
+          var keep = new URLSearchParams(location.search)
+          keep.delete('mode')
+          keep.delete('warp')
+          var tail = keep.toString()
+          if (tail) link.setAttribute('href', link.getAttribute('href') + '?' + tail)
+        }
+        if (!root.classList.contains('clean')) return
         ;['hint', 'status', 'title', 'depth'].forEach(function (id) {
           var el = document.getElementById(id)
           if (el) el.textContent = ''

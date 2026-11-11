@@ -21,10 +21,13 @@ export class DeskPointer {
   private readonly at = new Vector3()
   private drawing = false
   private view: HTMLElement | null = null
-  /** Peel a patch off the reconstructed room. Set after both exist. */
+  /** The peel page: the mouse only ever touches the room. Set after both exist. */
   room: RoomScan | null = null
   private roomY = 0
   private roomDist = 0.8
+  private roomBase = 0.8
+  private readonly roomFrom = new Vector3()
+  private readonly roomAlong = new Vector3()
 
   private readonly onDown = (event: PointerEvent): void => {
     if (this.ctx.renderer.xr.isPresenting) return
@@ -38,18 +41,19 @@ export class DeskPointer {
     el.setPointerCapture(event.pointerId)
     this.aim(event)
     const ray = this.raycaster.ray
+    if (this.room) {
+      const dist = this.room.pressRay(ray.origin, ray.direction)
+      if (dist < 0) return
+      this.roomY = event.clientY
+      this.roomDist = dist
+      this.roomBase = dist
+      this.roomFrom.copy(ray.origin)
+      this.roomAlong.copy(ray.direction)
+      return
+    }
     const hit = this.interaction.aim(ray.origin, ray.direction)
     const route = routeHit(hit, event.shiftKey)
     if (route === 'ignore') return
-    if ((route === 'draw' || !hit) && this.room) {
-      const surface = this.room.ray(ray.origin, ray.direction)
-      if (surface) {
-        this.roomY = event.clientY
-        this.roomDist = surface.dist
-        this.room.begin(surface, null, ray.origin)
-        return
-      }
-    }
     if (route === 'draw' || !hit) {
       this.drawing = true
       this.place(event, true)
@@ -65,10 +69,29 @@ export class DeskPointer {
       this.deskCamera.orbitTo(event.clientX, event.clientY)
       return
     }
-    if (this.room?.holding) {
+    if (this.room) {
       this.aim(event)
       const ray = this.raycaster.ray
-      const dist = clamp(this.roomDist - (this.roomY - event.clientY) * 0.004, 0.25, 3.2)
+      if (!this.room.holding) {
+        // The cursor is the fingertip: light gathers on whatever it is over.
+        this.room.hover(0, ray.origin, ray.direction, 3.6, 0.8)
+        return
+      }
+      this.room.hover(0, null, null)
+      let dist: number
+      if (this.room.carrying) {
+        // A free piece rides just above whatever the cursor is over, ready to be laid on it.
+        const under = this.room.rayDist(ray.origin, ray.direction)
+        dist = under > 0 ? Math.max(0.2, under - 0.05) : this.roomDist
+        this.roomDist = dist
+      } else {
+        // Dragging up pulls the surface straight toward you, along the line you pressed it on.
+        dist = clamp(this.roomBase - (this.roomY - event.clientY) * 0.0025, 0.25, 3.4)
+        this.roomDist = dist
+        this.at.copy(this.roomFrom).addScaledVector(this.roomAlong, dist)
+        this.room.drag(this.at)
+        return
+      }
       this.at.copy(ray.origin).addScaledVector(ray.direction, dist)
       this.room.drag(this.at)
       return
@@ -115,8 +138,8 @@ export class DeskPointer {
       this.deskCamera.orbiting = false
       return
     }
-    if (this.room?.holding && event.button === 0) {
-      this.room.end()
+    if (this.room) {
+      if (this.room.holding && event.button === 0) this.room.end()
       return
     }
     if (this.grip.touch !== 'none' && event.button === 0) {
