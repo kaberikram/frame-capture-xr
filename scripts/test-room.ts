@@ -1,5 +1,5 @@
 import { DIAL_MODES, WARP_MODES } from '../src/capture/time-mode.ts'
-import { transformPoint, viewFromDepthPixel } from '../src/room/depth-project.ts'
+import { transformPoint, viewFromDepth } from '../src/room/depth-project.ts'
 import { MAX_CHUNKS, RoomField, surfacePoint } from '../src/room/field.ts'
 import {
   PIECE_MAX,
@@ -109,11 +109,15 @@ assert(Math.abs(kept.tx - 1) < 1e-6, 'carried from a wall to a table, across sta
 const lost = basisKeeping(1, 0, 0, 1, 0, 0)
 assert(Math.abs(Math.hypot(lost.tx, lost.ty, lost.tz) - 1) < 1e-6, 'a surface facing along the old across still gets a basis')
 
-const inverse = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, -1, 1]
-const view = viewFromDepthPixel(inverse, 0, 0, 1)
-assert(view !== null && Math.abs(view.z + 1) < 1e-6, `a depth pixel sits in front of the camera, got ${view?.z}`)
+// A symmetric view 90 degrees wide and tall: the edge of the view is as far to the side as it is deep.
+const projection = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, -1, 0, 0, -0.2, 0]
+const view = viewFromDepth(projection, 0.5, 0.5, 1)
+assert(view !== null && Math.abs(view.z + 1) < 1e-6 && Math.abs(view.x) < 1e-6 && Math.abs(view.y) < 1e-6, `the middle of the view is straight ahead, got ${view?.x} ${view?.y} ${view?.z}`)
+const corner = viewFromDepth(projection, 1, 0, 2)
+assert(corner !== null && Math.abs(corner.x - 2) < 1e-6 && Math.abs(corner.y - 2) < 1e-6 && Math.abs(corner.z + 2) < 1e-6, 'the top right of the view is up and to the right, and depth is distance from the camera plane')
+assert(viewFromDepth(projection, 0.5, 0.5, 0) === null && viewFromDepth(projection, 0.5, 0.5, 9) === null, 'a reading of nothing, or of too far, is dropped')
 const world = view ? transformPoint([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1], view) : null
-assert(world !== null && Math.abs(world.x - 2) < 1e-6, 'the view pose carries the point into the room')
+assert(world !== null && Math.abs(world.x - 2) < 1e-6 && Math.abs(world.z + 1) < 1e-6, 'the view pose carries the point into the room')
 
 const wide = new RoomField()
 const crowded = []

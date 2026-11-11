@@ -22,7 +22,7 @@ import { motesEffect, type Effect } from '../look/effects.js'
 import { makeDust } from '../look/motes.js'
 import { PALETTE } from '../look/palette.js'
 import { poolMaterial, sparkleMaterial } from '../look/room-glow.js'
-import { transformPoint, viewFromDepthPixel } from './depth-project.js'
+import { transformPoint, viewFromDepth } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { PIECE_MAX, STICK_GAP, TOUCH_GAP, canLand, tangentBasis } from './patch.js'
 import { PeelPiece, type PieceState } from './peel-piece.js'
@@ -39,15 +39,18 @@ const POOL_REACH = 0.3
 /** Pool slots: one per hand, and one for where a carried piece will land. */
 const LANDING = 2
 
+/** Depth readings taken across the view each pass, and down it. */
+const DEPTH_COLS = 28
+const DEPTH_ROWS = 20
+
 interface DepthView {
   transform: { matrix: ArrayLike<number> }
+  projectionMatrix: ArrayLike<number>
 }
 
 interface CpuDepth {
-  width: number
-  height: number
+  /** `x` and `y` are places in the view from 0 up to, not including, 1. */
   getDepthInMeters(x: number, y: number): number
-  normDepthBufferFromNormView: { inverse: { matrix: ArrayLike<number> } }
 }
 
 interface DepthFrame {
@@ -575,19 +578,24 @@ export class RoomScan {
     }
     this.depthMiss = 0
     this.depthNote = null
-    const inverse = depth.normDepthBufferFromNormView.inverse.matrix
     const viewMatrix = view.transform.matrix
+    const projection = view.projectionMatrix
     const origin = transformPoint(viewMatrix, { x: 0, y: 0, z: 0 })
     const samples: DepthSample[] = []
-    const stepX = Math.max(1, Math.floor(depth.width / 28))
-    const stepY = Math.max(1, Math.floor(depth.height / 20))
-    // Start each pass on a different pixel, so the gaps between samples fill in.
-    const startX = Math.floor(Math.random() * stepX)
-    const startY = Math.floor(Math.random() * stepY)
-    for (let y = startY; y < depth.height; y += stepY) {
-      for (let x = startX; x < depth.width; x += stepX) {
-        const meters = depth.getDepthInMeters(x, y)
-        const local = viewFromDepthPixel(inverse, (x + 0.5) / depth.width, (y + 0.5) / depth.height, meters)
+    // Each pass reads slightly different places, so the gaps between them fill in.
+    const jx = Math.random()
+    const jy = Math.random()
+    for (let row = 0; row < DEPTH_ROWS; row++) {
+      const v = Math.min(0.999, (row + jy) / DEPTH_ROWS)
+      for (let col = 0; col < DEPTH_COLS; col++) {
+        const u = Math.min(0.999, (col + jx) / DEPTH_COLS)
+        let meters: number
+        try {
+          meters = depth.getDepthInMeters(u, v)
+        } catch {
+          continue
+        }
+        const local = viewFromDepth(projection, u, v, meters)
         if (!local) continue
         const world = transformPoint(viewMatrix, local)
         samples.push({ ox: origin.x, oy: origin.y, oz: origin.z, px: world.x, py: world.y, pz: world.z })

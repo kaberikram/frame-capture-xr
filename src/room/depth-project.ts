@@ -1,24 +1,23 @@
 /**
- * Turn one depth pixel into a view-space point.
- * `inverse` is the column-major inverse of `normDepthBufferFromNormView`.
- * `u` and `v` are 0..1 across the depth image. `depth` is metres.
+ * Turn one depth reading into a view-space point.
  *
- * Quest Browser exposes this on a CPU depth frame when the session was
- * granted `depth-sensing`. The view pose then carries the point into the room.
+ * WebXR's `getDepthInMeters(u, v)` takes a place in the view from 0 to 1, with
+ * the origin at the top left, and answers with the distance from the camera
+ * plane. `projection` is that view's column-major projection matrix, which
+ * says which way a place in the view looks.
  */
-export function viewFromDepthPixel(inverse: ArrayLike<number>, u: number, v: number, depth: number): { x: number; y: number; z: number } | null {
+export function viewFromDepth(projection: ArrayLike<number>, u: number, v: number, depth: number): { x: number; y: number; z: number } | null {
   if (!Number.isFinite(depth) || depth <= 0.05 || depth > 4) return null
-  const x = inverse[0] * u + inverse[4] * v + inverse[12]
-  const y = inverse[1] * u + inverse[5] * v + inverse[13]
-  const z = inverse[2] * u + inverse[6] * v + inverse[14]
-  const w = inverse[3] * u + inverse[7] * v + inverse[15]
-  if (!Number.isFinite(w) || Math.abs(w) < 1e-6) return null
-  const vx = x / w
-  const vy = y / w
-  const vz = z / w
-  if (Math.abs(vz) < 1e-4) return null
-  const scale = -depth / vz
-  return { x: vx * scale, y: vy * scale, z: vz * scale }
+  const fx = projection[0]
+  const fy = projection[5]
+  if (!Number.isFinite(fx) || !Number.isFinite(fy) || Math.abs(fx) < 1e-6 || Math.abs(fy) < 1e-6) return null
+  const ndcX = u * 2 - 1
+  const ndcY = 1 - v * 2
+  return {
+    x: (depth * (ndcX + projection[8])) / fx,
+    y: (depth * (ndcY + projection[9])) / fy,
+    z: -depth,
+  }
 }
 
 /** Column-major matrix times a point. Used to move a view-space point into the room. */
