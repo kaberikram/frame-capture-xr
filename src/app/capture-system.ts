@@ -1,4 +1,4 @@
-import { Color, Group, Matrix4, XRMesh, XRPlane, createSystem, type Object3D } from '@iwsdk/core'
+import { Color, Group, Matrix4, Vector3, XRMesh, XRPlane, createSystem, type Object3D } from '@iwsdk/core'
 import { CameraRig, cameraAllowed } from '../capture/camera-rig.js'
 import { prepareDarkroom } from '../capture/darkroom.js'
 import { onDepthProgress, prepareDepthModel } from '../capture/depth-model.js'
@@ -19,6 +19,7 @@ import { Interaction } from '../interaction/router.js'
 import { Sheets } from '../interaction/sheets.js'
 import { Stickers } from '../interaction/stickers.js'
 import { TimePlay } from '../interaction/time-play.js'
+import { RoomPlates } from '../room/plates.js'
 import { bindRoomSpace, RoomScan } from '../room/room-scan.js'
 import type { Effect } from '../look/effects.js'
 import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
@@ -71,6 +72,11 @@ export class CaptureSystem extends createSystem({
   private hands!: HandInput
   private timePlay!: TimePlay
   private room!: RoomScan
+  private plates!: RoomPlates
+  private readonly reach = new Vector3()
+  private readonly headAt = new Vector3()
+  /** A piece has been carried at least once, so the hint for it can retire. */
+  private sawCarry = false
   private pointer!: DeskPointer
   private shot!: DeskShot
   private surfaces!: LiveSurfaces
@@ -136,11 +142,19 @@ export class CaptureSystem extends createSystem({
     this.interaction = new Interaction(ctx, this.grip, this.stickers, this.sheets, frameGrab, this.snap)
     this.hands = new HandInput(ctx, this.grip, this.interaction, this.sheets, this.shutter)
     this.timePlay = new TimePlay(ctx, this.hands, this.grip, this.warp, root, this.renderer)
-    this.room = new RoomScan(root, this.renderer)
+    this.plates = new RoomPlates(this.rig, this.hands)
+    this.room = new RoomScan(root, this.renderer, this.plates)
     // Two pages, one app. The peel page hands every pinch to the room; frame capture never sees it.
     if (PEEL) {
       this.hands.room = this.room
       this.room.setActive(true)
+      this.room.pixelScale = () => this.pixelScale()
+      this.room.onLift = (at, speed, dt) => this.sound.peel(at, speed, dt)
+      this.room.onFree = (at) => {
+        this.sound.detach(at)
+        this.sound.glow(at)
+      }
+      this.room.onLand = (at) => this.sound.stick(at)
     } else this.hands.play = this.timePlay
     this.shot = new DeskShot(ctx, this.deskCamera, this.stickers, this.grip, this.shutter)
     this.pointer = new DeskPointer(ctx, this.grip, this.interaction, this.stickers, frameGrab, this.deskCamera, this.shutter, () => this.shot.blocksDraw)
@@ -228,7 +242,8 @@ export class CaptureSystem extends createSystem({
       }
     }
     if (PEEL) {
-      this.room.liveVideo = this.rig.liveVideo()
+      if (presenting) this.reachForRoom()
+      this.plates.step(dt, presenting)
       const depthFrame = this.world.xrFrame as Parameters<RoomScan['step']>[2]
       this.room.step(dt, presenting, presenting ? depthFrame : null, this.camera, this.standIn)
     }
@@ -251,7 +266,7 @@ export class CaptureSystem extends createSystem({
       this.captions.update(problem ?? roomNote, this.player.head, presenting, dt)
       this.status.note(problem ?? roomNote ?? '')
     } else {
-      this.captions.update(this.captionLine(last), this.player.head, presenting, dt)
+      this.captions.update(PEEL ? this.peelCaption(problem) : this.captionLine(last), this.player.head, presenting, dt)
       this.status.note(
         statusLine({
           touch: this.grip.touch,
@@ -266,6 +281,8 @@ export class CaptureSystem extends createSystem({
           camera: problem,
           room: PEEL,
           roomNote: this.room.depthNote,
+          piece: this.room.holding ? this.room.state : this.room.anyFloating ? 'free' : 'none',
+          overSurface: this.room.overSurface,
         }),
       )
     }
@@ -397,7 +414,7 @@ export class CaptureSystem extends createSystem({
     this.sawStuck = stuck
     const settled = last && !last.frameGone && last.mode === 'idle' && last.pop >= 1 && last.depth !== 'wait'
     let hint: Hint | null = null
-    if (PEEL || drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
+    if (drawing || touch === 'curl' || touch === 'grab' || touch === 'peel') hint = null
     else if (touch === 'sticker' || last?.mode === 'free') hint = 'wall'
     else if (settled && this.captions.hint('time')) hint = 'time'
     else if (settled) hint = 'peel'
@@ -411,6 +428,53 @@ export class CaptureSystem extends createSystem({
       }
     } else this.timeHintAt = -1
     return this.captions.hint(hint)
+  }
+
+  /** Each open hand gathers light on the surface its index finger is reaching for. */
+  private reachForRoom(): void {
+    this.player.head.getWorldPosition(this.headAt)
+    const sides = ['left', 'right'] as const
+    for (let i = 0; i < 2; i++) {
+      const pose = this.hands.pose[sides[i]]
+      if (!pose.tracked || pose.pinching) {
+        this.room.hover(i as 0 | 1, null, null)
+        continue
+      }
+      this.reach.copy(pose.index).sub(this.headAt)
+      this.room.hover(i as 0 | 1, pose.index, this.reach)
+    }
+  }
+
+  /**
+   * The peel page's caption: a one-off note, a problem, or the hint for this
+   * moment. Each hint retires once you have done what it asks.
+   */
+  private peelCaption(problem: string | null): string | null {
+    const flash = this.status.flashing
+    if (flash) return flash
+    if (problem) return problem
+    const room = this.room
+    if (room.depthNote) return room.depthNote
+    if (room.holding || room.poolLevel > 0.2) this.captions.active()
+    if (room.poolLevel > 0.35) this.captions.retire('reach')
+    if (room.state !== 'none') {
+      this.captions.retire('reach')
+      this.captions.retire('pull')
+    }
+    if (room.carrying) this.sawCarry = true
+    if (room.anyStuck || (this.sawCarry && !room.holding && !room.anyFloating)) this.captions.retire('carry')
+    let hint: Hint | null = null
+    if (room.state === 'lifting' || room.state === 'landing') hint = null
+    else if (room.carrying || room.anyFloating) hint = 'carry'
+    else if (room.poolLevel > 0.35) hint = 'pull'
+    else if (room.pieceCount === 0) hint = 'reach'
+    return this.captions.hint(hint)
+  }
+
+  /** Pixels per metre at one metre, so dust keeps its size at any distance. */
+  private pixelScale(): number {
+    if (this.renderer.xr.isPresenting) return 760
+    return this.renderer.domElement.height / (2 * Math.tan((this.camera.fov * Math.PI) / 360))
   }
 
   private animate(dt: number, now: number): void {
@@ -444,7 +508,7 @@ export class CaptureSystem extends createSystem({
   private overlays(): Object3D[] {
     const list: Object3D[] = []
     for (let i = 0; i < this.captures.length; i++) list.push(this.captures[i].group)
-    list.push(this.dragGroup, this.snap.group, this.pinchLights.group, this.captions.mesh)
+    list.push(this.dragGroup, this.snap.group, this.pinchLights.group, this.captions.mesh, this.room.group)
     for (let i = 0; i < this.effects.length; i++) list.push(this.effects[i].group)
     return list
   }
@@ -461,7 +525,15 @@ export class CaptureSystem extends createSystem({
       yaw: this.deskCamera.yaw,
     })
     publishPhase(this.phase, this.captures.length, last, { mode: this.warp.mode })
-    publishRoom(this.room.active, this.room.chunkCount, this.room.patchCount)
+    publishRoom({
+      active: PEEL,
+      chunks: this.room.chunkCount,
+      pieces: this.room.pieceCount,
+      piece: this.room.state,
+      radius: this.room.pieceRadius,
+      lights: this.room.lightCount,
+      pool: this.room.poolLevel,
+    })
   }
 
   private paintDebug(presenting: boolean, last: Held | undefined): void {
@@ -498,6 +570,7 @@ export class CaptureSystem extends createSystem({
     this.hands.dispose()
     this.timePlay.dispose()
     this.room.dispose()
+    this.plates.dispose()
     this.pointer.detach()
     this.rig.dispose()
     this.warp.dispose()

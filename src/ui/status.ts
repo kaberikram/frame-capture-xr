@@ -21,6 +21,10 @@ export interface StatusInputs {
   room: boolean
   /** Set when the headset session has no depth sensing. */
   roomNote: string | null
+  /** What the piece in hand is doing on the peel page, or 'none'. */
+  piece: string
+  /** A carried piece is over somewhere it can land. */
+  overSurface: boolean
 }
 
 /** One line that says what is happening or what to do next. */
@@ -29,6 +33,9 @@ export function statusLine(s: StatusInputs): string {
   if (s.room) {
     if (s.presenting && s.camera) return s.camera
     if (s.roomNote) return s.roomNote
+    if (s.piece === 'lifting') return s.presenting ? 'Keep pulling. Let go and it tears free at this size' : 'Keep dragging up. Let go and it tears free at this size'
+    if (s.piece === 'carried') return s.overSurface ? 'Let go to lay it down' : 'Carry it to another surface, or let go and it floats'
+    if (s.piece === 'free') return s.presenting ? 'Pinch the floating piece to carry it' : 'Press the floating piece to carry it'
     return s.presenting
       ? 'Bring a hand to a surface. Pinch it and pull.'
       : 'Press a surface and drag up to pull it off. Right-drag looks around.'

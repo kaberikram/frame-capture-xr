@@ -14,12 +14,20 @@ export interface CaptureApi {
   warp: string
   /** Cycle the time mode and return the new one. Used by the smoke check. */
   cycle: () => string
-  /** Peel-the-room is the active palm mode. */
+  /** This is the peel page. */
   room: boolean
   /** Chunks of reconstructed room. */
   roomChunks: number
-  /** Sheets peeled off the room and still in the scene. */
+  /** Pieces peeled off the room and still in the scene. */
   roomPatches: number
+  /** What the piece in hand (or the newest one) is doing: none, lifting, carried, free, landing, stuck. */
+  roomPiece: string
+  /** Radius of that piece, metres. */
+  roomRadius: number
+  /** Places where warm light is open. */
+  roomLights: number
+  /** How bright the light under a hand is, 0..1. */
+  roomPool: number
 }
 
 export interface PhaseInputs {
@@ -45,17 +53,25 @@ export function publishApi(): void {
     room: false,
     roomChunks: 0,
     roomPatches: 0,
+    roomPiece: 'none',
+    roomRadius: 0,
+    roomLights: 0,
+    roomPool: 0,
   }
   ;(window as unknown as { __capture: CaptureApi }).__capture = api
 }
 
 /** Point the debug hook at the live time window. */
-export function publishRoom(active: boolean, chunks: number, patches: number): void {
+export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number }): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return
-  api.room = active
-  api.roomChunks = chunks
-  api.roomPatches = patches
+  api.room = room.active
+  api.roomChunks = room.chunks
+  api.roomPatches = room.pieces
+  api.roomPiece = room.piece
+  api.roomRadius = room.radius
+  api.roomLights = room.lights
+  api.roomPool = room.pool
 }
 
 export function bindWarpApi(cycle: () => string): void {

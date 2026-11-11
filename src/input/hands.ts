@@ -287,10 +287,7 @@ export class HandInput implements JointSource {
     if (room) {
       if (room.holding || this.primary) return
       this.ctx.player.head.getWorldPosition(this.headPos)
-      const surface = room.touch(at)
-      if (!surface) return
-      this.primary = side
-      room.begin(surface, null, this.headPos)
+      if (room.press(at, this.headPos)) this.primary = side
       return
     }
     if (grip.touch === 'curl' && grip.held && side !== this.primary && grip.held.curl < 0.18) {
@@ -348,7 +345,11 @@ export class HandInput implements JointSource {
   private ended(side: Side): void {
     if (this.room) {
       if (side !== this.primary) return
-      if (this.room.holding) this.room.end()
+      // Opening the fingers moved the point; let go from where they were tightest.
+      if (this.room.holding) {
+        if (this.trails[side].rewind(this.now, REWIND, this.rewound)) this.room.drag(this.rewound)
+        this.room.end()
+      }
       this.primary = null
       this.dual = false
       this.waitClear = true

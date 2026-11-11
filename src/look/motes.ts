@@ -18,6 +18,9 @@ interface Mote {
   vx: number
   vy: number
   vz: number
+  /** Buoyancy along the local y and z, metres per second squared. */
+  ay: number
+  az: number
   delay: number
   life: number
   phase: number
@@ -35,13 +38,8 @@ export interface MotesRig {
 
 /** Motes start along the frame's edge in its local XY. Size is in metres; the shader scales by distance. */
 export function makeMotes(halfW: number, halfH: number, palette: Palette, pixelScale: number): MotesRig {
-  const positions = new Float32Array(COUNT * 3)
-  const alpha = new Float32Array(COUNT)
-  const size = new Float32Array(COUNT)
-  const color = new Float32Array(COUNT * 3)
   const motes: Mote[] = []
   const perimeter = 4 * (halfW + halfH)
-  let span = 0
   for (let i = 0; i < COUNT; i++) {
     let d = Math.random() * perimeter
     let x: number
@@ -67,14 +65,56 @@ export function makeMotes(halfW: number, halfH: number, palette: Palette, pixelS
       vx: (x / len) * (0.015 + 0.04 * Math.random()),
       vy: (y / len) * (0.015 + 0.04 * Math.random()) + 0.03 + 0.05 * Math.random(),
       vz: 0.01 + 0.03 * Math.random(),
+      ay: 0.015,
+      az: 0,
       delay: Math.random() * 0.25,
       life: 0.9 + Math.random() * 0.7,
       phase: Math.random() * Math.PI * 2,
     }
-    span = Math.max(span, mote.delay + mote.life)
     motes.push(mote)
-    positions[i * 3] = x
-    positions[i * 3 + 1] = y
+  }
+  return rigOf(motes, palette, pixelScale, 'frame-motes')
+}
+
+/**
+ * Warm dust let out of a round opening of this radius: it drifts out along
+ * local z, the way the opening faces, and spreads a little as it goes.
+ */
+export function makeDust(radius: number, palette: Palette, pixelScale: number, count = 70): MotesRig {
+  const motes: Mote[] = []
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const r = radius * Math.sqrt(Math.random()) * 0.95
+    const x = Math.cos(angle) * r
+    const y = Math.sin(angle) * r
+    motes.push({
+      x,
+      y,
+      vx: Math.cos(angle) * (0.004 + 0.02 * Math.random()),
+      vy: Math.sin(angle) * (0.004 + 0.02 * Math.random()),
+      vz: 0.02 + 0.07 * Math.random(),
+      ay: 0,
+      az: 0.02,
+      delay: Math.random() * 0.5,
+      life: 1.1 + Math.random() * 1.1,
+      phase: Math.random() * Math.PI * 2,
+    })
+  }
+  return rigOf(motes, palette, pixelScale, 'room-dust')
+}
+
+function rigOf(motes: Mote[], palette: Palette, pixelScale: number, name: string): MotesRig {
+  const total = motes.length
+  const positions = new Float32Array(total * 3)
+  const alpha = new Float32Array(total)
+  const size = new Float32Array(total)
+  const color = new Float32Array(total * 3)
+  let span = 0
+  for (let i = 0; i < total; i++) {
+    const mote = motes[i]
+    span = Math.max(span, mote.delay + mote.life)
+    positions[i * 3] = mote.x
+    positions[i * 3 + 1] = mote.y
     positions[i * 3 + 2] = 0.004
     size[i] = 0.004 + Math.random() * 0.006
     const k = Math.random()
@@ -122,7 +162,7 @@ export function makeMotes(halfW: number, halfH: number, palette: Palette, pixelS
   points.frustumCulled = false
   points.renderOrder = 6
   const group = new Group()
-  group.name = 'frame-motes'
+  group.name = name
   group.add(points)
   return { group, points, motes, age: 0, span }
 }
@@ -142,8 +182,8 @@ export function stepMotes(rig: MotesRig, dt: number): boolean {
       continue
     }
     positions[o] = m.x + m.vx * a + 0.006 * Math.sin(a * 3 + m.phase)
-    positions[o + 1] = m.y + m.vy * a + 0.015 * a * a
-    positions[o + 2] = 0.004 + m.vz * a
+    positions[o + 1] = m.y + m.vy * a + m.ay * a * a
+    positions[o + 2] = 0.004 + m.vz * a + m.az * a * a
     const rise = a < 0.12 ? (a / 0.12) * (a / 0.12) * (3 - 2 * (a / 0.12)) : 1
     const t = a / m.life
     const fade = t >= 1 ? 0 : 1 - t * t * (3 - 2 * t)

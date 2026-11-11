@@ -209,7 +209,7 @@ export class RoomField {
     const c011 = this.value(gx, gy + 1, gz + 1)
     const c111 = this.value(gx + 1, gy + 1, gz + 1)
     const sum = c000 + c100 + c010 + c110 + c001 + c101 + c011 + c111
-    if (sum !== sum) return null
+    if (sum !== sum) return this.patchy(c000, c100, c010, c110, c001, c101, c011, c111, tx, ty, tz)
     const x00 = c000 + (c100 - c000) * tx
     const x10 = c010 + (c110 - c010) * tx
     const x01 = c001 + (c101 - c001) * tx
@@ -260,6 +260,24 @@ export class RoomField {
   }
 
   /**
+   * The same march, returning only how far along the ray the surface is, or -1.
+   * Cheaper than `surfaceAlong` when the facing is not needed.
+   */
+  depthAlong(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, reach: number): number {
+    const step = VOXEL * 0.5
+    let prev: number | null = null
+    for (let t = 0; t <= reach + step; t += step) {
+      const s = this.sdf(ox + dx * t, oy + dy * t, oz + dz * t)
+      if (s !== null && prev !== null && prev > 0 && s <= 0) {
+        const at = t - step + (step * prev) / (prev - s)
+        return at > reach ? -1 : at
+      }
+      prev = s
+    }
+    return -1
+  }
+
+  /**
    * The surface next to a point that is already within `maxDist` of it, for a
    * pinch on the room. Null in open air and over a place that was peeled away.
    */
@@ -290,7 +308,7 @@ export class RoomField {
    * Rebuild at most `budget` dirty chunks and refresh the raycast soup.
    * When `near` is set, the chunks in front of that point go first.
    */
-  extract(budget: number, near?: { x: number; y: number; z: number }): ChunkMesh[] {
+  extract(budget: number, near?: { x: number; y: number; z: number }, soup = true): ChunkMesh[] {
     const built: ChunkMesh[] = []
     const dirty: Chunk[] = []
     for (const chunk of this.chunks.values()) if (chunk.dirty) dirty.push(chunk)
@@ -302,7 +320,8 @@ export class RoomField {
     }
     const n = Math.min(budget, dirty.length)
     for (let i = 0; i < n; i++) built.push(this.buildChunk(dirty[i]))
-    if (built.length > 0 || this.soupStale) {
+    // `raycast` and `closest` read the soup. A caller that only marches the field can skip it.
+    if (soup && (built.length > 0 || this.soupStale)) {
       this.rebuildTris()
       this.soupStale = false
     }
@@ -430,6 +449,53 @@ export class RoomField {
     const chunk = this.chunks.get(key)
     if (!chunk) return null
     return { key, voxel: VOXEL, tsdf: new Int8Array(chunk.tsdf), weight: new Uint8Array(chunk.weight) }
+  }
+
+  /**
+   * The blend when some of the eight voxels around a point are unseen. Depth
+   * samples are sparse, so a seen surface has small unseen gaps in it. With
+   * most of the corners known, the unknown ones stand in as their average.
+   */
+  private patchy(
+    c000: number,
+    c100: number,
+    c010: number,
+    c110: number,
+    c001: number,
+    c101: number,
+    c011: number,
+    c111: number,
+    tx: number,
+    ty: number,
+    tz: number,
+  ): number | null {
+    let known = 0
+    let total = 0
+    if (c000 === c000) { known++; total += c000 }
+    if (c100 === c100) { known++; total += c100 }
+    if (c010 === c010) { known++; total += c010 }
+    if (c110 === c110) { known++; total += c110 }
+    if (c001 === c001) { known++; total += c001 }
+    if (c101 === c101) { known++; total += c101 }
+    if (c011 === c011) { known++; total += c011 }
+    if (c111 === c111) { known++; total += c111 }
+    if (known < 4) return null
+    const fill = total / known
+    const a = c000 === c000 ? c000 : fill
+    const b = c100 === c100 ? c100 : fill
+    const c = c010 === c010 ? c010 : fill
+    const d = c110 === c110 ? c110 : fill
+    const e = c001 === c001 ? c001 : fill
+    const f = c101 === c101 ? c101 : fill
+    const g = c011 === c011 ? c011 : fill
+    const h = c111 === c111 ? c111 : fill
+    const x00 = a + (b - a) * tx
+    const x10 = c + (d - c) * tx
+    const x01 = e + (f - e) * tx
+    const x11 = g + (h - g) * tx
+    const y0 = x00 + (x10 - x00) * ty
+    const y1 = x01 + (x11 - x01) * ty
+    return y0 + (y1 - y0) * tz
   }
 
   /** A voxel's stored value, or NaN where the room has not been seen enough. */
