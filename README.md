@@ -4,6 +4,8 @@ On a Meta Quest 3 you pinch a rectangle in the air. While you hold it, the world
 
 There are two pages. `/` is this, frame capture. `/peel` is the room peel: pinch a wall or a table and pull, and that piece of your room comes away in your fingers. See [Peel the room](#peel-the-room).
 
+Ideas for the live room mesh (time-warped surfaces, frozen 3D snapshots, ghost replays, and more) are in [docs/IDEAS.md](docs/IDEAS.md).
+
 The desk preview does the same thing without a headset: the mouse draws the frame, and a stand-in room (or a webcam) stands in for the passthrough camera.
 
 ## Run
