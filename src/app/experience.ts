@@ -88,9 +88,12 @@ function requestWith(
   if (camera && !next.optionalFeatures?.includes('camera-access')) next.optionalFeatures?.push('camera-access')
   if (depth && !next.optionalFeatures?.includes('depth-sensing')) next.optionalFeatures?.push('depth-sensing')
   if (depth) {
+    // Numbers are cheaper to read than a texture, so they are asked for first.
+    // Quest Browser only gives the texture. `?depth=gpu` asks for it first anywhere.
+    const texture = queryFlag('depth') === 'gpu'
     next.depthSensing = {
-      usagePreference: ['cpu-optimized', 'gpu-optimized'],
-      dataFormatPreference: ['luminance-alpha', 'float32'],
+      usagePreference: texture ? ['gpu-optimized', 'cpu-optimized'] : ['cpu-optimized', 'gpu-optimized'],
+      dataFormatPreference: ['luminance-alpha', 'float32', 'unsigned-short'],
     }
   }
   return original(mode, next).catch((error: unknown) => {

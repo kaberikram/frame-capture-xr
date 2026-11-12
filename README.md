@@ -138,6 +138,8 @@ The piece is a 25 by 25 grid laid on the surface around the pinch, with the heig
 
 The place a piece left is carved out of the field, so new depth does not paint the wall back in behind the light. When a hole closes, the field there is allowed to fill in again.
 
+Browsers hand depth over in one of two ways, and the page reads both. Some give numbers (`cpu-optimized`). Quest Browser gives a texture (`gpu-optimized`), so the page draws a 28×20 grid of readings from it into a tiny target and reads that back a few frames later (`src/room/gpu-depth.ts`). The console's `[frame] room depth is …` line says which one the session got. `?depth=gpu` asks for the texture first, which is how the emulator checks that path.
+
 If the browser has no depth sensing, the page says so in one line and nothing can be peeled.
 
 On the desk, `/peel?preview=1` reads the stand-in room with rays instead of a depth camera. Press a surface and drag up to pull it toward you. A free piece rides just above whatever the cursor is over, and lands there when you let go.
