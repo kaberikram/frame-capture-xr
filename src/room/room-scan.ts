@@ -23,6 +23,7 @@ import { makeDust } from '../look/motes.js'
 import { PALETTE } from '../look/palette.js'
 import { poolMaterial, sparkleMaterial } from '../look/room-glow.js'
 import { transformPoint, viewFromDepth } from './depth-project.js'
+import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { PIECE_MAX, STICK_GAP, TOUCH_GAP, canLand, tangentBasis } from './patch.js'
 import { PeelPiece, type PieceState } from './peel-piece.js'
@@ -104,6 +105,8 @@ export class RoomScan {
   private queueAt = 0
   private queueFresh = false
   private depthMiss = 0
+  private depthMode: string | null = null
+  private gpuDepth: GpuDepthReader | null = null
   private time = 0
   private readonly raycaster = new Raycaster()
   private readonly ndc = new Vector2()
@@ -118,7 +121,7 @@ export class RoomScan {
 
   constructor(
     parent: Object3D,
-    renderer: WebGLRenderer,
+    private readonly renderer: WebGLRenderer,
     private readonly plates: RoomPlates,
   ) {
     this.group.name = 'room-scan'
@@ -557,7 +560,7 @@ export class RoomScan {
   }
 
   private fuseHeadset(frame: DepthFrame | null): void {
-    if (!frame?.getViewerPose || !frame.getDepthInformation) {
+    if (!frame?.getViewerPose) {
       this.noteMissing('This browser cannot read the shape of the room')
       return
     }
@@ -566,9 +569,27 @@ export class RoomScan {
     const pose = frame.getViewerPose(space)
     const view = pose?.views[0]
     if (!view) return
+    const session = this.renderer.xr.getSession() as (XRSession & { depthUsage?: string; depthDataFormat?: string }) | null
+    let usage: string | undefined
+    try {
+      usage = session?.depthUsage
+    } catch {
+      // Reading it throws when the session was not given depth at all.
+      usage = undefined
+    }
+    if (usage && usage !== this.depthMode) {
+      this.depthMode = usage
+      console.info(`[frame] room depth is ${usage}`)
+    }
+    if (usage === 'gpu-optimized') this.fuseTexture(view)
+    else this.fuseNumbers(frame, view)
+  }
+
+  /** Depth the browser hands over as numbers: `cpu-optimized`. */
+  private fuseNumbers(frame: DepthFrame, view: DepthView): void {
     let depth: CpuDepth | undefined
     try {
-      depth = frame.getDepthInformation(view)
+      depth = frame.getDepthInformation?.(view)
     } catch {
       depth = undefined
     }
@@ -578,24 +599,80 @@ export class RoomScan {
     }
     this.depthMiss = 0
     this.depthNote = null
-    const viewMatrix = view.transform.matrix
-    const projection = view.projectionMatrix
-    const origin = transformPoint(viewMatrix, { x: 0, y: 0, z: 0 })
-    const samples: DepthSample[] = []
     // Each pass reads slightly different places, so the gaps between them fill in.
     const jx = Math.random()
     const jy = Math.random()
-    for (let row = 0; row < DEPTH_ROWS; row++) {
+    const found = depth
+    this.fuseGrid(view.transform.matrix, view.projectionMatrix, (col, row) => {
+      const u = Math.min(0.999, (col + jx) / DEPTH_COLS)
       const v = Math.min(0.999, (row + jy) / DEPTH_ROWS)
+      try {
+        return { u, v, meters: found.getDepthInMeters(u, v) }
+      } catch {
+        return null
+      }
+    })
+  }
+
+  /** Depth the browser hands over as a texture: `gpu-optimized`, which is what Quest Browser gives. */
+  private fuseTexture(view: DepthView): void {
+    const xr = this.renderer.xr
+    let info: GpuDepthInfo | null | undefined
+    try {
+      const binding = xr.getBinding() as unknown as { getDepthInformation?: (view: DepthView) => GpuDepthInfo | null } | null
+      info = binding?.getDepthInformation?.(view)
+    } catch {
+      info = undefined
+    }
+    if (!info || info.isValid === false || !info.texture) {
+      this.noteMissing('This browser cannot read the shape of the room')
+      return
+    }
+    this.depthMiss = 0
+    this.depthNote = null
+    if (!this.gpuDepth) {
+      this.gpuDepth = new GpuDepthReader(DEPTH_COLS, DEPTH_ROWS)
+      // three.js would hide anything behind the sensed room. Pieces lie right on
+      // its surfaces, where depth that rough would make them flicker.
+      xr.getDepthSensingMesh = () => null as never
+    }
+    const jx = Math.random()
+    const jy = Math.random()
+    // The reading comes back a few frames later, so keep where it was taken from.
+    const viewMatrix = Float32Array.from(info.transform?.matrix ?? view.transform.matrix)
+    const projection = Float32Array.from(info.projectionMatrix ?? view.projectionMatrix)
+    const reading = this.gpuDepth.read(this.renderer, info, jx, jy)
+    if (!reading) return
+    reading.then(
+      (metres) => {
+        if (!this.presenting) return
+        this.fuseGrid(viewMatrix, projection, (col, row) => ({
+          u: (col + jx) / DEPTH_COLS,
+          // The texture's rows run bottom to top; a view's run top to bottom.
+          v: 1 - (row + jy) / DEPTH_ROWS,
+          meters: metres[row * DEPTH_COLS + col],
+        }))
+      },
+      (error: unknown) => {
+        console.warn(`[frame] room depth could not be read back: ${error instanceof Error ? error.message : String(error)}`)
+        this.depthNote = 'This browser cannot read the shape of the room'
+      },
+    )
+  }
+
+  /** Turn one grid of readings into points in the room and queue them for the field. */
+  private fuseGrid(
+    viewMatrix: ArrayLike<number>,
+    projection: ArrayLike<number>,
+    at: (col: number, row: number) => { u: number; v: number; meters: number } | null,
+  ): void {
+    const origin = transformPoint(viewMatrix, { x: 0, y: 0, z: 0 })
+    const samples: DepthSample[] = []
+    for (let row = 0; row < DEPTH_ROWS; row++) {
       for (let col = 0; col < DEPTH_COLS; col++) {
-        const u = Math.min(0.999, (col + jx) / DEPTH_COLS)
-        let meters: number
-        try {
-          meters = depth.getDepthInMeters(u, v)
-        } catch {
-          continue
-        }
-        const local = viewFromDepth(projection, u, v, meters)
+        const reading = at(col, row)
+        if (!reading) continue
+        const local = viewFromDepth(projection, reading.u, reading.v, reading.meters)
         if (!local) continue
         const world = transformPoint(viewMatrix, local)
         samples.push({ ox: origin.x, oy: origin.y, oz: origin.z, px: world.x, py: world.y, pz: world.z })

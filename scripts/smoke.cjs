@@ -174,8 +174,10 @@ async function room(browser, failures) {
   await context.close()
 }
 
-async function peelHeadset(browser, failures) {
-  const { context, page, errors, logs } = await openPage(browser, 'peel', { camera: true })
+// Quest Browser gives depth as a texture; other browsers give numbers. Both are run.
+async function peelHeadset(browser, failures, usage) {
+  const name = `peel headset (${usage} depth)`
+  const { context, page, errors, logs } = await openPage(browser, usage === 'gpu' ? 'peel?depth=gpu' : 'peel', { camera: true })
   await page.waitForFunction(() => !!window.IWER_DEVICE, null, { timeout: 60000 })
   await page.evaluate(() => {
     window.IWER_DEVICE.primaryInputMode = 'hand'
@@ -185,8 +187,9 @@ async function peelHeadset(browser, failures) {
   await page.click('#enter')
   const until = async (pred, ms) => { const end = Date.now() + ms; while (!(await pred()) && Date.now() < end) await page.waitForTimeout(200); return pred() }
   const api = () => page.evaluate(() => ({ ...window.__capture }))
-  check(await until(async () => logs.some((l) => l.includes('depth-sensing')), 30000), 'peel headset: the session is granted depth sensing', failures)
-  check(await until(async () => (await api()).roomChunks > 100, 20000), `peel headset: depth builds the room (chunks ${(await api()).roomChunks})`, failures)
+  check(await until(async () => logs.some((l) => l.includes('depth-sensing')), 30000), `${name}: the session is granted depth sensing`, failures)
+  check(await until(async () => logs.some((l) => l.includes(`room depth is ${usage}-optimized`)), 20000), `${name}: depth arrives the ${usage} way`, failures)
+  check(await until(async () => (await api()).roomChunks > 100, 20000), `${name}: depth builds the room (chunks ${(await api()).roomChunks})`, failures)
   const hand = (p) => page.evaluate(([x, y, z]) => window.IWER_DEVICE.hands.right.position.set(x, y, z), p)
   // Reach forward until light gathers under the fingertip: that is a surface.
   let touch = null
@@ -196,7 +199,7 @@ async function peelHeadset(browser, failures) {
     await page.waitForTimeout(250)
     if ((await api()).roomPool > 0.75) touch = p
   }
-  check(touch !== null, 'peel headset: light gathers on a surface as a hand nears it', failures)
+  check(touch !== null, `${name}: light gathers on a surface as a hand nears it`, failures)
   if (touch) {
     // The light shows from a few centimetres away. Close the last of the gap, a little at a time, and pinch.
     let took = false
@@ -214,19 +217,19 @@ async function peelHeadset(browser, failures) {
       await page.waitForTimeout(400)
     }
     const after = await api()
-    check(took, `peel headset: a pinch on the surface takes hold of it (got ${after.roomPiece}, light ${after.roomPool.toFixed(2)})`, failures)
+    check(took, `${name}: a pinch on the surface takes hold of it (got ${after.roomPiece}, light ${after.roomPool.toFixed(2)})`, failures)
     for (let i = 1; i <= 24; i++) {
       await hand([touch[0], touch[1], touch[2] + 0.012 * i])
       await page.waitForTimeout(80)
     }
     const pulled = await until(async () => (await api()).roomPiece === 'carried', 3000)
-    check(pulled, `peel headset: pulling it away pops it free (got ${(await api()).roomPiece})`, failures)
-    check((await api()).roomLights === 1, 'peel headset: warm light opens where it was', failures)
+    check(pulled, `${name}: pulling it away pops it free (got ${(await api()).roomPiece})`, failures)
+    check((await api()).roomLights === 1, `${name}: warm light opens where it was`, failures)
     await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
-    check(await until(async () => (await api()).roomPiece === 'free', 3000), `peel headset: let go in the air and it floats (got ${(await api()).roomPiece})`, failures)
+    check(await until(async () => (await api()).roomPiece === 'free', 3000), `${name}: let go in the air and it floats (got ${(await api()).roomPiece})`, failures)
   }
-  check((await api()).count === 0, 'peel headset: no frame is drawn', failures)
-  check(errors.length === 0, `peel headset: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  check((await api()).count === 0, `${name}: no frame is drawn`, failures)
+  check(errors.length === 0, `${name}: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
   await context.close()
 }
 
@@ -348,7 +351,11 @@ async function headset(browser, failures, leaveHandInFrame) {
 ;(async () => {
   const { chromium } = loadPlaywright()
   const server = await ensureServer()
-  const browser = await chromium.launch({ args: [...GL, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] })
+  // `SMOKE_CHROMIUM=/path/to/chrome` uses a browser that is already installed.
+  const browser = await chromium.launch({
+    executablePath: process.env.SMOKE_CHROMIUM || undefined,
+    args: [...GL, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+  })
   const failures = []
   try {
     // `SMOKE_ONLY=peel` runs just the room peel checks.
@@ -360,7 +367,8 @@ async function headset(browser, failures, leaveHandInFrame) {
       await headset(browser, failures, false)
       await headset(browser, failures, true)
     }
-    await peelHeadset(browser, failures)
+    await peelHeadset(browser, failures, 'cpu')
+    await peelHeadset(browser, failures, 'gpu')
     if (shotsDir) await holds(browser, failures)
   } finally {
     await browser.close()
