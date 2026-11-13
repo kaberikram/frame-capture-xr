@@ -118,31 +118,48 @@ An echo photo can include a hand that was in the pane a moment ago, even after t
 
 ## Peel the room
 
-`/peel` is its own page. Nothing is drawn on the room until you reach for it.
+`/peel` is its own page. Nothing is drawn on the room, and nothing is written in the air, until you mean to take something.
 
-1. **Bring a hand close to a surface.** A soft pool of warm light gathers on the wall or table under your fingertip, and draws in as you get nearer. That is the only sign the room can be peeled.
-2. **Pinch it and pull.** For the first centimetre nothing gives, like the tack of glue. Then the surface lifts under your fingers and the piece grows as you pull, from a coin to about 30 cm across, with a torn paper edge. The middle is in your fingers and the rim trails behind. It shows exactly that part of your room and keeps its shape: a table edge stays an edge.
-3. **Warm light opens where it was.** Peach in the middle, coral at the rim, with a little thickness to the wall when you look in at an angle, and dust drifting out.
-4. **Let go, or keep pulling.** With less than about 3 cm of pull it settles back and the wall is whole. Past that it tears free at the size it has reached and floats where you left it. At about 18 cm it pops free at full size and follows your hand, trailing a little and leaning into the movement. `?peel=1.3` makes all of these take 30% more pull.
-5. **Lay it down.** Near another surface, an outline breathes where it will land. Let go and it lies down on that surface over about a third of a second and takes its shape, with a small squash and a ring of light. In open air it floats. Pinch any loose piece to pick it up again.
+**Lift a thing, from where you stand.**
 
-Twelve pieces is the limit. The oldest then fades and its light closes, and the wall can be peeled there again.
+1. **Raise an open hand and look at something.** A mug, a bag, a lamp. Soft light gathers on its shape and breathes. That is the only sign it can be lifted. Lower your hand and the light goes.
+2. **Pinch, and pull a little.** You do not have to reach it. A copy of the thing slides out of the real one in its own shape, wearing the camera's picture of it. About 9 cm of pull and it comes away and floats over to your hand. Let go sooner and it sinks back.
+3. **Light lingers on the real thing** for a second or so, then goes. Nothing is left on your room.
+4. **Carry it, let it go, set it down.** It trails your hand and leans into the movement. Let go in open air and it floats, drifting on a little if you were moving. Let go over a table or the floor and it is set down there, standing on its base. Look at a floating piece and pinch to call it back to your hand, or pinch it directly.
 
-Hints show once each, when they help: bring a hand to a surface, pinch and pull, carry it somewhere new. `/peel/clean` has none. The page does not draw frames, has no time window or palm menu, and does not download the depth model.
+Only the side of a thing that the headset has seen comes away. Its far side is open, and from behind the picture glows through like a paper lantern. Something that runs on past arm's reach, like a sofa or a wall, gives a round piece of itself with a soft edge.
+
+**Peel a wall, up close.**
+
+1. **Bring a hand close to a bare surface.** A soft pool of warm light gathers under your fingertip and draws in as you get nearer.
+2. **Pinch it and pull.** For the first centimetre nothing gives, like the tack of glue. Then the surface lifts and the piece grows as you pull, from a coin to about 30 cm across, with a torn paper edge.
+3. **Warm light opens where it was,** faint enough that the wall shows through, with dust drifting out.
+4. **Let go, or keep pulling.** With less than about 3 cm of pull it settles back. Past that it tears free at the size it has reached and floats. At about 18 cm it pops free at full size and follows your hand. `?peel=1.3` makes all of these take 30% more pull.
+5. **Lay it down.** Near another surface a soft patch of light shows where it will rest. Let go and it lies down there and takes its shape.
+
+A pinch right on a thing with shape (a cushion, a bag) lifts it in three dimensions, the same as from across the room.
+
+Twelve pieces is the limit. The oldest then fades. The page shows no hints. It does not draw frames, has no time window or palm menu, and does not download the depth model.
 
 ### How it works
 
-On a Quest the page asks for WebXR depth sensing, which frame capture does not. Depth readings are fused on the CPU, in small batches, into a sparse distance field: about 4 cm to a voxel, a few metres out. Quest Browser is WebGL, so there are no compute shaders to do it on. The field is never shown, apart from a brief sparkle where it has just filled in. Every lookup marches the field (`RoomField.surfaceAlong`, `near`), which costs the same however much of the room has been read.
+On a Quest the page asks for WebXR depth sensing, which frame capture does not. Depth readings are fused on the CPU, in small batches, into a sparse distance field: about 4 cm to a voxel, a few metres out. Quest Browser is WebGL, so there are no compute shaders to do it on. The field is never shown. Every lookup marches the field (`RoomField.surfaceAlong`, `near`), which costs the same however much of the room has been read.
 
 The piece is a 25 by 25 grid laid on the surface around the pinch, with the height of the real surface at each point. Its picture comes from the passthrough camera. The page keeps the last six camera frames, about two seconds, each with the lens pose that took it. When you pinch, your hand is in front of the spot, so the piece uses the newest frame in which no hand joint was over it, and each grid point is projected through that frame's lens to find its place in the image. Without a camera the piece is a warm film.
 
 The place a piece left is carved out of the field, so new depth does not paint the wall back in behind the light. When a hole closes, the field there is allowed to fill in again.
 
+A second, finer field (2 cm to a voxel) is kept only around whatever has your attention: what a fingertip is nearing, or what you are looking at with a hand raised. Every other depth pass reads a 70 by 50 cm window there instead of the whole view. `?fine=0` turns it off.
+
+A thing is cut out of the field in `src/room/object.ts`. Starting at the pinch, it follows the surface outward, leaving out the level surface the thing stands on, and stops at 42 cm. If the surface ends before that, it is one thing. If it runs on, a 19 cm round piece is taken. The result is a smooth mesh (one vertex per voxel cube the surface crosses), and each vertex finds its place in a camera frame the same way a flat piece does. Depth readings that fall on a hand, or that sit part way between a near thing and what is behind it, are left out of the fields.
+
+Going into or out of the headset clears both fields, so the desk's stand-in room is never left standing in your real one.
+
 Browsers hand depth over in one of two ways, and the page reads both. Some give numbers (`cpu-optimized`). Quest Browser gives a texture (`gpu-optimized`), so the page draws a 28×20 grid of readings from it into a tiny target and reads that back a few frames later (`src/room/gpu-depth.ts`). The console's `[frame] room depth is …` line says which one the session got. `?depth=gpu` asks for the texture first, which is how the emulator checks that path.
 
 If the browser has no depth sensing, the page says so in one line and nothing can be peeled.
 
-On the desk, `/peel?preview=1` reads the stand-in room with rays instead of a depth camera. Press a surface and drag up to pull it toward you. A free piece rides just above whatever the cursor is over, and lands there when you let go.
+On the desk, `/peel?preview=1` reads the stand-in room with rays instead of a depth camera. The cursor is both the look and the fingertip: light gathers on the vase or the cup under it. Press a thing or a surface and drag up to pull it toward you. A free piece rides just above whatever the cursor is over, and lands there when you let go.
 
 ## Sound
 
@@ -202,5 +219,5 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 
 - `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), the bloom spring, the time-window modes, the stretch, flick, and palm-menu math, and the room field.
 - `npm run typecheck` and `npm run build` compile the app.
-- `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. On `/peel` it pulls a piece off the stand-in room with the mouse (settle back, grow, pop, land on the table, float), and in the emulated headset reaches for a surface, pinches it and pulls it free. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
+- `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. On `/peel` it pulls a piece off the stand-in room with the mouse (settle back, grow, pop, land on the table, float), then lifts the vase out whole and sets it on the table. In the emulated headset, once with each kind of depth, it reaches for a surface, pinches it and pulls it free, then raises a hand, pinches the air and pulls what it is looking at over to the hand. The emulator's room is served from the installed `@iwer/sem` package, so the run needs no network. `SMOKE_CHROMIUM=/path/to/chrome` uses a browser that is already installed. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
 - `npm run check` runs typecheck, tests, and build.

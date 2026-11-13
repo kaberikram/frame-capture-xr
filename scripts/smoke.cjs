@@ -73,6 +73,13 @@ async function openPage(browser, query, opts = {}) {
     if (text.startsWith('[frame]')) logs.push(text)
   })
   await page.route(/huggingface|cdn\.jsdelivr\.net\/npm\/@huggingface/, (route) => route.abort())
+  // The emulated headset downloads the room it stands in. Serve it from the installed package, so a run needs no network.
+  await page.route(/unpkg\.com\/@iwer\/sem@[^/]+\/captures\/([\w-]+\.json)/, (route) => {
+    const name = /captures\/([\w-]+\.json)/.exec(route.request().url())[1]
+    const file = path.join(__dirname, '..', 'node_modules', '@iwer', 'sem', 'captures', name)
+    if (!fs.existsSync(file)) return route.abort()
+    return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: fs.readFileSync(file) })
+  })
   if (opts.fixedClock) {
     // Every frame advances 1/60 s, however slow software rendering is, so the desk demo is repeatable.
     await page.addInitScript(() => {
@@ -110,6 +117,8 @@ async function room(browser, failures) {
     lights: window.__capture.roomLights,
     pool: window.__capture.roomPool,
     pieces: window.__capture.roomPatches,
+    kind: window.__capture.roomKind,
+    attention: window.__capture.roomAttention,
     count: window.__capture.count,
   }))
   const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
@@ -165,6 +174,30 @@ async function room(browser, failures) {
   await page.mouse.up()
   state = await until((s) => s.piece === 'free', 4000)
   check(state.piece === 'free' && state.radius < 0.155 && state.lights === 2, `peel: let go part way and it floats at that size (got ${state.piece}, ${state.radius.toFixed(3)} m)`, failures)
+  check(state.kind === 'flat', `peel: a piece of wall is a flat piece (got ${state.kind})`, failures)
+
+  // A thing: the vase on its stand. Light gathers on its shape, and it comes away whole, in three dimensions.
+  const [vx, vy] = at(0.22, 0.78)
+  await page.mouse.move(vx + 10, vy, { steps: 4 })
+  await page.mouse.move(vx, vy)
+  state = await until((s) => s.attention > 0.5, 6000)
+  check(state.attention > 0.5, `lift: light gathers on the shape of the vase (level ${state.attention.toFixed(2)})`, failures)
+  const before = state.lights
+  await page.mouse.down()
+  await page.mouse.move(vx, vy - 30, { steps: 6 })
+  await page.waitForTimeout(300)
+  state = await api()
+  check(state.piece === 'lifting' && state.kind === 'object', `lift: a pinch on the vase takes the vase (got ${state.piece}, ${state.kind})`, failures)
+  check(state.radius > 0.08 && state.radius < 0.3, `lift: it is the size of the vase (${state.radius.toFixed(3)} m)`, failures)
+  await page.mouse.move(vx, vy - 110, { steps: 10 })
+  state = await until((s) => s.piece === 'carried', 4000)
+  check(state.piece === 'carried' && state.kind === 'object', `lift: a full pull brings it away (got ${state.piece})`, failures)
+  check(state.lights <= before + 1, 'lift: no hole of light is left in a thing', failures)
+  await page.mouse.move(tx - 40, ty, { steps: 24 })
+  await page.waitForTimeout(600)
+  await page.mouse.up()
+  state = await until((s) => s.piece === 'stuck' || s.piece === 'free', 5000)
+  check(state.piece === 'stuck', `lift: let go over the table and it is set down (got ${state.piece})`, failures)
   check(state.count === 0, 'peel: no frame is ever drawn on this page', failures)
   if (shotsDir) {
     fs.mkdirSync(shotsDir, { recursive: true })
@@ -189,7 +222,7 @@ async function peelHeadset(browser, failures, usage) {
   const api = () => page.evaluate(() => ({ ...window.__capture }))
   check(await until(async () => logs.some((l) => l.includes('depth-sensing')), 30000), `${name}: the session is granted depth sensing`, failures)
   check(await until(async () => logs.some((l) => l.includes(`room depth is ${usage}-optimized`)), 20000), `${name}: depth arrives the ${usage} way`, failures)
-  check(await until(async () => (await api()).roomChunks > 100, 20000), `${name}: depth builds the room (chunks ${(await api()).roomChunks})`, failures)
+  check(await until(async () => (await api()).roomChunks > 220, 40000), `${name}: depth builds the room (chunks ${(await api()).roomChunks})`, failures)
   const hand = (p) => page.evaluate(([x, y, z]) => window.IWER_DEVICE.hands.right.position.set(x, y, z), p)
   // Reach forward until light gathers under the fingertip: that is a surface.
   let touch = null
@@ -224,9 +257,30 @@ async function peelHeadset(browser, failures, usage) {
     }
     const pulled = await until(async () => (await api()).roomPiece === 'carried', 3000)
     check(pulled, `${name}: pulling it away pops it free (got ${(await api()).roomPiece})`, failures)
-    check((await api()).roomLights === 1, `${name}: warm light opens where it was`, failures)
+    // A flat piece leaves warm light in the wall. A thing with shape comes away whole and leaves none.
+    const came = await api()
+    check(came.roomKind === 'flat' ? came.roomLights === 1 : came.roomLights === 0, `${name}: warm light opens where a flat piece was, and not where a thing was (lights ${came.roomLights}, ${came.roomKind})`, failures)
     await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
     check(await until(async () => (await api()).roomPiece === 'free', 3000), `${name}: let go in the air and it floats (got ${(await api()).roomPiece})`, failures)
+  }
+  // Lift from where you stand: a hand raised in view, nothing in reach, and a pinch takes what you are looking at.
+  await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+  await hand([0.12, 1.45, -0.4])
+  await page.waitForTimeout(1200)
+  const piecesBefore = (await api()).roomPatches
+  await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))
+  const far = await until(async () => { const a = await api(); return a.roomPiece === 'lifting' && a.roomPatches === piecesBefore + 1 }, 3000)
+  check(far, `${name}: a pinch in the air takes what you are looking at (got ${(await api()).roomPiece}, ${(await api()).roomKind})`, failures)
+  if (far) {
+    check((await api()).roomKind === 'object', `${name}: it comes as a shape, not a flat piece (got ${(await api()).roomKind})`, failures)
+    for (let i = 1; i <= 12; i++) {
+      await hand([0.12, 1.45, -0.4 + 0.012 * i])
+      await page.waitForTimeout(80)
+    }
+    check(await until(async () => (await api()).roomPiece === 'carried', 3000), `${name}: a short pull brings it to the hand (got ${(await api()).roomPiece})`, failures)
+    await page.waitForTimeout(900)
+    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+    check(await until(async () => (await api()).roomPiece === 'free', 3000), `${name}: let go and it floats by the hand (got ${(await api()).roomPiece})`, failures)
   }
   check((await api()).count === 0, `${name}: no frame is drawn`, failures)
   check(errors.length === 0, `${name}: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)

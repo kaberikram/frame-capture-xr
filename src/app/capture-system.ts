@@ -75,8 +75,8 @@ export class CaptureSystem extends createSystem({
   private plates!: RoomPlates
   private readonly reach = new Vector3()
   private readonly headAt = new Vector3()
+  private readonly gaze = new Vector3()
   /** A piece has been carried at least once, so the hint for it can retire. */
-  private sawCarry = false
   private pointer!: DeskPointer
   private shot!: DeskShot
   private surfaces!: LiveSurfaces
@@ -430,10 +430,18 @@ export class CaptureSystem extends createSystem({
     return this.captions.hint(hint)
   }
 
-  /** Each open hand gathers light on the surface its index finger is reaching for. */
+  /**
+   * Tell the room where the head and hands are. Each open hand gathers light on
+   * the surface its index finger is reaching for. An open hand raised in view
+   * means what you are looking at can be lifted from where you stand.
+   */
   private reachForRoom(): void {
-    this.player.head.getWorldPosition(this.headAt)
+    const head = this.player.head
+    head.getWorldPosition(this.headAt)
+    // The head looks down its own -z.
+    this.gaze.set(0, 0, -1).transformDirection(head.matrixWorld)
     const sides = ['left', 'right'] as const
+    let ready = false
     for (let i = 0; i < 2; i++) {
       const pose = this.hands.pose[sides[i]]
       if (!pose.tracked || pose.pinching) {
@@ -442,33 +450,21 @@ export class CaptureSystem extends createSystem({
       }
       this.reach.copy(pose.index).sub(this.headAt)
       this.room.hover(i as 0 | 1, pose.index, this.reach)
+      const away = this.reach.length()
+      if (away > 0.2 && this.reach.dot(this.gaze) / away > 0.5) ready = true
     }
+    const left = this.hands.pose.left
+    const right = this.hands.pose.right
+    this.room.setHands(left.tracked ? left.palm : null, right.tracked ? right.palm : null)
+    this.room.look(this.headAt, this.gaze, ready)
   }
 
   /**
-   * The peel page's caption: a one-off note, a problem, or the hint for this
-   * moment. Each hint retires once you have done what it asks.
+   * The peel page says nothing unless something is wrong. What can be lifted
+   * shows itself in light.
    */
   private peelCaption(problem: string | null): string | null {
-    const flash = this.status.flashing
-    if (flash) return flash
-    if (problem) return problem
-    const room = this.room
-    if (room.depthNote) return room.depthNote
-    if (room.holding || room.poolLevel > 0.2) this.captions.active()
-    if (room.poolLevel > 0.35) this.captions.retire('reach')
-    if (room.state !== 'none') {
-      this.captions.retire('reach')
-      this.captions.retire('pull')
-    }
-    if (room.carrying) this.sawCarry = true
-    if (room.anyStuck || (this.sawCarry && !room.holding && !room.anyFloating)) this.captions.retire('carry')
-    let hint: Hint | null = null
-    if (room.state === 'lifting' || room.state === 'landing') hint = null
-    else if (room.carrying || room.anyFloating) hint = 'carry'
-    else if (room.poolLevel > 0.35) hint = 'pull'
-    else if (room.pieceCount === 0) hint = 'reach'
-    return this.captions.hint(hint)
+    return this.status.flashing ?? problem ?? this.room.depthNote
   }
 
   /** Pixels per metre at one metre, so dust keeps its size at any distance. */
@@ -533,6 +529,8 @@ export class CaptureSystem extends createSystem({
       radius: this.room.pieceRadius,
       lights: this.room.lightCount,
       pool: this.room.poolLevel,
+      kind: this.room.kind,
+      attention: this.room.attention,
     })
   }
 
