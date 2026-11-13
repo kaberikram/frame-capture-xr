@@ -12,6 +12,7 @@ import {
   WebGLRenderTarget,
   type WebGLRenderer,
 } from '@iwsdk/core'
+import type { ViewRect } from './depth-project.js'
 
 /** What `XRWebGLBinding.getDepthInformation` hands back in a `gpu-optimized` session. */
 export interface GpuDepthInfo {
@@ -75,6 +76,8 @@ export class GpuDepthReader {
         uToMeters: { value: 1 },
         uJitter: { value: [0.5, 0.5] },
         uGrid: { value: [cols, rows] },
+        /** The part of the texture the grid covers: left, bottom, width, height. */
+        uRect: { value: [0, 0, 1, 1] },
       },
       vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
       fragmentShader: `
@@ -86,8 +89,9 @@ export class GpuDepthReader {
         uniform float uToMeters;
         uniform vec2 uJitter;
         uniform vec2 uGrid;
+        uniform vec4 uRect;
         void main() {
-          vec2 uv = (floor(gl_FragCoord.xy) + uJitter) / uGrid;
+          vec2 uv = uRect.xy + (floor(gl_FragCoord.xy) + uJitter) / uGrid * uRect.zw;
           float raw = texture(uDepth, vec3(uv, uLayer)).r;
           if (raw <= 0.0 || raw >= 1.0) {
             gl_FragColor = vec4(0.0);
@@ -112,10 +116,11 @@ export class GpuDepthReader {
 
   /**
    * Read the grid. `jx` and `jy`, each 0..1, pick the place inside every cell.
-   * The answer is metres for each cell, row 0 at the bottom of the view, and
-   * is only good until the next call. Null while an earlier read is still out.
+   * `rect` reads just part of the view, for a close look at one place. The
+   * answer is metres for each cell, row 0 at the bottom of that part, and is
+   * only good until the next call. Null while an earlier read is still out.
    */
-  read(renderer: WebGLRenderer, info: GpuDepthInfo, jx: number, jy: number): Promise<Float32Array> | null {
+  read(renderer: WebGLRenderer, info: GpuDepthInfo, jx: number, jy: number, rect: ViewRect | null = null): Promise<Float32Array> | null {
     if (this.busy || !info.texture) return null
     this.busy = true
     this.source.sourceTexture = info.texture
@@ -125,6 +130,11 @@ export class GpuDepthReader {
     u.uToMeters.value = info.rawValueToMeters
     u.uJitter.value[0] = jx
     u.uJitter.value[1] = jy
+    // A view's rows run top to bottom; the texture's run bottom to top.
+    u.uRect.value[0] = rect ? rect.u : 0
+    u.uRect.value[1] = rect ? 1 - rect.v - rect.h : 0
+    u.uRect.value[2] = rect ? rect.w : 1
+    u.uRect.value[3] = rect ? rect.h : 1
     // The headset's own cameras must not be used for this small picture.
     const xr = renderer.xr.enabled
     const before = renderer.getRenderTarget()

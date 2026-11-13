@@ -44,6 +44,40 @@ export type PieceState = 'lifting' | 'settling' | 'carried' | 'free' | 'landing'
 
 export type PieceEvent = 'freed' | 'landed'
 
+/** What the room keeps of anything lifted out of it, flat or not. */
+export interface RoomPiece {
+  /** A flat piece leaves a hole of light in the wall; a lifted thing does not. */
+  readonly flat: boolean
+  readonly anchor: Group
+  readonly holeAnchor: Group
+  /** Where it was taken from. */
+  readonly source: Vector3
+  readonly normal: Vector3
+  state: PieceState
+  radius: number
+  pull: number
+  amount: number
+  travelled: boolean
+  done: boolean
+  open: number
+  readonly events: PieceEvent[]
+  readonly loose: boolean
+  readonly parted: boolean
+  center(out: Vector3): Vector3
+  /** How near a point is to the piece, or -1 when it is not on it. */
+  contains(point: Vector3): number
+  /** How far along a ray the piece is, or -1. */
+  rayHit(origin: Vector3, dir: Vector3): number
+  drag(hand: Vector3): void
+  letGo(): void
+  grab(hand: Vector3, remote?: boolean): void
+  drop(): void
+  land(hit: SurfacePoint, field: RoomField): void
+  fade(): void
+  step(dt: number): void
+  dispose(): void
+}
+
 /** Seconds a piece takes to let go of the wall and become one loose sheet. */
 const FREE_TIME = 0.32
 /** Seconds it takes to lie down on a surface. */
@@ -123,7 +157,8 @@ export interface PieceInit {
  * One piece of the room: the sheet in your fingers, and the warm light it
  * leaves where it was.
  */
-export class PeelPiece {
+export class PeelPiece implements RoomPiece {
+  readonly flat = true
   /** The sheet. Its origin is the pinch point; its z axis faces out of the surface. */
   readonly anchor = new Group()
   /** The light left behind. It stays where the piece was taken from. */
@@ -164,6 +199,7 @@ export class PeelPiece {
   private readonly toQuat = new Quaternion()
   private readonly tiltQuat = new Quaternion()
   private readonly scratch = new Vector3()
+  private readonly aside = new Vector3()
   private readonly matrix = new Matrix4()
   private readonly scale: number
   private skin: Skin | null
@@ -238,6 +274,24 @@ export class PeelPiece {
   /** The light has opened for good: the piece left the wall. */
   get parted(): boolean {
     return this.freeT >= 0
+  }
+
+  contains(point: Vector3): number {
+    const local = this.anchor.worldToLocal(this.scratch.copy(point))
+    const across = Math.hypot(local.x, local.y)
+    if (Math.abs(local.z) > 0.07 || across > this.radius + 0.02) return -1
+    return across + Math.abs(local.z)
+  }
+
+  /** Where a ray meets the piece's own plane, within its outline. */
+  rayHit(origin: Vector3, dir: Vector3): number {
+    const n = this.scratch.set(0, 0, 1).applyQuaternion(this.anchor.quaternion)
+    const facing = n.dot(dir)
+    if (Math.abs(facing) < 1e-4) return -1
+    const t = this.aside.copy(this.anchor.position).sub(origin).dot(n) / facing
+    if (t <= 0.05) return -1
+    const local = this.anchor.worldToLocal(this.scratch.copy(origin).addScaledVector(dir, t))
+    return Math.hypot(local.x, local.y) <= this.radius ? t : -1
   }
 
   /** The fingers moved. */

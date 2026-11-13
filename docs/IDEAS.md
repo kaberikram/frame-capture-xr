@@ -8,6 +8,7 @@ A live depth mesh of the room opens up more than the peel. This note records the
 | --- | --- | --- |
 | Peel the room | Built on `/peel` | `src/room/peel-piece.ts`, `src/room/plates.ts` |
 | Live mesh of the room | Built as a CPU distance field | `src/room/field.ts`, `src/room/room-scan.ts` |
+| Lift a thing out in 3D | Built on `/peel` | `src/room/object.ts`, `src/room/object-piece.ts` |
 | Ghost replays | Hook only | `RoomField.snapshot(key)` |
 | Time-warped surfaces | Not built | `src/look/time-glass.ts`, `src/capture/time-history.ts` |
 | Frozen 3D snapshots | Not built | — |
@@ -16,7 +17,7 @@ A live depth mesh of the room opens up more than the peel. This note records the
 ## Constraints
 
 - **CPU fusion, not GPU.** Quest Browser runs WebGL, which has no compute shaders. Depth is fused into the field on the CPU in small batches each frame (`SAMPLE_BUDGET`, `EXTRACT_BUDGET`). Any GPU mesh would have to be built from that field, or from a fragment-shader pass over the depth image.
-- **Sparse field.** About 4 cm to a voxel, a few metres out, and `MAX_CHUNKS` caps memory. Old chunks leave as the view moves.
+- **Sparse fields.** The room is about 4 cm to a voxel, a few metres out, and `MAX_CHUNKS` caps memory. Old chunks leave as the view moves. A second field at 2 cm follows your attention only.
 - **Passthrough alignment.** Depth is in the headset's view. Anything drawn on the room has to line up with the real room through the camera lens (`src/capture/lens.ts`), which is trimmed by hand.
 - **WebGL only.** No compute, no storage buffers, limited texture formats.
 

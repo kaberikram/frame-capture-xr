@@ -8,7 +8,6 @@
 export const VOXEL = 0.04
 export const CHUNK = 8
 const CELLS = CHUNK * CHUNK * CHUNK
-const TRUNC = 0.08
 const MIN_WEIGHT = 2
 /** A few metres of nearby surface. Older chunks leave once the view moves on. */
 export const MAX_CHUNKS = 420
@@ -104,9 +103,36 @@ export class RoomField {
   private retired: string[] = []
   private soupStale = false
   private clock = 0
+  /** Metres to a voxel's side. */
+  readonly voxel: number
+  private readonly trunc: number
+  private readonly maxChunks: number
+
+  private readonly behind: number
+
+  /**
+   * A finer `voxel` keeps small things; `maxChunks` then bounds how much of
+   * the room it holds. `behind` is how far past a surface each reading is
+   * written, in voxels: 2 gives a shell thick enough to mesh from any side.
+   */
+  constructor(voxel = VOXEL, maxChunks = MAX_CHUNKS, behind = 1) {
+    this.voxel = voxel
+    this.trunc = voxel * 2
+    this.maxChunks = maxChunks
+    this.behind = behind * voxel
+  }
 
   get chunkCount(): number {
     return this.chunks.size
+  }
+
+  /** Forget everything, for when the room being looked at is a different one. */
+  clear(): void {
+    this.chunks.clear()
+    this.byId.clear()
+    this.tris.length = 0
+    this.retired = []
+    this.soupStale = false
   }
 
   /** Fuse surface samples. Each sample is a camera origin and a point on the surface. */
@@ -135,16 +161,16 @@ export class RoomField {
    */
   carve(x: number, y: number, z: number, radius: number): void {
     const r2 = radius * radius
-    const reach = Math.ceil(radius / VOXEL) + 1
-    const gx = Math.floor(x / VOXEL)
-    const gy = Math.floor(y / VOXEL)
-    const gz = Math.floor(z / VOXEL)
+    const reach = Math.ceil(radius / this.voxel) + 1
+    const gx = Math.floor(x / this.voxel)
+    const gy = Math.floor(y / this.voxel)
+    const gz = Math.floor(z / this.voxel)
     for (let iz = gz - reach; iz <= gz + reach; iz++) {
       for (let iy = gy - reach; iy <= gy + reach; iy++) {
         for (let ix = gx - reach; ix <= gx + reach; ix++) {
-          const cx = (ix + 0.5) * VOXEL
-          const cy = (iy + 0.5) * VOXEL
-          const cz = (iz + 0.5) * VOXEL
+          const cx = (ix + 0.5) * this.voxel
+          const cy = (iy + 0.5) * this.voxel
+          const cz = (iz + 0.5) * this.voxel
           const dx = cx - x
           const dy = cy - y
           const dz = cz - z
@@ -164,16 +190,16 @@ export class RoomField {
   /** Let depth fill a carved place in again, for when a hole closes. */
   heal(x: number, y: number, z: number, radius: number): void {
     const r2 = radius * radius
-    const reach = Math.ceil(radius / VOXEL) + 1
-    const gx = Math.floor(x / VOXEL)
-    const gy = Math.floor(y / VOXEL)
-    const gz = Math.floor(z / VOXEL)
+    const reach = Math.ceil(radius / this.voxel) + 1
+    const gx = Math.floor(x / this.voxel)
+    const gy = Math.floor(y / this.voxel)
+    const gz = Math.floor(z / this.voxel)
     for (let iz = gz - reach; iz <= gz + reach; iz++) {
       for (let iy = gy - reach; iy <= gy + reach; iy++) {
         for (let ix = gx - reach; ix <= gx + reach; ix++) {
-          const dx = (ix + 0.5) * VOXEL - x
-          const dy = (iy + 0.5) * VOXEL - y
-          const dz = (iz + 0.5) * VOXEL - z
+          const dx = (ix + 0.5) * this.voxel - x
+          const dy = (iy + 0.5) * this.voxel - y
+          const dz = (iz + 0.5) * this.voxel - z
           if (dx * dx + dy * dy + dz * dz > r2) continue
           const cell = this.cell(ix, iy, iz, false)
           if (!cell || cell.chunk.weight[cell.index] < 32) continue
@@ -191,9 +217,9 @@ export class RoomField {
    * Null where the room has not been seen.
    */
   sdf(x: number, y: number, z: number): number | null {
-    const fx = x / VOXEL - 0.5
-    const fy = y / VOXEL - 0.5
-    const fz = z / VOXEL - 0.5
+    const fx = x / this.voxel - 0.5
+    const fy = y / this.voxel - 0.5
+    const fz = z / this.voxel - 0.5
     const gx = Math.floor(fx)
     const gy = Math.floor(fy)
     const gz = Math.floor(fz)
@@ -240,7 +266,7 @@ export class RoomField {
     const ix = dx / len
     const iy = dy / len
     const iz = dz / len
-    const step = VOXEL * 0.5
+    const step = this.voxel * 0.5
     let prev: number | null = null
     for (let t = 0; t <= reach + step; t += step) {
       const s = this.sdf(ox + ix * t, oy + iy * t, oz + iz * t)
@@ -264,7 +290,7 @@ export class RoomField {
    * Cheaper than `surfaceAlong` when the facing is not needed.
    */
   depthAlong(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, reach: number): number {
-    const step = VOXEL * 0.5
+    const step = this.voxel * 0.5
     let prev: number | null = null
     for (let t = 0; t <= reach + step; t += step) {
       const s = this.sdf(ox + dx * t, oy + dy * t, oz + dz * t)
@@ -284,7 +310,7 @@ export class RoomField {
   near(x: number, y: number, z: number, maxDist: number, out: SurfacePoint): SurfacePoint | null {
     const s = this.sdf(x, y, z)
     if (s === null || s >= 0.98 || s <= -0.98) return null
-    const d = s * TRUNC
+    const d = s * this.trunc
     if (Math.abs(d) > maxDist) return null
     out.x = x
     out.y = y
@@ -296,9 +322,9 @@ export class RoomField {
     // The field is only roughly a distance, so step once more onto the surface.
     const again = this.sdf(out.x, out.y, out.z)
     if (again !== null && again > -0.98 && again < 0.98) {
-      out.x -= out.nx * again * TRUNC
-      out.y -= out.ny * again * TRUNC
-      out.z -= out.nz * again * TRUNC
+      out.x -= out.nx * again * this.trunc
+      out.y -= out.ny * again * this.trunc
+      out.z -= out.nz * again * this.trunc
     }
     out.dist = Math.abs(d)
     return out
@@ -316,7 +342,8 @@ export class RoomField {
       const nx = near.x
       const ny = near.y
       const nz = near.z
-      dirty.sort((a, b) => chunkDist(a, nx, ny, nz) - chunkDist(b, nx, ny, nz))
+      const v = this.voxel
+      dirty.sort((a, b) => chunkDist(a, nx, ny, nz, v) - chunkDist(b, nx, ny, nz, v))
     }
     const n = Math.min(budget, dirty.length)
     for (let i = 0; i < n; i++) built.push(this.buildChunk(dirty[i]))
@@ -436,6 +463,49 @@ export class RoomField {
     return best ?? loose
   }
 
+  /**
+   * A solid block of the field, for work that visits every voxel in a region.
+   * `x0`, `y0`, `z0` are voxel indices; voxel `i` is centred at `(i + 0.5) * voxel`.
+   * Values run 1 (open air) to -1 (behind a surface), NaN where unseen.
+   */
+  grid(x0: number, y0: number, z0: number, nx: number, ny: number, nz: number, out?: Float32Array): Float32Array {
+    const values = out && out.length >= nx * ny * nz ? out : new Float32Array(nx * ny * nz)
+    values.fill(NaN, 0, nx * ny * nz)
+    const c0x = Math.floor(x0 / CHUNK)
+    const c0y = Math.floor(y0 / CHUNK)
+    const c0z = Math.floor(z0 / CHUNK)
+    const c1x = Math.floor((x0 + nx - 1) / CHUNK)
+    const c1y = Math.floor((y0 + ny - 1) / CHUNK)
+    const c1z = Math.floor((z0 + nz - 1) / CHUNK)
+    for (let cz = c0z; cz <= c1z; cz++) {
+      for (let cy = c0y; cy <= c1y; cy++) {
+        for (let cx = c0x; cx <= c1x; cx++) {
+          const chunk = this.byId.get(chunkId(cx, cy, cz))
+          if (!chunk) continue
+          const bx = cx * CHUNK
+          const by = cy * CHUNK
+          const bz = cz * CHUNK
+          const fromZ = Math.max(bz, z0)
+          const toZ = Math.min(bz + CHUNK, z0 + nz)
+          const fromY = Math.max(by, y0)
+          const toY = Math.min(by + CHUNK, y0 + ny)
+          const fromX = Math.max(bx, x0)
+          const toX = Math.min(bx + CHUNK, x0 + nx)
+          for (let z = fromZ; z < toZ; z++) {
+            for (let y = fromY; y < toY; y++) {
+              let src = fromX - bx + (y - by) * CHUNK + (z - bz) * CHUNK * CHUNK
+              let dst = fromX - x0 + (y - y0) * nx + (z - z0) * nx * ny
+              for (let x = fromX; x < toX; x++, src++, dst++) {
+                if (chunk.weight[src] >= MIN_WEIGHT) values[dst] = chunk.tsdf[src] / 127
+              }
+            }
+          }
+        }
+      }
+    }
+    return values
+  }
+
   /** Keys of chunks that currently exist, oldest last is not promised. */
   listChunks(): string[] {
     return [...this.chunks.keys()]
@@ -448,7 +518,7 @@ export class RoomField {
   snapshot(key: string): ChunkSnapshot | null {
     const chunk = this.chunks.get(key)
     if (!chunk) return null
-    return { key, voxel: VOXEL, tsdf: new Int8Array(chunk.tsdf), weight: new Uint8Array(chunk.weight) }
+    return { key, voxel: this.voxel, tsdf: new Int8Array(chunk.tsdf), weight: new Uint8Array(chunk.weight) }
   }
 
   /**
@@ -513,7 +583,7 @@ export class RoomField {
    * cannot be read. False when there is neither.
    */
   private face(out: SurfacePoint, fx: number, fy: number, fz: number): boolean {
-    const h = VOXEL * 0.75
+    const h = this.voxel * 0.75
     const g = this.grad
     const x1 = this.sdf(out.x + h, out.y, out.z)
     const x0 = this.sdf(out.x - h, out.y, out.z)
@@ -548,10 +618,10 @@ export class RoomField {
     const iy = dy / depth
     const iz = dz / depth
     const basis = tangentOf(ix, iy, iz)
-    const step = VOXEL * 0.5
-    for (let t = depth - TRUNC; t <= depth + TRUNC * 0.5; t += step) {
+    const step = this.voxel * 0.5
+    for (let t = depth - this.trunc; t <= depth + this.behind; t += step) {
       if (t < 0.2) continue
-      const sdf = (depth - t) / TRUNC
+      const sdf = (depth - t) / this.trunc
       const clamped = sdf > 1 ? 1 : sdf < -1 ? -1 : sdf
       const x = sample.ox + ix * t
       const y = sample.oy + iy * t
@@ -560,9 +630,9 @@ export class RoomField {
       for (let j = -1; j <= 1; j++) {
         for (let i = -1; i <= 1; i++) {
           this.write(
-            x + basis.tx * i * VOXEL + basis.bx * j * VOXEL,
-            y + basis.ty * i * VOXEL + basis.by * j * VOXEL,
-            z + basis.tz * i * VOXEL + basis.bz * j * VOXEL,
+            x + basis.tx * i * this.voxel + basis.bx * j * this.voxel,
+            y + basis.ty * i * this.voxel + basis.by * j * this.voxel,
+            z + basis.tz * i * this.voxel + basis.bz * j * this.voxel,
             clamped,
           )
         }
@@ -572,9 +642,9 @@ export class RoomField {
   }
 
   private write(x: number, y: number, z: number, sdf: number): void {
-    const gx = Math.floor(x / VOXEL)
-    const gy = Math.floor(y / VOXEL)
-    const gz = Math.floor(z / VOXEL)
+    const gx = Math.floor(x / this.voxel)
+    const gy = Math.floor(y / this.voxel)
+    const gz = Math.floor(z / this.voxel)
     const cell = this.cell(gx, gy, gz, true)
     if (!cell) return
     const { chunk, index } = cell
@@ -597,7 +667,7 @@ export class RoomField {
     const id = chunkId(cx, cy, cz)
     let chunk = this.byId.get(id)
     if (!chunk && create) {
-      if (this.chunks.size >= MAX_CHUNKS && !this.evict()) return null
+      if (this.chunks.size >= this.maxChunks && !this.evict()) return null
       const key = `${cx},${cy},${cz}`
       chunk = {
         key,
@@ -678,17 +748,17 @@ export class RoomField {
     if (!a || !b || a.sdf === 0 || b.sdf === 0) return
     if (a.sdf > 0 === b.sdf > 0) return
     const t = a.sdf / (a.sdf - b.sdf)
-    const x0 = (gx + 0.5) * VOXEL
-    const y0 = (gy + 0.5) * VOXEL
-    const z0 = (gz + 0.5) * VOXEL
-    const px = x0 + ax * VOXEL * t
-    const py = y0 + ay * VOXEL * t
-    const pz = z0 + az * VOXEL * t
+    const x0 = (gx + 0.5) * this.voxel
+    const y0 = (gy + 0.5) * this.voxel
+    const z0 = (gz + 0.5) * this.voxel
+    const px = x0 + ax * this.voxel * t
+    const py = y0 + ay * this.voxel * t
+    const pz = z0 + az * this.voxel * t
     const nSign = a.sdf > b.sdf ? -1 : 1
     const nx = ax * nSign
     const ny = ay * nSign
     const nz = az * nSign
-    const quad = faceCorners(px, py, pz, ax, ay, az, VOXEL * 0.62)
+    const quad = faceCorners(px, py, pz, ax, ay, az, this.voxel * 0.62)
     pushTri(positions, normals, quad, 0, 1, 2, nx, ny, nz)
     pushTri(positions, normals, quad, 0, 2, 3, nx, ny, nz)
   }
@@ -788,10 +858,10 @@ function rayTri(ox: number, oy: number, oz: number, dx: number, dy: number, dz: 
   return t > 0 ? t : null
 }
 
-function chunkDist(chunk: Chunk, x: number, y: number, z: number): number {
-  const cx = (chunk.ix * CHUNK + CHUNK / 2) * VOXEL
-  const cy = (chunk.iy * CHUNK + CHUNK / 2) * VOXEL
-  const cz = (chunk.iz * CHUNK + CHUNK / 2) * VOXEL
+function chunkDist(chunk: Chunk, x: number, y: number, z: number, voxel: number): number {
+  const cx = (chunk.ix * CHUNK + CHUNK / 2) * voxel
+  const cy = (chunk.iy * CHUNK + CHUNK / 2) * voxel
+  const cz = (chunk.iz * CHUNK + CHUNK / 2) * voxel
   const dx = cx - x
   const dy = cy - y
   const dz = cz - z

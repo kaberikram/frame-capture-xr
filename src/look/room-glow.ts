@@ -120,8 +120,8 @@ export function pieceMaterial(palette: Palette, seed: number): ShaderMaterial {
         float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
         vec3 col = mix(uFilm * 0.86, photo, seen);
         col = mix(col, col * vec3(1.03, 0.99, 0.94) + uWarm * 0.02, 0.6);
-        // The back of the piece is plain paper.
-        if (!gl_FrontFacing) col = uPaper * 0.9;
+        // Seen from behind, the picture shows through, dim and warm, like a paper lantern.
+        if (!gl_FrontFacing) col = col * 0.5 + uWarm * 0.2;
         // A soft gloss where the piece turns away from you, so its shape reads.
         vec3 n = normalize(cross(dFdx(vView), dFdy(vView)));
         float facing = abs(dot(n, normalize(-vView)));
@@ -186,7 +186,7 @@ export function holeMaterial(palette: Palette, seed: number): ShaderMaterial {
           // It dies away before the edge of the square the light is drawn on.
           float within = 1.0 - smoothstep(0.14, 0.195, max(abs(vP.x), abs(vP.y)));
           float spill = (exp(lip / 0.018) * 0.55 + exp(lip / 0.06) * 0.12) * within;
-          vec3 light = mix(uAccent, uGlow, 0.55) * spill * level;
+          vec3 light = mix(uAccent, uGlow, 0.55) * spill * level * 0.5;
           if (spill * level < 0.004) discard;
           gl_FragColor = vec4(light, 0.0);
           return;
@@ -210,7 +210,8 @@ export function holeMaterial(palette: Palette, seed: number): ShaderMaterial {
         // A bright thread right at the torn rim.
         col += uCore * (1.0 - smoothstep(0.0, 0.004, lip)) * 0.35;
         float a = smoothstep(0.0, 0.0015, lip);
-        gl_FragColor = vec4(col * level * a, a * clamp(uOpen * 1.6, 0.0, 1.0));
+        // The room shows through: this is light on the wall, not a patch over it.
+        gl_FragColor = vec4(col * level * a * 0.5, a * clamp(uOpen * 1.6, 0.0, 1.0) * 0.38);
       }`,
     transparent: true,
     depthWrite: false,
@@ -225,8 +226,8 @@ export function holeMaterial(palette: Palette, seed: number): ShaderMaterial {
 
 /**
  * A soft pool of warm light on a surface, under a hand that is close enough
- * to pinch it. With `uRing` it is the outline of where a carried piece will
- * land. Drawn on a flat square a little bigger than the light.
+ * to pinch it. With `uRing` it is the plain soft light where a carried piece
+ * will come to rest. Drawn on a flat square a little bigger than the light.
  */
 export function poolMaterial(palette: Palette): ShaderMaterial {
   return new ShaderMaterial({
@@ -260,11 +261,8 @@ export function poolMaterial(palette: Palette): ShaderMaterial {
         float draw = uR * (0.55 + 0.45 * fract(1.0 - uTime * 0.45));
         float ripple = exp(-pow((r - draw) / 0.006, 2.0)) * 0.12 * (1.0 - fract(1.0 - uTime * 0.45));
         vec3 under = uGlow * pool + uCore * (ripple + exp(-pow(r / 0.012, 2.0)) * 0.25);
-        // Where a piece will land: its outline, breathing.
-        float edge = uR * (0.97 + 0.03 * breathe);
-        float line = exp(-pow((r - edge) / 0.005, 2.0)) * (0.5 + 0.3 * breathe);
-        float fill = (1.0 - smoothstep(edge * 0.7, edge, r)) * 0.07;
-        vec3 landing = mix(uGlow, uCore, 0.5) * line + uGlow * fill;
+        // Where a carried piece will come to rest: a soft patch of light, with no outline.
+        vec3 landing = uGlow * exp(-pow(r / (uR * 0.8), 2.0)) * (0.16 + 0.04 * breathe);
         vec3 col = mix(under, landing, uRing) * uLevel;
         if (max(col.r, max(col.g, col.b)) < 0.003) discard;
         gl_FragColor = vec4(col, 0.0);
@@ -280,37 +278,130 @@ export function poolMaterial(palette: Palette): ShaderMaterial {
   })
 }
 
-/** A brief sparkle on the scan where the room has just been read, and nothing otherwise. */
-export function sparkleMaterial(palette: Palette): ShaderMaterial {
+/**
+ * A thing lifted out of the room: a shell in its real shape, wearing the
+ * camera's picture of it. `aEdge` rises to 1 where the shell ends, which fades
+ * out softly.
+ */
+export function shellMaterial(palette: Palette): ShaderMaterial {
   return new ShaderMaterial({
     uniforms: {
-      uTime: { value: 0 },
-      uGlow: { value: vec(palette.glow) },
+      uMap: { value: null as Texture | null },
+      uUvRect: { value: new Vector4(0, 0, 1, 1) },
+      uHasMap: { value: 0 },
+      uEncode: { value: 0 },
+      uShow: { value: 0 },
+      /** Warm light in the shell as it comes away. */
+      uHeat: { value: 0 },
+      uFilm: { value: vec(palette.haze) },
+      uSheen: { value: vec(palette.sheen) },
+      uWarm: { value: vec(palette.glow) },
     },
     vertexShader: /* glsl */ `
-      attribute float aBorn;
-      uniform float uTime;
-      varying float vFresh;
-      varying vec3 vWorld;
+      attribute vec2 aUv;
+      attribute float aEdge;
+      varying vec2 vUv;
+      varying float vEdge;
+      varying vec3 vView;
+      varying vec3 vN;
       void main() {
-        vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
-        vFresh = clamp(1.0 - (uTime - aBorn) / 1.2, 0.0, 1.0);
-        gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
+        vUv = aUv;
+        vEdge = aEdge;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vView = mv.xyz;
+        vN = normalMatrix * normal;
+        gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: /* glsl */ `
-      uniform vec3 uGlow;
-      uniform float uTime;
-      varying float vFresh;
-      varying vec3 vWorld;
+      uniform sampler2D uMap;
+      uniform vec4 uUvRect;
+      uniform float uHasMap, uEncode, uShow, uHeat;
+      uniform vec3 uFilm, uSheen, uWarm;
+      varying vec2 vUv;
+      varying float vEdge;
+      varying vec3 vView;
+      varying vec3 vN;
       void main() {
-        if (vFresh <= 0.01) discard;
-        float grain = fract(sin(dot(floor(vWorld.xy * 90.0) + floor(vWorld.z * 90.0), vec2(12.9898, 78.233))) * 43758.5453);
-        float glint = step(0.93, grain) * vFresh * vFresh;
-        if (glint < 0.01) discard;
-        gl_FragColor = vec4(uGlow * glint * 0.5, 0.0);
+        float alpha = uShow * (1.0 - smoothstep(0.7, 1.0, vEdge));
+        if (alpha < 0.02) discard;
+        vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
+        vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
+        photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
+        float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
+        vec3 col = mix(uFilm * 0.8, photo, seen);
+        col = mix(col, col * vec3(1.03, 0.99, 0.94) + uWarm * 0.02, 0.6);
+        float facing = abs(dot(normalize(vN), normalize(-vView)));
+        float rim = pow(1.0 - facing, 3.0);
+        // The far side was never seen. From behind, the picture glows through like a lantern.
+        if (!gl_FrontFacing) col = col * 0.5 + uWarm * 0.2;
+        col += uSheen * rim * 0.16;
+        col += uWarm * uHeat * (0.2 + 0.55 * rim);
+        gl_FragColor = vec4(col, alpha);
+      }`,
+    transparent: true,
+    depthWrite: true,
+    depthTest: true,
+    // The copy starts exactly where the real thing is, and must not flicker against the desk's stand-in.
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+    side: DoubleSide,
+    toneMapped: false,
+  })
+}
+
+/**
+ * Light on a thing's own shape: a soft edge glow that breathes, with a slow
+ * shimmer rising through it. It shows what a pinch would lift, and lingers a
+ * moment where a thing was lifted from.
+ */
+export function auraMaterial(palette: Palette): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: {
+      uLevel: { value: 0 },
+      uTime: { value: 0 },
+      /** The lowest point of the shape and its height, in its own space. */
+      uLow: { value: 0 },
+      uSpan: { value: 1 },
+      uGlow: { value: vec(palette.glow) },
+      uCore: { value: vec(palette.core) },
+    },
+    vertexShader: /* glsl */ `
+      attribute float aEdge;
+      varying float vEdge;
+      varying float vY;
+      varying vec3 vView;
+      varying vec3 vN;
+      void main() {
+        vEdge = aEdge;
+        vY = position.y;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vView = mv.xyz;
+        vN = normalMatrix * normal;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform float uLevel, uTime, uLow, uSpan;
+      uniform vec3 uGlow, uCore;
+      varying float vEdge;
+      varying float vY;
+      varying vec3 vView;
+      varying vec3 vN;
+      void main() {
+        float facing = abs(dot(normalize(vN), normalize(-vView)));
+        float rim = pow(1.0 - facing, 1.6);
+        float breathe = 0.86 + 0.14 * sin(uTime * 2.1);
+        float h = (vY - uLow) / max(uSpan, 1e-3);
+        float sweep = fract(uTime * 0.3) * 1.6 - 0.3;
+        float band = exp(-pow((h - sweep) / 0.13, 2.0));
+        vec3 col = uGlow * (0.07 + 0.6 * rim) + uCore * (0.22 * rim * rim + 0.1 * band);
+        col *= uLevel * breathe * (1.0 - smoothstep(0.6, 1.0, vEdge));
+        if (max(col.r, max(col.g, col.b)) < 0.003) discard;
+        gl_FragColor = vec4(col, 0.0);
       }`,
     transparent: true,
     depthWrite: false,
+    depthTest: false,
     side: DoubleSide,
     toneMapped: false,
     blending: CustomBlending,
