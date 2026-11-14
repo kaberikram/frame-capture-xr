@@ -1,9 +1,11 @@
 import {
   CustomBlending,
   DoubleSide,
+  FrontSide,
   OneFactor,
   OneMinusSrcAlphaFactor,
   ShaderMaterial,
+  Vector2,
   Vector3,
   Vector4,
   type Texture,
@@ -41,6 +43,13 @@ const TORN = /* glsl */ `
     return len * (1.0 + 0.3 * lobes) + tooth * 0.011;
   }
 `
+
+/**
+ * The headset camera exposes a dim room about a quarter brighter than
+ * passthrough shows it, so a peeled wall read cream against the real one.
+ * Camera pictures are scaled by this; the desk's renders are not.
+ */
+const CAMERA_GAIN = '0.8'
 
 function vec(rgb: readonly [number, number, number]): Vector3 {
   return new Vector3(rgb[0], rgb[1], rgb[2])
@@ -110,12 +119,15 @@ export function pieceMaterial(palette: Palette, seed: number): ShaderMaterial {
       varying vec2 vUv;
       varying vec3 vView;
       ${TORN}
+      const float CAMERA_GAIN = ${CAMERA_GAIN};
       void main() {
         float inside = uR - torn(vP, uSeed);
         if (inside <= 0.0) discard;
         vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
+        // The headset camera exposes a dim room brighter than passthrough shows it.
+        photo *= mix(CAMERA_GAIN, 1.0, uEncode);
         // Where the camera did not see, the piece is a warm film instead of a smear.
         float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
         vec3 col = mix(uFilm * 0.86, photo, seen);
@@ -256,11 +268,10 @@ export function poolMaterial(palette: Palette): ShaderMaterial {
       void main() {
         float r = length(vL);
         float breathe = 0.5 + 0.5 * sin(uTime * 2.4);
-        // Under a hand: a pool that is brightest in the middle, with a faint ring drawing in.
+        // Under a hand: a soft pool that is brightest in the middle. What a pinch
+        // would take is shown by its own outline, so the pool has no ring of its own.
         float pool = exp(-pow(r / (uR * 0.75), 2.0)) * 0.3;
-        float draw = uR * (0.55 + 0.45 * fract(1.0 - uTime * 0.45));
-        float ripple = exp(-pow((r - draw) / 0.006, 2.0)) * 0.12 * (1.0 - fract(1.0 - uTime * 0.45));
-        vec3 under = uGlow * pool + uCore * (ripple + exp(-pow(r / 0.012, 2.0)) * 0.25);
+        vec3 under = uGlow * pool + uCore * exp(-pow(r / 0.012, 2.0)) * 0.25;
         // Where a carried piece will come to rest: a soft patch of light, with no outline.
         vec3 landing = uGlow * exp(-pow(r / (uR * 0.8), 2.0)) * (0.16 + 0.04 * breathe);
         vec3 col = mix(under, landing, uRing) * uLevel;
@@ -321,12 +332,14 @@ export function shellMaterial(palette: Palette): ShaderMaterial {
       varying float vEdge;
       varying vec3 vView;
       varying vec3 vN;
+      const float CAMERA_GAIN = ${CAMERA_GAIN};
       void main() {
         float alpha = uShow * (1.0 - smoothstep(0.7, 1.0, vEdge));
         if (alpha < 0.02) discard;
         vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
+        photo *= mix(CAMERA_GAIN, 1.0, uEncode);
         float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
         vec3 col = mix(uFilm * 0.8, photo, seen);
         col = mix(col, col * vec3(1.03, 0.99, 0.94) + uWarm * 0.02, 0.6);
@@ -407,5 +420,160 @@ export function auraMaterial(palette: Palette): ShaderMaterial {
     blending: CustomBlending,
     blendSrc: OneFactor,
     blendDst: OneMinusSrcAlphaFactor,
+  })
+}
+
+/**
+ * The ghost of a thing a pinch would lift: the thing's own shell, swelled a
+ * few millimetres off the real one, wearing a washed-out copy of its picture,
+ * with a bright line where its shape turns away and where it ends. Normal
+ * blending with real opacity, so it reads over passthrough in a dim room,
+ * where faint added light does not.
+ */
+export function ghostMaterial(palette: Palette): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: {
+      uMap: { value: null as Texture | null },
+      uUvRect: { value: new Vector4(0, 0, 1, 1) },
+      uHasMap: { value: 0 },
+      uEncode: { value: 0 },
+      /** How present the ghost is, 0..1. */
+      uLevel: { value: 0 },
+      /** How close the hand is, 0..1: the ghost swells and brightens toward it. */
+      uNear: { value: 0 },
+      uTime: { value: 0 },
+      /** The lowest point of the shape and its height, in its own space, for the light rising through it. */
+      uLow: { value: 0 },
+      uSpan: { value: 1 },
+      uCore: { value: vec(palette.core) },
+      uGlow: { value: vec(palette.glow) },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec2 aUv;
+      attribute float aEdge;
+      uniform float uNear;
+      varying vec2 vUv;
+      varying float vEdge;
+      varying float vY;
+      varying vec3 vView;
+      varying vec3 vN;
+      void main() {
+        vUv = aUv;
+        vEdge = aEdge;
+        vY = position.y;
+        // It stands a little proud of the real thing, more as the hand nears, as if coming loose.
+        vec3 p = position + normal * (0.003 + 0.007 * uNear);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vView = mv.xyz;
+        vN = normalMatrix * normal;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform sampler2D uMap;
+      uniform vec4 uUvRect;
+      uniform float uHasMap, uEncode, uLevel, uNear, uTime, uLow, uSpan;
+      uniform vec3 uCore, uGlow;
+      varying vec2 vUv;
+      varying float vEdge;
+      varying float vY;
+      varying vec3 vView;
+      varying vec3 vN;
+      void main() {
+        vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
+        vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
+        photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
+        float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
+        // A washed, lighter copy of the thing: clearly a ghost of it, not the thing.
+        vec3 fill = mix(uCore * 0.92, photo * 0.75 + uCore * 0.35, seen);
+        float facing = abs(dot(normalize(vN), normalize(-vView)));
+        // The outline: where the shape turns away from you, and where it ends.
+        float rim = smoothstep(0.55, 0.05, facing);
+        float ends = smoothstep(0.35, 0.9, vEdge);
+        float line = max(rim, ends);
+        // A slow band of light rising through it.
+        float h = (vY - uLow) / max(uSpan, 1e-3);
+        float sweep = fract(uTime * 0.32) * 1.5 - 0.25;
+        float band = exp(-pow((h - sweep) / 0.09, 2.0));
+        float breathe = 0.9 + 0.1 * sin(uTime * 2.3);
+        vec3 col = mix(fill, mix(uCore, uGlow, 0.25), clamp(line * 0.85 + band * 0.4, 0.0, 1.0));
+        float a = (0.2 + 0.16 * uNear) + line * 0.7 + band * 0.18;
+        a = clamp(a, 0.0, 0.92) * uLevel * breathe;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(col, a);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    // Only the faces turned toward you: a shell's faces all point out of the thing,
+    // and drawing the far ones too would stack their opacity unevenly.
+    side: FrontSide,
+    toneMapped: false,
+  })
+}
+
+/**
+ * The cut a pinch on a bare surface would make, drawn on the surface before
+ * the pinch: the exact torn outline the piece will have, a soft groove just
+ * outside it, and a faint lift inside that leans toward the fingertip. The
+ * line draws itself around from the side nearest the finger when it appears.
+ * Drawn on a flat square a little bigger than the piece.
+ */
+export function cutoutMaterial(palette: Palette, seed: number): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: {
+      /** Metres from the middle of the square to its edge. */
+      uHalf: { value: 0.2 },
+      uR: { value: 0.1 },
+      uSeed: { value: seed },
+      uLevel: { value: 0 },
+      uNear: { value: 0 },
+      /** How far the line has drawn itself around, 0..1. */
+      uDraw: { value: 1 },
+      /** Where the fingertip is over the square, in its own metres. */
+      uHand: { value: new Vector2() },
+      uTime: { value: 0 },
+      uCore: { value: vec(palette.core) },
+      uGlow: { value: vec(palette.glow) },
+      uShadow: { value: vec(palette.shadow) },
+    },
+    vertexShader: /* glsl */ `
+      uniform float uHalf;
+      varying vec2 vL;
+      void main() {
+        vL = position.xy * 2.0 * uHalf;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform float uR, uSeed, uLevel, uNear, uDraw, uTime;
+      uniform vec2 uHand;
+      uniform vec3 uCore, uGlow, uShadow;
+      varying vec2 vL;
+      ${TORN}
+      void main() {
+        float d = uR - torn(vL, uSeed);
+        // The line draws around both ways from the side nearest the finger.
+        float start = dot(uHand, uHand) > 1e-8 ? atan(uHand.y, uHand.x) : 0.0;
+        float ang = abs(mod(atan(vL.y, vL.x) - start + 3.14159265, 6.2831853) - 3.14159265) / 3.14159265;
+        float drawn = uDraw >= 1.0 ? 1.0 : 1.0 - smoothstep(uDraw - 0.04, uDraw, ang);
+        float line = exp(-pow(d / 0.0024, 2.0)) * drawn;
+        float groove = (1.0 - step(0.0, d)) * exp(-pow((d + 0.003) / 0.0035, 2.0)) * drawn;
+        float inside = smoothstep(0.0, 0.004, d);
+        float toward = 1.0 - clamp(length(vL - uHand) / (uR * 2.2), 0.0, 1.0);
+        float lift = inside * (0.07 + 0.13 * toward * uNear) * (0.92 + 0.08 * sin(uTime * 2.1));
+        vec3 col = uShadow;
+        float a = groove * 0.32;
+        col = mix(col, mix(uGlow, uCore, 0.6), clamp(lift * 6.0, 0.0, 1.0));
+        a = max(a, lift);
+        col = mix(col, uCore, line);
+        a = max(a, line * 0.9);
+        a *= uLevel;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(col, a);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    side: DoubleSide,
+    toneMapped: false,
   })
 }

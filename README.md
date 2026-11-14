@@ -118,40 +118,45 @@ An echo photo can include a hand that was in the pane a moment ago, even after t
 
 ## Peel the room
 
-`/peel` is its own page. Nothing is drawn on the room, and nothing is written in the air, until you mean to take something.
+`/peel` is its own page. Nothing is drawn on the room, and nothing is written in the air, until you mean to take something. It needs no room scan: the headset's live depth builds the room as you look around (see How it works).
 
-**Lift a thing, from where you stand.**
+**You always see what a pinch will take, before you pinch.**
 
-1. **Raise an open hand and look at something.** A mug, a bag, a lamp. Soft light gathers on its shape and breathes. That is the only sign it can be lifted. Lower your hand and the light goes.
-2. **Pinch, and pull a little.** You do not have to reach it. A copy of the thing slides out of the real one in its own shape, wearing the camera's picture of it. About 9 cm of pull and it comes away and floats over to your hand. Let go sooner and it sinks back.
-3. **Light lingers on the real thing** for a second or so, then goes. Nothing is left on your room.
-4. **Carry it, let it go, set it down.** It trails your hand and leans into the movement. Let go in open air and it floats, drifting on a little if you were moving. Let go over a table or the floor and it is set down there, standing on its base. Look at a floating piece and pinch to call it back to your hand, or pinch it directly.
+- **A thing** (a CD case, a mug, a bag): bring a hand near it, or raise an open hand and look at it. A ghost of it shows over it: a pale copy of the thing in its own shape, standing a few millimetres off the real one, with a bright line where its shape turns away and where it ends. It leans toward you as the hand nears. Move off the thing and the ghost goes.
+- **A bare surface** (a wall, a tabletop): bring a fingertip near it. The torn outline of the piece draws itself around from the side nearest your finger, with a faint groove outside it. It glides with the finger.
 
-Only the side of a thing that the headset has seen comes away. Its far side is open, and from behind the picture glows through like a paper lantern. Something that runs on past arm's reach, like a sofa or a wall, gives a round piece of itself with a soft edge.
+A pinch takes exactly what was showing, wherever the fingers are: that thing, or that cut at that size and in that torn shape.
 
-**Peel a wall, up close.**
+**Lift a thing.**
 
-1. **Bring a hand close to a bare surface.** A soft pool of warm light gathers under your fingertip and draws in as you get nearer.
-2. **Pinch it and pull.** For the first centimetre nothing gives, like the tack of glue. Then the surface lifts and the piece grows as you pull, from a coin to about 30 cm across, with a torn paper edge.
-3. **Warm light opens where it was,** faint enough that the wall shows through, with dust drifting out.
-4. **Let go, or keep pulling.** With less than about 3 cm of pull it settles back. Past that it tears free at the size it has reached and floats. At about 18 cm it pops free at full size and follows your hand. `?peel=1.3` makes all of these take 30% more pull.
-5. **Lay it down.** Near another surface a soft patch of light shows where it will rest. Let go and it lies down there and takes its shape.
+1. **Pinch, and pull a little.** A copy slides out of the real thing, wearing the camera's picture of it, taken before your hand got in the way. Pinched from across the room, about 9 cm of pull and it comes away and floats over to your hand. Let go sooner and it sinks back.
+2. **The ghost stays on the real thing** for a second or so, then goes. Nothing is left on your room.
+3. **Carry it, let it go, set it down.** It trails your hand and leans into the movement. Let go in open air and it floats, drifting on a little if you were moving. Let go over a table or the floor and it is set down there, standing on its base. Look at a floating piece and pinch to call it back to your hand, or pinch it directly.
 
-A pinch right on a thing with shape (a cushion, a bag) lifts it in three dimensions, the same as from across the room.
+Only the side of a thing that the headset has seen comes away. Its far side is open, and from behind the picture glows through like a paper lantern. From across the room only a whole thing can be taken; a bare wall stays where it is.
+
+**Peel a surface.**
+
+1. **Pinch inside the outline and pull.** For the first centimetre nothing gives, like the tack of glue. Then the middle comes up with your fingers while the torn rim holds. The piece is the size its outline showed, about 22 cm across.
+2. **Warm light opens where it was,** faint enough that the wall shows through, with dust drifting out. It holds for a moment, then goes, and the wall can be peeled there again.
+3. **Let go, or keep pulling.** With less than about 3 cm of pull it settles back. Past that it tears free and floats. At about 18 cm it pops free and follows your hand. `?peel=1.3` makes all of these take 30% more pull.
+4. **Lay it down.** Near another surface a soft patch of light shows where it will rest. Let go and it lies down there and takes its shape.
 
 Twelve pieces is the limit. The oldest then fades. The page shows no hints. It does not draw frames, has no time window or palm menu, and does not download the depth model.
 
 ### How it works
 
-On a Quest the page asks for WebXR depth sensing, which frame capture does not. Depth readings are fused on the CPU, in small batches, into a sparse distance field: about 4 cm to a voxel, a few metres out. Quest Browser is WebGL, so there are no compute shaders to do it on. The field is never shown. Every lookup marches the field (`RoomField.surfaceAlong`, `near`), which costs the same however much of the room has been read.
+On a Quest the page asks for WebXR depth sensing, which frame capture does not. The headset works out depth live from its own cameras; it does not need Meta's Space Setup scan of the room. The page does not ask for plane detection, mesh detection or hit-test (which come from that scan and which only frame capture uses), so it works in a room that was never scanned. Quest Browser still asks to allow spatial data, because depth counts as spatial data. The browser's own Enter button gets the same session as the page's. Depth readings are fused on the CPU, in small batches, into a sparse distance field: about 4 cm to a voxel, a few metres out. Quest Browser is WebGL, so there are no compute shaders to do it on. The field is never shown. Every lookup marches the field (`RoomField.surfaceAlong`, `near`), which costs the same however much of the room has been read.
 
-The piece is a 25 by 25 grid laid on the surface around the pinch, with the height of the real surface at each point. Its picture comes from the passthrough camera. The page keeps the last six camera frames, about two seconds, each with the lens pose that took it. When you pinch, your hand is in front of the spot, so the piece uses the newest frame in which no hand joint was over it, and each grid point is projected through that frame's lens to find its place in the image. Without a camera the piece is a warm film.
+The piece is a 25 by 25 grid laid on the surface around the pinch, with the height of the real surface at each point. Its picture comes from the passthrough camera. The page keeps the last six camera frames, about two seconds, each with the lens pose that took it. When you pinch, your hand is in front of the spot, so the picture is taken while the outline or ghost is showing, before the hand gets there: the newest frame in which no hand joint was over the spot. Each point is projected through that frame's lens to find its place in the image. A piece that comes away with no frame that saw its spot keeps asking for one for three seconds; until then it is a warm film. Camera pictures are toned down a little, because the headset camera exposes a dim room brighter than passthrough shows it.
 
-The place a piece left is carved out of the field, so new depth does not paint the wall back in behind the light. When a hole closes, the field there is allowed to fill in again.
+The place a piece left is carved out of the field, so new depth does not paint the wall back in behind the light. When the light has gone, about two seconds later, the field there is allowed to fill in again.
 
 A second, finer field (2 cm to a voxel) is kept only around whatever has your attention: what a fingertip is nearing, or what you are looking at with a hand raised. Every other depth pass reads a 70 by 50 cm window there instead of the whole view. `?fine=0` turns it off.
 
-A thing is cut out of the field in `src/room/object.ts`. Starting at the pinch, it follows the surface outward, leaving out the level surface the thing stands on, and stops at 42 cm. If the surface ends before that, it is one thing. If it runs on, a 19 cm round piece is taken. The result is a smooth mesh (one vertex per voxel cube the surface crosses), and each vertex finds its place in a camera frame the same way a flat piece does. Depth readings that fall on a hand, or that sit part way between a near thing and what is behind it, are left out of the fields.
+A thing is cut out of the field in `src/room/object.ts`. The fine field only covers a small window, and a wall seen through one can look like a closed shape; so when the coarse field, which sees the whole view, finds that the surface runs on past arm's reach, it is taken as part of something big (`pickShell`). Starting at the pinch, it follows the surface outward, leaving out the level surface the thing stands on, and stops at 42 cm. If the surface ends before that, it is one thing. If it runs on, a 19 cm round piece is taken. The result is a smooth mesh (one vertex per voxel cube the surface crosses), and each vertex finds its place in a camera frame the same way a flat piece does. Depth readings within 5.5 cm of any joint of either hand, or of a few points down each forearm, are left out of the fields, so your hand never becomes part of the room. So are readings that sit part way between a near thing and what is behind it.
+
+What has your attention is found once a frame: the surface the nearer fingertip is reaching toward (up to 30 cm past it), or what you look at with an open hand raised. Its shell is worked out a few times a second. A whole thing shows its ghost (`ghostMaterial`); anything else shows the cut (`cutoutMaterial`). Both are drawn with real opacity: faint added light, the way the old glow was drawn, all but vanishes over passthrough in a dim room.
 
 Going into or out of the headset clears both fields, so the desk's stand-in room is never left standing in your real one.
 
@@ -159,7 +164,7 @@ Browsers hand depth over in one of two ways, and the page reads both. Some give 
 
 If the browser has no depth sensing, the page says so in one line and nothing can be peeled.
 
-On the desk, `/peel?preview=1` reads the stand-in room with rays instead of a depth camera. The cursor is both the look and the fingertip: light gathers on the vase or the cup under it. Press a thing or a surface and drag up to pull it toward you. A free piece rides just above whatever the cursor is over, and lands there when you let go.
+On the desk, `/peel?preview=1` reads the stand-in room with rays instead of a depth camera. The cursor is both the look and the fingertip: the vase or the cup under it shows its ghost, and a bare wall or the table shows the outline of the cut. Press a thing or a surface and drag up to pull it toward you. A free piece rides just above whatever the cursor is over, and lands there when you let go.
 
 ## Sound
 
@@ -219,5 +224,5 @@ The Quest 3 lens is rectilinear, 863 px at 1280 wide, mounted about 6.5 cm in fr
 
 - `npm test` runs the pure-math tests: crop, peel, stick, hand filtering and release, hands-in-frame, separable depth filters (checked against the old brute-force ones), the bloom spring, the time-window modes, the stretch, flick, and palm-menu math, and the room field.
 - `npm run typecheck` and `npm run build` compile the app.
-- `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. On `/peel` it pulls a piece off the stand-in room with the mouse (settle back, grow, pop, land on the table, float), then lifts the vase out whole and sets it on the table. In the emulated headset, once with each kind of depth, it reaches for a surface, pinches it and pulls it free, then raises a hand, pinches the air and pulls what it is looking at over to the hand. The emulator's room is served from the installed `@iwer/sem` package, so the run needs no network. `SMOKE_CHROMIUM=/path/to/chrome` uses a browser that is already installed. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
+- `npm run smoke` drives the desk demo and an emulated headset in headless Chromium. The headset part uses the IWER emulator the dev server injects: it pinch-drags a frame and checks it is captured and blooms, then leaves a hand in the frame and checks the shutter waits. On `/peel` it pulls a piece off the stand-in room with the mouse (settle back, grow, pop, land on the table, float), then lifts the vase out whole and sets it on the table. In the emulated headset, once with each kind of depth, it reaches for a surface, pinches it and pulls it free, then checks that a pinch in the air at a bare wall takes nothing, and turns the head looking for a thing whose ghost shows, to pinch it from across the room. The emulated room is a rough scan, mostly big furniture, so a run sometimes finds no thing; it then prints `skip` for that part instead of passing it. The emulator's room is served from the installed `@iwer/sem` package, so the run needs no network. `SMOKE_CHROMIUM=/path/to/chrome` uses a browser that is already installed. `-- --shots out/` also saves a screenshot of every `?at=` stage. It needs Playwright: `npm i -D playwright && npx playwright install chromium`.
 - `npm run check` runs typecheck, tests, and build.

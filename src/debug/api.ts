@@ -30,8 +30,10 @@ export interface CaptureApi {
   roomPool: number
   /** Whether the held or newest piece is a thing in its own shape (`object`) or a flat piece (`flat`). */
   roomKind: string
-  /** How bright the light on a liftable thing's shape is, 0..1. */
+  /** How present the ghost of a liftable thing is, 0..1. */
   roomAttention: number
+  /** How present the outline of a cut in a bare surface is, 0..1. */
+  roomOutline: number
 }
 
 export interface PhaseInputs {
@@ -63,12 +65,13 @@ export function publishApi(): void {
     roomPool: 0,
     roomKind: 'none',
     roomAttention: 0,
+    roomOutline: 0,
   }
   ;(window as unknown as { __capture: CaptureApi }).__capture = api
 }
 
 /** Point the debug hook at the live time window. */
-export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number; kind: string; attention: number }): void {
+export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number; kind: string; attention: number; outline: number }): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return
   api.room = room.active
@@ -80,6 +83,7 @@ export function publishRoom(room: { active: boolean; chunks: number; pieces: num
   api.roomPool = room.pool
   api.roomKind = room.kind
   api.roomAttention = room.attention
+  api.roomOutline = room.outline
 }
 
 export function bindWarpApi(cycle: () => string): void {

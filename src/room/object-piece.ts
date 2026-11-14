@@ -2,7 +2,7 @@ import { BufferAttribute, BufferGeometry, Group, Mesh, Quaternion, Vector3, type
 import { REDUCE_MOTION } from '../app/context.js'
 import { projectPixel } from '../capture/lens.js'
 import type { Palette } from '../look/palette.js'
-import { auraMaterial, shellMaterial } from '../look/room-glow.js'
+import { ghostMaterial, shellMaterial } from '../look/room-glow.js'
 import type { SurfacePoint } from './field.js'
 import type { Shell } from './object.js'
 import { POP, TACK } from './patch.js'
@@ -37,6 +37,24 @@ export function shellGeometry(shell: Shell): BufferGeometry {
   geo.setIndex(new BufferAttribute(shell.indices, 1))
   geo.computeVertexNormals()
   return geo
+}
+
+/**
+ * Where each point of a shell sits in a camera picture, 0..1. Out of range
+ * where the camera did not see it.
+ */
+export function shellImageCoords(shell: Shell, skin: Skin | null): Float32Array {
+  const count = shell.positions.length / 3
+  const uv = new Float32Array(count * 2).fill(-1)
+  if (!skin) return uv
+  const px = { x: 0, y: 0 }
+  const p = shell.positions
+  for (let i = 0; i < count; i++) {
+    if (!projectPixel(skin.clip, p[i * 3], p[i * 3 + 1], p[i * 3 + 2], skin.width, skin.height, px)) continue
+    uv[i * 2] = px.x / skin.width
+    uv[i * 2 + 1] = skin.topDown ? px.y / skin.height : 1 - px.y / skin.height
+  }
+  return uv
 }
 
 export interface ObjectInit {
@@ -95,6 +113,9 @@ export class ObjectPiece implements RoomPiece {
   private remote: boolean
   private skin: Skin | null
   private own: Texture | null = null
+  private readonly shell: Shell
+  /** It has a camera picture. */
+  private pictured: boolean
   private freed = false
   private since = 0
   private landT = -1
@@ -106,6 +127,8 @@ export class ObjectPiece implements RoomPiece {
 
   constructor(init: ObjectInit) {
     const { shell } = init
+    this.shell = shell
+    this.pictured = init.skin !== null
     this.scale = init.scale
     this.remote = init.remote
     this.skin = init.skin
@@ -116,7 +139,7 @@ export class ObjectPiece implements RoomPiece {
     this.hand.copy(init.start)
 
     const geo = shellGeometry(shell)
-    geo.setAttribute('aUv', new BufferAttribute(this.imageCoords(shell), 2))
+    geo.setAttribute('aUv', new BufferAttribute(shellImageCoords(shell, this.skin), 2))
     this.mat = shellMaterial(init.palette)
     if (this.skin) {
       this.mat.uniforms.uMap.value = this.skin.texture
@@ -131,7 +154,8 @@ export class ObjectPiece implements RoomPiece {
     this.anchor.add(this.mesh)
     this.anchor.position.copy(this.source)
 
-    this.auraMat = auraMaterial(init.palette)
+    // The light on the real thing is its ghost, with no picture: a pale shape and a bright outline.
+    this.auraMat = ghostMaterial(init.palette)
     this.auraMat.uniforms.uLow.value = shell.bottom - shell.cy
     this.auraMat.uniforms.uSpan.value = Math.max(0.02, this.stand * 2)
     this.aura = new Mesh(geo, this.auraMat)
@@ -146,6 +170,29 @@ export class ObjectPiece implements RoomPiece {
 
   center(out: Vector3): Vector3 {
     return out.copy(this.anchor.position)
+  }
+
+  /** Its points are kept where they were in the room, so a picture can be found for them at any time. */
+  get needsSkin(): boolean {
+    return !this.pictured && !this.disposed
+  }
+
+  setSkin(skin: Skin): void {
+    if (!this.needsSkin) {
+      skin.dispose()
+      return
+    }
+    this.skin = skin
+    this.pictured = true
+    const geo = this.mesh.geometry
+    const uv = geo.getAttribute('aUv') as BufferAttribute
+    ;(uv.array as Float32Array).set(shellImageCoords(this.shell, skin))
+    uv.needsUpdate = true
+    this.mat.uniforms.uMap.value = skin.texture
+    this.mat.uniforms.uHasMap.value = 1
+    this.mat.uniforms.uEncode.value = skin.linear ? 1 : 0
+    this.mat.uniforms.uUvRect.value.set(0, 0, 1, 1)
+    this.cropSkin(geo)
   }
 
   get loose(): boolean {
@@ -272,8 +319,8 @@ export class ObjectPiece implements RoomPiece {
     u.uShow.value = this.show
     u.uHeat.value = this.heat + (this.state === 'lifting' ? 0.25 * this.amount : 0)
     const a = this.auraMat.uniforms
-    a.uLevel.value = this.open
-    a.uTime.value = this.time
+    a.uLevel.value = Math.min(1, this.open) * 0.75
+    a.uTime.value = REDUCE_MOTION ? 0 : this.time
     this.aura.visible = this.open > 0.004
   }
 
@@ -355,22 +402,6 @@ export class ObjectPiece implements RoomPiece {
       this.anchor.scale.setScalar(1)
       this.state = 'stuck'
     }
-  }
-
-  /** Where each point of the shell sits in the camera's picture, 0..1. Out of range where the camera did not see. */
-  private imageCoords(shell: Shell): Float32Array {
-    const count = shell.positions.length / 3
-    const uv = new Float32Array(count * 2).fill(-1)
-    const skin = this.skin
-    if (!skin) return uv
-    const px = { x: 0, y: 0 }
-    const p = shell.positions
-    for (let i = 0; i < count; i++) {
-      if (!projectPixel(skin.clip, p[i * 3], p[i * 3 + 1], p[i * 3 + 2], skin.width, skin.height, px)) continue
-      uv[i * 2] = px.x / skin.width
-      uv[i * 2 + 1] = skin.topDown ? px.y / skin.height : 1 - px.y / skin.height
-    }
-    return uv
   }
 
   /** Keep only the part of the camera frame this thing shows. */

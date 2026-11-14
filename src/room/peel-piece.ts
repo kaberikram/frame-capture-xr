@@ -68,6 +68,10 @@ export interface RoomPiece {
   contains(point: Vector3): number
   /** How far along a ray the piece is, or -1. */
   rayHit(origin: Vector3, dir: Vector3): number
+  /** It came without a camera picture, and one can still be given. */
+  readonly needsSkin: boolean
+  /** Give it the camera picture it came without. It owns the skin from here on. */
+  setSkin(skin: Skin): void
   drag(hand: Vector3): void
   letGo(): void
   grab(hand: Vector3, remote?: boolean): void
@@ -80,6 +84,9 @@ export interface RoomPiece {
 
 /** Seconds a piece takes to let go of the wall and become one loose sheet. */
 const FREE_TIME = 0.32
+/** Seconds the light holds where a piece left, and how slowly it then goes. */
+const HOLE_HOLD = 1.4
+const HOLE_FADE = 0.7
 /** Seconds it takes to lie down on a surface. */
 const LAND_TIME = 0.36
 /** How closely a carried piece trails the hand, seconds. */
@@ -151,6 +158,12 @@ export interface PieceInit {
   palette: Palette
   /** `?peel=1.3` makes it take more pull. */
   scale: number
+  /**
+   * The size and torn shape the outline showed before the pinch. Given, the
+   * piece is that size from the start; left out, it grows with the pull.
+   */
+  radius?: number
+  seed?: number
 }
 
 /**
@@ -202,6 +215,10 @@ export class PeelPiece implements RoomPiece {
   private readonly aside = new Vector3()
   private readonly matrix = new Matrix4()
   private readonly scale: number
+  /** The outline set the size before the pinch: pulling does not grow it. */
+  private fixedSize = false
+  /** It has a camera picture. */
+  private pictured = false
   private skin: Skin | null
   private own: Texture | null = null
   private freeT = -1
@@ -213,6 +230,8 @@ export class PeelPiece implements RoomPiece {
   private tiltX = 0
   private tiltY = 0
   private time = 0
+  /** Seconds since it left the wall. */
+  private since = 0
   private disposed = false
 
   constructor(init: PieceInit) {
@@ -230,11 +249,16 @@ export class PeelPiece implements RoomPiece {
     readRelief(field, this.source, basis, this.normal, this.h0)
     this.h1.set(this.h0)
 
-    const seed = Math.random() * 40
+    const seed = init.seed ?? Math.random() * 40
+    if (init.radius !== undefined) {
+      this.radius = init.radius
+      this.fixedSize = true
+    }
     const geo = gridGeometry(this.h0)
     geo.setAttribute('aH1', new BufferAttribute(this.h1, 1))
     geo.setAttribute('aUv', new BufferAttribute(this.imageCoords(), 2))
     this.mat = pieceMaterial(palette, seed)
+    this.pictured = this.skin !== null
     if (this.skin) {
       this.mat.uniforms.uMap.value = this.skin.texture
       this.mat.uniforms.uHasMap.value = 1
@@ -271,9 +295,36 @@ export class PeelPiece implements RoomPiece {
     return this.state === 'free' || this.state === 'stuck'
   }
 
-  /** The light has opened for good: the piece left the wall. */
+  /** The light has opened: the piece left the wall. */
   get parted(): boolean {
     return this.freeT >= 0
+  }
+
+  /** The light where it left has gone again. */
+  get closed(): boolean {
+    return this.freeT >= 0 && this.since > HOLE_HOLD && this.open < 0.01
+  }
+
+  /** Where each point sits in a picture is worked out on the surface it came from, so only until it lands somewhere else. */
+  get needsSkin(): boolean {
+    return !this.pictured && !this.disposed && this.landT < 0
+  }
+
+  setSkin(skin: Skin): void {
+    if (!this.needsSkin) {
+      skin.dispose()
+      return
+    }
+    this.skin = skin
+    this.pictured = true
+    const uv = this.attribute('aUv')
+    ;(uv.array as Float32Array).set(this.imageCoords())
+    uv.needsUpdate = true
+    this.mat.uniforms.uMap.value = skin.texture
+    this.mat.uniforms.uHasMap.value = 1
+    this.mat.uniforms.uEncode.value = skin.linear ? 1 : 0
+    this.mat.uniforms.uUvRect.value.set(0, 0, 1, 1)
+    this.cropSkin()
   }
 
   contains(point: Vector3): number {
@@ -306,7 +357,7 @@ export class PeelPiece implements RoomPiece {
     this.pullLocal.set(this.scratch.dot(this.tangent), this.scratch.dot(this.bitangent), out)
     this.pull = this.pullLocal.length()
     this.amount = pullAmount(this.pull, this.scale)
-    this.radius = Math.max(this.radius, pieceRadius(this.pull, this.scale))
+    if (!this.fixedSize) this.radius = Math.max(this.radius, pieceRadius(this.pull, this.scale))
     if (peelFate(this.pull, this.scale) === 'pop') {
       this.part()
       this.state = 'carried'
@@ -419,7 +470,11 @@ export class PeelPiece implements RoomPiece {
         if (this.freeT >= 1) this.fold()
       }
       if (this.state !== 'fading') {
-        this.open += (1 - this.open) * Math.min(1, dt * 7)
+        // The light stays a moment where the piece left, then goes. The wall is
+        // left as it was, and can be peeled there again.
+        this.since += dt
+        const goal = this.since < HOLE_HOLD ? 1 : Math.exp(-(this.since - HOLE_HOLD) / HOLE_FADE)
+        this.open += (goal - this.open) * Math.min(1, dt * 7)
         this.show = 1
       }
     }

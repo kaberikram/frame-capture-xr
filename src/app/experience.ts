@@ -73,6 +73,27 @@ export function launchSession(launch: () => void, requestCamera: boolean, reques
   }
 }
 
+/**
+ * Room features the peel page never reads. Plane and mesh detection come from
+ * Meta's Space Setup scan, and hit-test from the same machinery; frame capture
+ * uses them to stick photos to walls. The peel page builds its own room from
+ * live depth, so it does not ask for them, and works in a room nobody scanned.
+ */
+const UNUSED_ON_PEEL = ['plane-detection', 'mesh-detection', 'hit-test']
+
+/**
+ * The browser can offer a session itself, from its own Enter button. Give
+ * that session the same camera and depth (and leave out the same unused
+ * features) as the page's own button, so both ways in work the same. Call
+ * before the world is created: that is when the offer is made.
+ */
+export function prepareOffer(requestDepth: boolean): void {
+  const xr = navigator.xr as (XRSystem & { offerSession?: XRSystem['requestSession'] }) | undefined
+  if (!xr || typeof xr.offerSession !== 'function') return
+  const original = xr.offerSession.bind(xr)
+  xr.offerSession = ((sessionMode, init) => requestWith(original, sessionMode, init, true, requestDepth)) as XRSystem['requestSession']
+}
+
 type SessionInit = XRSessionInit & {
   depthSensing?: { usagePreference: string[]; dataFormatPreference: string[] }
 }
@@ -84,7 +105,9 @@ function requestWith(
   camera: boolean,
   depth: boolean,
 ): Promise<XRSession> {
-  const next: SessionInit = { ...init, optionalFeatures: [...(init?.optionalFeatures ?? [])] }
+  const keep = (feature: string) => !PEEL || !UNUSED_ON_PEEL.includes(feature)
+  const next: SessionInit = { ...init, optionalFeatures: (init?.optionalFeatures ?? []).filter(keep) }
+  if (init?.requiredFeatures) next.requiredFeatures = init.requiredFeatures.filter(keep)
   if (camera && !next.optionalFeatures?.includes('camera-access')) next.optionalFeatures?.push('camera-access')
   if (depth && !next.optionalFeatures?.includes('depth-sensing')) next.optionalFeatures?.push('depth-sensing')
   if (depth) {

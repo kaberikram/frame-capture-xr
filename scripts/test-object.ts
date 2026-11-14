@@ -1,6 +1,6 @@
 import { focusRect, viewFromDepth } from '../src/room/depth-project.ts'
 import { RoomField, surfacePoint } from '../src/room/field.ts'
-import { liftShell, PIECE_REACH, type FieldBlock } from '../src/room/object.ts'
+import { liftShell, pickShell, PIECE_REACH, type FieldBlock } from '../src/room/object.ts'
 
 function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message)
@@ -200,6 +200,51 @@ if (lifted) {
   const seenArea = 2 * Math.PI * 0.13 * 0.13
   assert(area > seenArea * 0.4, `most of the seen side of the ball comes away, ${(area / seenArea).toFixed(2)} of it`)
   assert(lifted.bottom > 0.62, `the stand stays behind, lowest point ${lifted.bottom.toFixed(3)}`)
+}
+
+// The fine field sees only a small window. A wall seen through one must not pass for a closed thing.
+{
+  const eye = { x: 0, y: 1.4, z: 0 }
+  const fineWall = new RoomField(0.02, 300, 2)
+  let s = 7
+  const r = () => ((s = (s * 16807) % 2147483647) / 2147483647)
+  for (let pass = 0; pass < 8; pass++) {
+    const rays = []
+    const jx = r()
+    const jy = r()
+    for (let y = 0; y < 20; y++) for (let x = 0; x < 28; x++) {
+      rays.push({ ox: eye.x, oy: eye.y, oz: eye.z, px: ((x + jx) / 28 - 0.5) * 0.5, py: 1.3 + ((y + jy) / 20 - 0.5) * 0.36, pz: -1.2 + (r() - 0.5) * 0.01 })
+    }
+    fineWall.integrate(rays)
+  }
+  const at = fineWall.surfaceAlong(eye.x, eye.y, eye.z, 0, -0.1, -1.2, 3, surfacePoint())
+  assert(at !== null, 'the windowed wall is there')
+  if (at) {
+    const fine = liftShell(fineWall, at, eye)
+    const coarse = liftShell(room(0.04, (_x, _y, z) => z + 1.2), at, eye)
+    assert(coarse !== null && coarse.kind === 'piece' && coarse.runsOn, 'the coarse field sees the wall run on')
+    const picked = pickShell(coarse, fine)
+    assert(picked !== null && picked.kind === 'piece', `a wall seen through a small window is a piece of wall, got ${picked?.kind} (fine said ${fine?.kind})`)
+  }
+  // A box on a table: the coarse field sees the table, which does not run on in the same way, so the fine box stands.
+  const box = (x: number, y: number, z: number) => Math.max(Math.abs(x + 0.2) - 0.07, Math.abs(y - 0.81) - 0.06, Math.abs(z) - 0.07)
+  const table = (x: number, y: number, z: number) => (Math.abs(x) < 0.5 && Math.abs(z) < 0.4 ? y - 0.75 : 1)
+  const scene = (x: number, y: number, z: number) => Math.min(box(x, y, z), table(x, y, z))
+  const seedTop = { x: -0.2, y: 0.87, z: 0, nx: 0, ny: 1, nz: 0 }
+  const view = { x: 0, y: 1.5, z: 1.2 }
+  const fineBox = liftShell(room(0.02, scene), seedTop, view)
+  const coarseBox = liftShell(room(0.04, scene), seedTop, view)
+  const pickedBox = pickShell(coarseBox, fineBox)
+  assert(pickedBox !== null && pickedBox.kind === 'object', `a box on a table stays a thing, got ${pickedBox?.kind} (coarse ${coarseBox?.kind}${coarseBox?.runsOn ? ' runs on' : ''})`)
+  // The ball on its stand, the same.
+  const ballScene = room(0.04, (x, y, z) => Math.min(Math.hypot(x, y - 0.85, z) - 0.1, table(x, y, z)))
+  const ballSeed = { x: 0, y: 0.86, z: 0.1, nx: 0, ny: 0, nz: 1 }
+  const pickedBall = pickShell(liftShell(ballScene, ballSeed, view), liftShell(room(0.02, (x, y, z) => Math.min(Math.hypot(x, y - 0.85, z) - 0.1, table(x, y, z))), ballSeed, view))
+  assert(pickedBall !== null && pickedBall.kind === 'object', `a ball on a table stays a thing, got ${pickedBall?.kind}`)
+  // A ball 4 cm in front of a wall: the coarse field runs it into the wall, but the fine one sees it has depth of its own.
+  const wallBall = (x: number, y: number, z: number) => Math.min(Math.hypot(x, y - 0.85, z) - 0.1, z + 0.14)
+  const nearWall = pickShell(liftShell(room(0.04, wallBall), ballSeed, view), liftShell(room(0.02, wallBall), ballSeed, view))
+  assert(nearWall !== null && nearWall.kind === 'object', `a ball in front of a wall stays a thing, got ${nearWall?.kind}`)
 }
 
 console.log('object ok')

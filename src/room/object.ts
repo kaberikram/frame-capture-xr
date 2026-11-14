@@ -19,6 +19,11 @@ export interface FieldBlock {
 export interface Shell {
   /** `object` is a whole thing. `piece` is a round piece of something bigger. */
   kind: 'object' | 'piece'
+  /**
+   * A piece because the surface runs on past arm's reach, as a wall or a sofa
+   * does, and not only because the pinch was on a big level surface.
+   */
+  runsOn: boolean
   /** World positions, xyz for each vertex. */
   positions: Float32Array
   indices: Uint32Array
@@ -289,6 +294,7 @@ export function liftShell(
 
   let kind: Shell['kind'] = 'object'
   let filled = onTable ? { cells: [], open: true } : fill(reach, floor)
+  const runsOn = !onTable && filled.open
   if (filled.open) {
     // It runs on past reach, so it is not one thing. Take a round piece of it.
     kind = 'piece'
@@ -430,6 +436,7 @@ export function liftShell(
   }
   return {
     kind,
+    runsOn,
     positions,
     indices: Uint32Array.from(indices),
     edge,
@@ -522,4 +529,26 @@ function smooth(positions: Float32Array, indices: readonly number[], passes: num
       }
     }
   }
+}
+
+/**
+ * Choose between the shell the coarse field gives (it covers the whole view,
+ * 4 cm to a voxel) and the one the fine field gives (2 cm, but only a small
+ * window around what has your attention).
+ *
+ * The fine window can end before a wall does, and then a patch of wall looks
+ * like a closed thing. The coarse field sees past it: if there the surface runs
+ * on past arm's reach, it is part of something big. If the coarse field instead
+ * found a bigger whole thing, the fine window only covered part of it.
+ */
+/** A shell shallower than this is a patch of a surface, not a thing, metres. */
+const FLAT_PATCH = 0.025
+
+export function pickShell(coarse: Shell | null, fine: Shell | null): Shell | null {
+  if (!fine) return coarse
+  if (!coarse) return fine
+  // Only a flat patch: a thing standing just in front of a wall has depth of its own.
+  if (fine.kind === 'object' && coarse.kind === 'piece' && coarse.runsOn && fine.relief < FLAT_PATCH) return coarse
+  if (coarse.kind === 'object' && coarse.radius > fine.radius * 1.4 + 0.05) return coarse
+  return fine
 }

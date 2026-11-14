@@ -76,6 +76,7 @@ export class CaptureSystem extends createSystem({
   private readonly reach = new Vector3()
   private readonly headAt = new Vector3()
   private readonly gaze = new Vector3()
+  private readonly handJoints = Array.from({ length: 64 }, () => new Vector3())
   /** A piece has been carried at least once, so the hint for it can retire. */
   private pointer!: DeskPointer
   private shot!: DeskShot
@@ -229,7 +230,8 @@ export class CaptureSystem extends createSystem({
         this.warp.update(dt, now, true, this.camera.aspect)
       }
       this.rig.rearm(now)
-      this.surfaces.arm(this.session)
+      // Hit-test is only for sticking frame capture's photos to walls.
+      if (!PEEL) this.surfaces.arm(this.session)
     } else {
       this.scene.background = this.deskColor
       this.standIn.visible = true
@@ -362,7 +364,7 @@ export class CaptureSystem extends createSystem({
     }
     const features = (session as XRSession & { enabledFeatures?: readonly string[] }).enabledFeatures
     console.info(`[frame] session ${features ? features.join(' ') : 'features unlisted'}`)
-    this.surfaces.arm(session)
+    if (!PEEL) this.surfaces.arm(session)
   }
 
   /** The frame being drawn: a line of light with a faint warm wash inside, following the live rectangle. */
@@ -453,9 +455,8 @@ export class CaptureSystem extends createSystem({
       const away = this.reach.length()
       if (away > 0.2 && this.reach.dot(this.gaze) / away > 0.5) ready = true
     }
-    const left = this.hands.pose.left
-    const right = this.hands.pose.right
-    this.room.setHands(left.tracked ? left.palm : null, right.tracked ? right.palm : null)
+    // Every joint, not the palm: the palm is a direction, and a hand is bigger than a point.
+    this.room.setHandJoints(this.handJoints, this.hands.collectJoints(this.handJoints))
     this.room.look(this.headAt, this.gaze, ready)
   }
 
@@ -531,6 +532,7 @@ export class CaptureSystem extends createSystem({
       pool: this.room.poolLevel,
       kind: this.room.kind,
       attention: this.room.attention,
+      outline: this.room.outline,
     })
   }
 
