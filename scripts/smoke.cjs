@@ -107,8 +107,40 @@ function check(ok, message, failures) {
   if (!ok) failures.push(message)
 }
 
-async function room(browser, failures) {
+// Without `flat=1`, everything a pinch takes is a piece of the depth mesh in its own shape, with its ghost shown first.
+async function mesh(browser, failures) {
   const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0')
+  const api = () => page.evaluate(() => ({ ...window.__capture }))
+  const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
+  await until((s) => s.roomChunks > 150, 20000)
+  const box = await page.locator('#scene-container').boundingBox()
+  const wx = (box?.x ?? 0) + (box?.width ?? 960) * 0.2
+  const wy = (box?.y ?? 0) + (box?.height ?? 640) * 0.36
+  await page.mouse.move(wx - 20, wy)
+  await page.mouse.move(wx, wy)
+  let state = await until((s) => s.roomAttention > 0.5, 6000)
+  check(state.roomAttention > 0.5 && state.roomOutline < 0.05, `mesh: a bare wall shows a ghost of its own surface, not a flat outline (ghost ${state.roomAttention.toFixed(2)}, outline ${state.roomOutline.toFixed(2)})`, failures)
+  state = await until((s) => s.roomMesh > 3, 6000)
+  check(state.roomMesh > 3, `mesh: the live mesh forms on the wall under the cursor (${state.roomMesh} chunks)`, failures)
+  await page.mouse.down()
+  await page.mouse.move(wx, wy - 30, { steps: 6 })
+  await page.waitForTimeout(300)
+  state = await api()
+  check(state.roomPiece === 'lifting' && state.roomKind === 'object', `mesh: a pinch on the wall takes a piece of the mesh (got ${state.roomPiece}, ${state.roomKind})`, failures)
+  await page.mouse.move(wx, wy - 110, { steps: 10 })
+  state = await until((s) => s.roomPiece === 'carried', 4000)
+  check(state.roomPiece === 'carried', `mesh: it comes away (got ${state.roomPiece})`, failures)
+  // Its ghost lingers on the wall for a second or so, then nothing is left.
+  state = await until((s) => s.roomLights === 0, 4000)
+  check(state.roomLights === 0, `mesh: no light is left on the wall (lights ${state.roomLights})`, failures)
+  await page.mouse.up()
+  check(errors.length === 0, `mesh: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  await context.close()
+}
+
+async function room(browser, failures) {
+  // `flat=1` keeps the flat peel for bare surfaces, which these checks are about.
+  const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0&flat=1')
   const api = () => page.evaluate(() => ({
     room: window.__capture.room,
     chunks: window.__capture.roomChunks,
@@ -228,6 +260,7 @@ async function peelHeadset(browser, failures, usage) {
   const api = () => page.evaluate(() => ({ ...window.__capture }))
   check(await until(async () => logs.some((l) => l.includes('depth-sensing')), 30000), `${name}: the session is granted depth sensing`, failures)
   check(await until(async () => logs.some((l) => l.includes(`room depth is ${usage}-optimized`)), 20000), `${name}: depth arrives the ${usage} way`, failures)
+  check(await until(async () => (await api()).roomMesh > 3, 30000), `${name}: the live mesh forms where you look (${(await api()).roomMesh} chunks)`, failures)
   check(await until(async () => (await api()).roomChunks > 220, 40000), `${name}: depth builds the room (chunks ${(await api()).roomChunks})`, failures)
   const hand = (p) => page.evaluate(([x, y, z]) => window.IWER_DEVICE.hands.right.position.set(x, y, z), p)
   // Reach forward until light gathers under the fingertip: that is a surface.
@@ -466,6 +499,7 @@ async function headset(browser, failures, leaveHandInFrame) {
       await headset(browser, failures, false)
       await headset(browser, failures, true)
     }
+    await mesh(browser, failures)
     await peelHeadset(browser, failures, 'cpu')
     await peelHeadset(browser, failures, 'gpu')
     if (shotsDir) await holds(browser, failures)

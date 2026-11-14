@@ -56,6 +56,8 @@ interface Chunk {
   weight: Uint8Array
   seen: number
   dirty: boolean
+  /** Its smooth mesh is out of date. */
+  stale: boolean
   positions: Float32Array
   normals: Float32Array
 }
@@ -89,6 +91,23 @@ export interface SurfacePoint {
 export function surfacePoint(): SurfacePoint {
   return { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, dist: 0 }
 }
+
+/** One chunk of the live mesh: a smooth surface through the field, in world metres. Empty when the chunk holds no surface. */
+export interface NetMesh {
+  key: string
+  positions: Float32Array
+  indices: Uint16Array
+}
+
+const netBlock = new Float32Array((CHUNK + 2) ** 3)
+const netVertex = new Int32Array((CHUNK + 1) ** 3)
+/** The eight corners of a cube, and its twelve edges as a corner and a direction. */
+const NET_CORNER = [0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1]
+const NET_EDGE = [
+  0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0,
+  0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
+  0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1,
+]
 
 /** One number for a chunk's place, so a lookup does not build a string. Good for ±160 m. */
 function chunkId(cx: number, cy: number, cz: number): number {
@@ -180,6 +199,7 @@ export class RoomField {
           cell.chunk.tsdf[cell.index] = 127
           cell.chunk.weight[cell.index] = 32
           cell.chunk.dirty = true
+          cell.chunk.stale = true
           cell.chunk.seen = this.clock
         }
       }
@@ -206,6 +226,7 @@ export class RoomField {
           cell.chunk.tsdf[cell.index] = 0
           cell.chunk.weight[cell.index] = 0
           cell.chunk.dirty = true
+          cell.chunk.stale = true
         }
       }
     }
@@ -506,6 +527,112 @@ export class RoomField {
     return values
   }
 
+  /**
+   * Smooth meshes (surface nets) for chunks whose field has changed, nearest
+   * to `near` first, until `budgetMs` is spent. Each chunk meshes the cubes it
+   * owns and reads one voxel into its neighbours, so chunks join without gaps.
+   * This is the live mesh: call it every frame with a small budget.
+   */
+  netStale(budgetMs: number, near: { x: number; y: number; z: number }, reach: number): NetMesh[] {
+    const out: NetMesh[] = []
+    const v = this.voxel
+    const stale: Chunk[] = []
+    const r2 = (reach + CHUNK * v) * (reach + CHUNK * v)
+    for (const chunk of this.chunks.values()) {
+      if (chunk.stale && chunkDist(chunk, near.x, near.y, near.z, v) <= r2) stale.push(chunk)
+    }
+    if (stale.length === 0) return out
+    stale.sort((a, b) => chunkDist(a, near.x, near.y, near.z, v) - chunkDist(b, near.x, near.y, near.z, v))
+    const start = performance.now()
+    for (let i = 0; i < stale.length; i++) {
+      out.push(this.netChunk(stale[i]))
+      if (performance.now() - start > budgetMs) break
+    }
+    return out
+  }
+
+  private netChunk(chunk: Chunk): NetMesh {
+    chunk.stale = false
+    const v = this.voxel
+    // Voxels -1..CHUNK of this chunk: the cubes between them are cells -1..CHUNK-1.
+    const n = CHUNK + 2
+    const m = n - 1
+    const x0 = chunk.ix * CHUNK - 1
+    const y0 = chunk.iy * CHUNK - 1
+    const z0 = chunk.iz * CHUNK - 1
+    const values = this.grid(x0, y0, z0, n, n, n, netBlock)
+    const nn = n * n
+    const mm = m * m
+    const vertexOf = netVertex
+    vertexOf.fill(-1)
+    const positions: number[] = []
+    for (let k = 0; k < m; k++) {
+      for (let j = 0; j < m; j++) {
+        for (let i = 0; i < m; i++) {
+          const at = i + j * n + k * nn
+          let sx = 0
+          let sy = 0
+          let sz = 0
+          let crossings = 0
+          let known = 0
+          for (let c = 0; c < 8; c++) {
+            const value = values[at + NET_CORNER[c * 3] + NET_CORNER[c * 3 + 1] * n + NET_CORNER[c * 3 + 2] * nn]
+            if (value === value) known++
+          }
+          if (known < 4) continue
+          for (let e = 0; e < 12; e++) {
+            const ax = NET_EDGE[e * 6]
+            const ay = NET_EDGE[e * 6 + 1]
+            const az = NET_EDGE[e * 6 + 2]
+            const dx = NET_EDGE[e * 6 + 3]
+            const dy = NET_EDGE[e * 6 + 4]
+            const dz = NET_EDGE[e * 6 + 5]
+            const a = values[at + ax + ay * n + az * nn]
+            const b = values[at + ax + dx + (ay + dy) * n + (az + dz) * nn]
+            if (a !== a || b !== b || a > 0 === b > 0) continue
+            const t = a / (a - b)
+            sx += ax + dx * t
+            sy += ay + dy * t
+            sz += az + dz * t
+            crossings++
+          }
+          if (crossings === 0) continue
+          vertexOf[i + j * m + k * mm] = positions.length / 3
+          positions.push((x0 + i + 0.5 + sx / crossings) * v, (y0 + j + 0.5 + sy / crossings) * v, (z0 + k + 0.5 + sz / crossings) * v)
+        }
+      }
+    }
+    const indices: number[] = []
+    const quad = (a: number, b: number, c: number, d: number, flip: boolean) => {
+      const va = vertexOf[a]
+      const vb = vertexOf[b]
+      const vc = vertexOf[c]
+      const vd = vertexOf[d]
+      if (va < 0 || vb < 0 || vc < 0 || vd < 0) return
+      if (flip) indices.push(va, vc, vb, va, vd, vc)
+      else indices.push(va, vb, vc, va, vc, vd)
+    }
+    // The voxel edges this chunk owns start at its own voxels: block indices 1..CHUNK.
+    for (let k = 1; k <= CHUNK; k++) {
+      for (let j = 1; j <= CHUNK; j++) {
+        for (let i = 1; i <= CHUNK; i++) {
+          const at = i + j * n + k * nn
+          const here = values[at]
+          if (here !== here) continue
+          const cell = i + j * m + k * mm
+          const flip = here > 0
+          let there = values[at + 1]
+          if (there === there && flip !== there > 0) quad(cell - m - mm, cell - mm, cell, cell - m, flip)
+          there = values[at + n]
+          if (there === there && flip !== there > 0) quad(cell - 1 - mm, cell - 1, cell, cell - mm, flip)
+          there = values[at + nn]
+          if (there === there && flip !== there > 0) quad(cell - 1 - m, cell - m, cell, cell - 1, flip)
+        }
+      }
+    }
+    return { key: chunk.key, positions: Float32Array.from(positions), indices: Uint16Array.from(indices) }
+  }
+
   /** Keys of chunks that currently exist, oldest last is not promised. */
   listChunks(): string[] {
     return [...this.chunks.keys()]
@@ -657,6 +784,7 @@ export class RoomField {
     chunk.tsdf[index] = stored
     chunk.weight[index] = nw
     chunk.dirty = true
+    chunk.stale = true
     chunk.seen = this.clock
   }
 
@@ -678,6 +806,7 @@ export class RoomField {
         weight: new Uint8Array(CELLS),
         seen: this.clock,
         dirty: true,
+        stale: true,
         positions: new Float32Array(0),
         normals: new Float32Array(0),
       }

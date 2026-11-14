@@ -120,27 +120,17 @@ An echo photo can include a hand that was in the pane a moment ago, even after t
 
 `/peel` is its own page. Nothing is drawn on the room, and nothing is written in the air, until you mean to take something. It needs no room scan: the headset's live depth builds the room as you look around (see How it works).
 
-**You always see what a pinch will take, before you pinch.**
+**You see the live mesh form.** Wherever you look, a fine grid of light grows over the real surfaces there, about 70 cm across, wrapping the shape of whatever it lies on, and small motes of light drift in and settle as the headset measures them. It moves on with your look and fades behind it. This is the depth mesh being built as you watch; nothing comes from a room scan. It is hidden behind your hand. `?mesh=0` hides the grid and `?motes=0` the motes.
 
-- **A thing** (a CD case, a mug, a bag): bring a hand near it, or raise an open hand and look at it. A ghost of it shows over it: a pale copy of the thing in its own shape, standing a few millimetres off the real one, with a bright line where its shape turns away and where it ends. It leans toward you as the hand nears. Move off the thing and the ghost goes.
-- **A bare surface** (a wall, a tabletop): bring a fingertip near it. The torn outline of the piece draws itself around from the side nearest your finger, with a faint groove outside it. It glides with the finger.
+**You always see what a pinch will take, before you pinch.** Bring a hand near anything, or raise an open hand and look at a thing across the room. A ghost of the depth mesh shows there: a pale copy in the real shape of the surface, standing a few millimetres off it, with a bright line where it turns away and where it ends. A whole thing (a mug, a bag) shows as itself. Part of something bigger (a wall, a sofa, a tabletop) shows as a round piece about 38 cm across, in its real relief. The ghost is hidden behind your hand, the way the real thing is.
 
-A pinch takes exactly what was showing, wherever the fingers are: that thing, or that cut at that size and in that torn shape.
+**Pinch and pull.** A copy of that piece of mesh slides out, wearing the camera's picture of it, taken before your hand got in the way. Pinched from across the room, about 9 cm of pull and it comes away and floats over to your hand. Let go sooner and it sinks back. The ghost stays on the real thing for a second or so, then goes. Nothing is left on your room.
 
-**Lift a thing.**
+**Carry it, let it go, set it down.** It trails your hand and leans into the movement. Let go in open air and it floats, drifting on a little if you were moving. Let go over a table or the floor and it is set down there. Look at a floating piece and pinch to call it back to your hand, or pinch it directly.
 
-1. **Pinch, and pull a little.** A copy slides out of the real thing, wearing the camera's picture of it, taken before your hand got in the way. Pinched from across the room, about 9 cm of pull and it comes away and floats over to your hand. Let go sooner and it sinks back.
-2. **The ghost stays on the real thing** for a second or so, then goes. Nothing is left on your room.
-3. **Carry it, let it go, set it down.** It trails your hand and leans into the movement. Let go in open air and it floats, drifting on a little if you were moving. Let go over a table or the floor and it is set down there, standing on its base. Look at a floating piece and pinch to call it back to your hand, or pinch it directly.
+Only the side of a thing that the headset has seen comes away. Its far side is open, and from behind the picture glows through like a paper lantern. From across the room only a whole thing can be taken.
 
-Only the side of a thing that the headset has seen comes away. Its far side is open, and from behind the picture glows through like a paper lantern. From across the room only a whole thing can be taken; a bare wall stays where it is.
-
-**Peel a surface.**
-
-1. **Pinch inside the outline and pull.** For the first centimetre nothing gives, like the tack of glue. Then the middle comes up with your fingers while the torn rim holds. The piece is the size its outline showed, about 22 cm across.
-2. **Warm light opens where it was,** faint enough that the wall shows through, with dust drifting out. It holds for a moment, then goes, and the wall can be peeled there again.
-3. **Let go, or keep pulling.** With less than about 3 cm of pull it settles back. Past that it tears free and floats. At about 18 cm it pops free and follows your hand. `?peel=1.3` makes all of these take 30% more pull.
-4. **Lay it down.** Near another surface a soft patch of light shows where it will rest. Let go and it lies down there and takes its shape.
+`?flat=1` brings back the older flat peel for bare surfaces: a torn outline shows first, and a flat piece about 22 cm across peels off, leaving warm light that fades.
 
 Twelve pieces is the limit. The oldest then fades. The page shows no hints. It does not draw frames, has no time window or palm menu, and does not download the depth model.
 
@@ -152,7 +142,9 @@ The piece is a 25 by 25 grid laid on the surface around the pinch, with the heig
 
 The place a piece left is carved out of the field, so new depth does not paint the wall back in behind the light. When the light has gone, about two seconds later, the field there is allowed to fill in again.
 
-A second, finer field (2 cm to a voxel) is kept only around whatever has your attention: what a fingertip is nearing, or what you are looking at with a hand raised. Every other depth pass reads a 70 by 50 cm window there instead of the whole view. `?fine=0` turns it off.
+The live mesh on show is built from the fine field with surface nets, chunk by chunk: each frame the chunks whose field changed are meshed again, nearest your attention first, until 2.5 ms are spent (`RoomField.netStale`, `src/room/live-mesh.ts`). Chunks read one voxel into their neighbours, so they join without gaps.
+
+A second, finer field (2 cm to a voxel) is kept only around whatever has your attention: what a fingertip is nearing, or what you are looking at with a hand raised. Every other depth pass reads an 84 by 60 cm window there instead of the whole view. A pass starts every tenth of a second. `?fine=0` turns it off.
 
 A thing is cut out of the field in `src/room/object.ts`. The fine field only covers a small window, and a wall seen through one can look like a closed shape; so when the coarse field, which sees the whole view, finds that the surface runs on past arm's reach, it is taken as part of something big (`pickShell`). Starting at the pinch, it follows the surface outward, leaving out the level surface the thing stands on, and stops at 42 cm. If the surface ends before that, it is one thing. If it runs on, a 19 cm round piece is taken. The result is a smooth mesh (one vertex per voxel cube the surface crosses), and each vertex finds its place in a camera frame the same way a flat piece does. Depth readings within 5.5 cm of any joint of either hand, or of a few points down each forearm, are left out of the fields, so your hand never becomes part of the room. So are readings that sit part way between a near thing and what is behind it.
 
