@@ -84,6 +84,9 @@ export interface RoomPiece {
 
 /** Seconds a piece takes to let go of the wall and become one loose sheet. */
 const FREE_TIME = 0.32
+/** Seconds the light holds where a piece left, and how slowly it then goes. */
+const HOLE_HOLD = 1.4
+const HOLE_FADE = 0.7
 /** Seconds it takes to lie down on a surface. */
 const LAND_TIME = 0.36
 /** How closely a carried piece trails the hand, seconds. */
@@ -227,6 +230,8 @@ export class PeelPiece implements RoomPiece {
   private tiltX = 0
   private tiltY = 0
   private time = 0
+  /** Seconds since it left the wall. */
+  private since = 0
   private disposed = false
 
   constructor(init: PieceInit) {
@@ -290,9 +295,14 @@ export class PeelPiece implements RoomPiece {
     return this.state === 'free' || this.state === 'stuck'
   }
 
-  /** The light has opened for good: the piece left the wall. */
+  /** The light has opened: the piece left the wall. */
   get parted(): boolean {
     return this.freeT >= 0
+  }
+
+  /** The light where it left has gone again. */
+  get closed(): boolean {
+    return this.freeT >= 0 && this.since > HOLE_HOLD && this.open < 0.01
   }
 
   /** Where each point sits in a picture is worked out on the surface it came from, so only until it lands somewhere else. */
@@ -460,7 +470,11 @@ export class PeelPiece implements RoomPiece {
         if (this.freeT >= 1) this.fold()
       }
       if (this.state !== 'fading') {
-        this.open += (1 - this.open) * Math.min(1, dt * 7)
+        // The light stays a moment where the piece left, then goes. The wall is
+        // left as it was, and can be peeled there again.
+        this.since += dt
+        const goal = this.since < HOLE_HOLD ? 1 : Math.exp(-(this.since - HOLE_HOLD) / HOLE_FADE)
+        this.open += (goal - this.open) * Math.min(1, dt * 7)
         this.show = 1
       }
     }

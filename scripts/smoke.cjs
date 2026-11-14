@@ -167,6 +167,8 @@ async function room(browser, failures) {
   await page.mouse.up()
   state = await until((s) => s.piece === 'stuck', 5000)
   check(state.piece === 'stuck', `peel: let go over the table and it lies down (got ${state.piece})`, failures)
+  state = await until((s) => s.lights === 0, 5000)
+  check(state.lights === 0, `peel: the light where it left fades, and the wall is whole again (lights ${state.lights})`, failures)
 
   // A pull let go part way tears free at that size and floats.
   const [fx, fy] = at(0.72, 0.3)

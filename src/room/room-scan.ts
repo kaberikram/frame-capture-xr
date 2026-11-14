@@ -25,7 +25,7 @@ import { cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../l
 import { focusRect, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
-import { liftShell, type Shell } from './object.js'
+import { liftShell, pickShell, type Shell } from './object.js'
 import { ObjectPiece, shellGeometry, shellImageCoords } from './object-piece.js'
 import { PIECE_MAX, STICK_GAP, TOUCH_GAP, canLand, tangentBasis } from './patch.js'
 import { PeelPiece, type PieceState, type RoomPiece } from './peel-piece.js'
@@ -192,6 +192,8 @@ export class RoomScan {
   private readonly cutHand = new Vector3()
   /** Pieces that came without a camera picture, and when. A later frame that saw the spot will do. */
   private readonly bare = new Map<RoomPiece, number>()
+  /** Flat pieces whose place in the wall has been given back. */
+  private readonly healed = new Set<RoomPiece>()
   private bareWait = 0
   /** The mouse's last ray, on the desk. */
   private readonly mouse = { on: false, origin: new Vector3(), dir: new Vector3(), reach: 3.6, level: 0.8 }
@@ -592,8 +594,14 @@ export class RoomScan {
       piece.step(dt)
       for (let e = 0; e < piece.events.length; e++) this.react(piece, piece.events[e])
       piece.events.length = 0
+      // Once the light where a flat piece left has gone, the wall there is whole again.
+      if (piece instanceof PeelPiece && piece.closed && !this.healed.has(piece)) {
+        this.healed.add(piece)
+        this.field.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+      }
       if (!piece.done) continue
-      if (piece.flat && piece.parted) this.field.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+      if (piece.flat && piece.parted && !this.healed.has(piece)) this.field.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+      this.healed.delete(piece)
       if (this.held === piece) this.held = null
       piece.dispose()
       this.pieces.splice(i, 1)
@@ -635,11 +643,7 @@ export class RoomScan {
     const coarse = liftShell(this.field, hit, this.eye)
     const fine = this.fine
     if (!fine || !fine.near(hit.x, hit.y, hit.z, 0.04, this.hitD)) return coarse
-    const close = liftShell(fine, hit, this.eye)
-    if (!close) return coarse
-    // The close look only covers part of something big. Then the coarse shell is the whole of it.
-    if (coarse && coarse.kind === 'object' && coarse.radius > close.radius * 1.4 + 0.05) return coarse
-    return close
+    return pickShell(coarse, liftShell(fine, hit, this.eye))
   }
 
   /**
