@@ -43,6 +43,8 @@ const POOL_REACH = 0.3
 const LANDING = 2
 /** The size of a piece of bare surface, the same in its outline and when it comes away, metres. */
 const CUT_R = 0.11
+/** A pinch this close to the fingertip a preview follows is that hand's pinch, metres. */
+const OFFER_HAND = 0.12
 /** How far away a thing can be and still be lifted by looking at it, metres. */
 const GAZE_REACH = 3.2
 /** Seconds a look stays live after the hand that was raised closes to pinch. */
@@ -104,8 +106,15 @@ interface Touch {
  * the outline of a cut in a bare surface. A pinch takes exactly this.
  */
 interface Preview {
-  /** The thing whose ghost shows. */
+  /** What the look at the attention last found: a thing, a piece of something big, or nothing. */
   shell: Shell | null
+  /** The thing the ghost is drawn from. Only ever a whole thing. */
+  ghostShell: Shell | null
+  /** What is on offer this frame. A pinch takes only this. */
+  offer: 'ghost' | 'cut' | null
+  /** The fingertip the preview follows, when it came from a hand. */
+  readonly hand: Vector3
+  fromHand: boolean
   /** It was found by looking, not by reaching. */
   remote: boolean
   age: number
@@ -167,6 +176,11 @@ export class RoomScan {
   private jointCount = 0
   private readonly jointLo = new Vector3()
   private readonly jointHi = new Vector3()
+  /** The hands as they were when the last texture depth read was asked for. */
+  private readonly snapJoints = Array.from({ length: MAX_JOINTS }, () => new Vector3())
+  private snapCount = 0
+  private readonly snapLo = new Vector3()
+  private readonly snapHi = new Vector3()
   private held: RoomPiece | null = null
   private landing: SurfacePoint | null = null
   private presenting = false
@@ -253,6 +267,10 @@ export class RoomScan {
     this.group.add(ghost, cut)
     this.preview = {
       shell: null,
+      ghostShell: null,
+      offer: null,
+      hand: new Vector3(),
+      fromHand: false,
       remote: false,
       age: 0,
       wait: 0,
@@ -415,14 +433,17 @@ export class RoomScan {
     if (view) this.eye.copy(view)
     // What you saw is what you get.
     const seen = this.preview
-    if (seen.shell && seen.ghostLevel > 0.25) {
+    // Only the hand the preview follows takes it (or any pinch, when it came from looking).
+    const mine = !seen.fromHand || point.distanceTo(seen.hand) <= OFFER_HAND
+    const ghost = seen.ghostShell
+    if (seen.offer === 'ghost' && ghost && seen.ghostLevel > 0.25 && mine) {
       // A ghost shows only for what the finger is reaching toward or the eye is
       // on. Pinched short of it, it comes to the hand.
-      const away = Math.hypot(point.x - seen.shell.cx, point.y - seen.shell.cy, point.z - seen.shell.cz)
-      this.beginObject(seen.shell, point, away > seen.shell.radius + TOUCH_GAP)
+      const away = Math.hypot(point.x - ghost.cx, point.y - ghost.cy, point.z - ghost.cz)
+      this.beginObject(ghost, point, away > ghost.radius + TOUCH_GAP)
       return true
     }
-    if (seen.cutLevel > 0.25 && point.distanceTo(seen.cutAt) <= CUT_R + POOL_REACH) {
+    if (seen.offer === 'cut' && seen.cutLevel > 0.25 && mine) {
       this.beginCut(point, view)
       return true
     }
@@ -482,11 +503,12 @@ export class RoomScan {
     this.eye.copy(origin)
     const start = new Vector3(surface.x, surface.y, surface.z)
     const seen = this.preview
-    if (seen.shell && seen.ghostLevel > 0.25 && start.distanceTo(this.local.set(seen.shell.cx, seen.shell.cy, seen.shell.cz)) <= seen.shell.radius + 0.03) {
-      this.beginObject(seen.shell, start, false)
+    const ghost = seen.ghostShell
+    if (seen.offer === 'ghost' && ghost && seen.ghostLevel > 0.25 && onShell(ghost, start.x, start.y, start.z)) {
+      this.beginObject(ghost, start, false)
       return surface.dist
     }
-    if (seen.cutLevel > 0.25 && start.distanceTo(seen.cutAt) <= CUT_R) {
+    if (seen.offer === 'cut' && seen.cutLevel > 0.25 && start.distanceTo(seen.cutAt) <= CUT_R) {
       this.beginCut(start, origin)
       return surface.dist
     }
@@ -577,6 +599,16 @@ export class RoomScan {
       this.depthMiss = 0
       this.depthNote = null
       this.preview.shell = null
+      this.preview.ghostShell = null
+      this.preview.offer = null
+      // Hands and the mouse from the other side of the change are gone.
+      for (let i = 0; i < this.touch.length; i++) this.touch[i].on = false
+      for (let i = 0; i < this.pools.length; i++) {
+        this.pools[i].goal = 0
+        this.pools[i].level = 0
+      }
+      this.mouse.on = false
+      this.gazeUntil = -1
       this.preview.ghostLevel = 0
       this.preview.cutLevel = 0
       this.releaseGhostSkin()
@@ -602,9 +634,14 @@ export class RoomScan {
       if (piece instanceof PeelPiece && piece.closed && !this.healed.has(piece)) {
         this.healed.add(piece)
         this.field.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+        this.fine?.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+        this.keepOpenHoles()
       }
       if (!piece.done) continue
-      if (piece.flat && piece.parted && !this.healed.has(piece)) this.field.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+      if (piece.flat && piece.parted && !this.healed.has(piece)) {
+        this.field.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+        this.fine?.heal(piece.source.x, piece.source.y, piece.source.z, piece.radius)
+      }
       this.healed.delete(piece)
       if (this.held === piece) this.held = null
       piece.dispose()
@@ -676,6 +713,17 @@ export class RoomScan {
     }
   }
 
+  /** Healing one hole must not close a neighbouring one whose light is still showing. */
+  private keepOpenHoles(): void {
+    for (let i = 0; i < this.pieces.length; i++) {
+      const other = this.pieces[i]
+      if (!(other instanceof PeelPiece) || !other.parted || other.closed || this.healed.has(other)) continue
+      const at = other.source
+      this.field.carve(at.x, at.y, at.z, other.radius * 0.8)
+      this.fine?.carve(at.x, at.y, at.z, other.radius * 0.8)
+    }
+  }
+
   /** Make room: the oldest piece that nobody is holding goes. */
   private makeRoom(): void {
     let live = 0
@@ -741,7 +789,7 @@ export class RoomScan {
     // one is taken now, across the way the thing is seen.
     const seen = this.preview
     let skin: Skin | null = null
-    if (shell === seen.shell && seen.ghostSkin) {
+    if (shell === seen.ghostShell && seen.ghostSkin) {
       skin = seen.ghostSkin
       seen.ghostSkin = null
       seen.ghostMat.uniforms.uMap.value = null
@@ -821,6 +869,9 @@ export class RoomScan {
         this.aimCut(at)
       }
     }
+    seen.offer = wantGhost ? 'ghost' : wantCut ? 'cut' : null
+    seen.fromHand = hand !== null
+    if (hand) seen.hand.copy(hand)
     this.pictureCut(dt, wantCut > 0)
     const ease = (from: number, to: number, up: number, down: number) =>
       REDUCE_MOTION ? to : from + (to - from) * Math.min(1, dt * (to > from ? up : down))
@@ -839,13 +890,16 @@ export class RoomScan {
     g.uLevel.value = seen.ghostLevel
     g.uNear.value = seen.near
     g.uTime.value = REDUCE_MOTION ? 0 : this.time
-    if (seen.shell && seen.ghost.visible) {
+    if (seen.ghostShell && seen.ghost.visible) {
       // It leans out of the real thing toward you, more as the hand nears.
-      this.scratch.copy(this.eye).sub(this.local.set(seen.shell.cx, seen.shell.cy, seen.shell.cz))
+      this.scratch.copy(this.eye).sub(this.local.set(seen.ghostShell.cx, seen.ghostShell.cy, seen.ghostShell.cz))
       const lean = this.scratch.lengthSq() > 1e-6 ? (0.004 + 0.014 * seen.near) * seen.ghostLevel : 0
       seen.ghost.position.copy(this.local).addScaledVector(this.scratch.normalize(), lean)
     }
-    if (seen.ghostLevel < 0.01 && wantGhost === 0) this.releaseGhostSkin()
+    if (seen.ghostLevel < 0.01 && wantGhost === 0) {
+      this.releaseGhostSkin()
+      seen.ghostShell = null
+    }
 
     const c = seen.cutMat.uniforms
     seen.cut.visible = seen.cutLevel > 0.01
@@ -866,8 +920,11 @@ export class RoomScan {
       seen.cut.quaternion.setFromRotationMatrix(this.basis)
       seen.cut.scale.setScalar(CUT_R * 3)
       // Where the fingertip is over the cut, in the cut's own metres.
-      this.cutHand.copy(hand ?? seen.cutAt).sub(seen.cutAt).applyQuaternion(this.quatInverse(seen.cut))
-      c.uHand.value.set(this.cutHand.x, this.cutHand.y)
+      // The line draws from the side nearest the finger. Without a finger it keeps the last side.
+      if (hand) {
+        this.cutHand.copy(hand).sub(seen.cutAt).applyQuaternion(this.quatInverse(seen.cut))
+        if (this.cutHand.x * this.cutHand.x + this.cutHand.y * this.cutHand.y > 1e-6) c.uHand.value.set(this.cutHand.x, this.cutHand.y)
+      }
     }
   }
 
@@ -919,18 +976,25 @@ export class RoomScan {
   /** Show the ghost of a new thing, wearing the newest picture of it with no hand in the way. */
   private show(shell: Shell | null, remote: boolean): void {
     const seen = this.preview
-    const moved = !seen.shell || !shell || Math.hypot(shell.cx - seen.shell.cx, shell.cy - seen.shell.cy, shell.cz - seen.shell.cz) > 0.08
     seen.shell = shell
     seen.remote = remote
     seen.age = 0
+    // Anything but a whole thing leaves the ghost as it is, fading out on the thing it was.
     if (!shell || shell.kind !== 'object') return
+    const was = seen.ghostShell
+    const moved = !was || Math.hypot(shell.cx - was.cx, shell.cy - was.cy, shell.cz - was.cz) > 0.08
+    seen.ghostShell = shell
     const geo = shellGeometry(shell)
-    this.releaseGhostSkin()
-    const centre = this.centre.set(shell.cx, shell.cy, shell.cz)
-    this.scratch.copy(this.eye).sub(centre)
-    if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
-    const skin = this.takeSkin(centre, this.scratch.normalize(), shell.radius)
-    seen.ghostSkin = skin
+    // The same thing again, as depth fills in: keep the picture taken before the hand arrived.
+    let skin = moved ? null : seen.ghostSkin
+    if (!skin) {
+      const centre = this.centre.set(shell.cx, shell.cy, shell.cz)
+      this.scratch.copy(this.eye).sub(centre)
+      if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
+      skin = this.takeSkin(centre, this.scratch.normalize(), shell.radius)
+      this.releaseGhostSkin()
+      seen.ghostSkin = skin
+    }
     geo.setAttribute('aUv', new BufferAttribute(shellImageCoords(shell, skin), 2))
     seen.ghost.geometry.dispose()
     seen.ghost.geometry = geo
@@ -997,7 +1061,10 @@ export class RoomScan {
   private react(piece: RoomPiece, event: 'freed' | 'landed'): void {
     if (event === 'freed') {
       // New depth must not paint the wall back in behind a flat piece's light.
-      if (piece.flat) this.field.carve(piece.source.x, piece.source.y, piece.source.z, piece.radius * 0.8)
+      if (piece.flat) {
+        this.field.carve(piece.source.x, piece.source.y, piece.source.z, piece.radius * 0.8)
+        this.fine?.carve(piece.source.x, piece.source.y, piece.source.z, piece.radius * 0.8)
+      }
       if (!REDUCE_MOTION) {
         const dust = makeDust(piece.flat ? piece.radius * 0.8 : Math.min(0.14, piece.radius * 0.6), PALETTE, this.pixelScale(), piece.flat ? 70 : 40)
         piece.holeAnchor.add(dust.group)
@@ -1247,6 +1314,8 @@ export class RoomScan {
     const projection = Float32Array.from(info.projectionMatrix ?? view.projectionMatrix)
     const rect: ViewRect | null = close ? focusRect(viewMatrix, projection, this.focus, FOCUS_WIDE, FOCUS_TALL) : null
     const reading = this.gpuDepth.read(this.renderer, info, jx, jy, rect)
+    // The reading comes back a few frames late: mask the hand where it was when the depth was taken.
+    if (reading) this.snapHands()
     if (!reading) return
     reading.then(
       (metres) => {
@@ -1262,7 +1331,7 @@ export class RoomScan {
             this.metres[k] = metres[k]
           }
         }
-        this.fuseGrid(viewMatrix, projection, rect && this.fine ? this.fine : this.field)
+        this.fuseGrid(viewMatrix, projection, rect && this.fine ? this.fine : this.field, true)
       },
       (error: unknown) => {
         console.warn(`[frame] room depth could not be read back: ${error instanceof Error ? error.message : String(error)}`)
@@ -1276,7 +1345,7 @@ export class RoomScan {
    * room and queue them for a field. Readings that are a hand, or the smear
    * between a near thing and what is behind it, are left out.
    */
-  private fuseGrid(viewMatrix: ArrayLike<number>, projection: ArrayLike<number>, field: RoomField): void {
+  private fuseGrid(viewMatrix: ArrayLike<number>, projection: ArrayLike<number>, field: RoomField, snapped = false): void {
     const origin = transformPoint(viewMatrix, { x: 0, y: 0, z: 0 })
     const samples: DepthSample[] = []
     const m = this.metres
@@ -1291,7 +1360,7 @@ export class RoomScan {
         const local = viewFromDepth(projection, this.us[k], this.vs[k], d)
         if (!local) continue
         const world = transformPoint(viewMatrix, local)
-        if (this.isHand(world.x, world.y, world.z)) continue
+        if (this.isHand(world.x, world.y, world.z, snapped)) continue
         samples.push({ ox: origin.x, oy: origin.y, oz: origin.z, px: world.x, py: world.y, pz: world.z })
       }
     }
@@ -1300,14 +1369,25 @@ export class RoomScan {
     this.enqueue(samples, field, field === this.field ? this.scratch : undefined)
   }
 
-  private isHand(x: number, y: number, z: number): boolean {
-    if (this.jointCount === 0) return false
-    const lo = this.jointLo
-    const hi = this.jointHi
+  /** Keep where the hands are now, for a depth reading that will come back later. */
+  private snapHands(): void {
+    const n = this.jointCount
+    this.snapCount = n
+    for (let i = 0; i < n; i++) this.snapJoints[i].copy(this.joints[i])
+    this.snapLo.copy(this.jointLo)
+    this.snapHi.copy(this.jointHi)
+  }
+
+  private isHand(x: number, y: number, z: number, snapped = false): boolean {
+    const count = snapped ? this.snapCount : this.jointCount
+    if (count === 0) return false
+    const joints = snapped ? this.snapJoints : this.joints
+    const lo = snapped ? this.snapLo : this.jointLo
+    const hi = snapped ? this.snapHi : this.jointHi
     if (x < lo.x || y < lo.y || z < lo.z || x > hi.x || y > hi.y || z > hi.z) return false
     const r2 = HAND_CLEAR * HAND_CLEAR
-    for (let i = 0; i < this.jointCount; i++) {
-      const j = this.joints[i]
+    for (let i = 0; i < count; i++) {
+      const j = joints[i]
       const dx = x - j.x
       const dy = y - j.y
       const dz = z - j.z
@@ -1315,6 +1395,7 @@ export class RoomScan {
     }
     return false
   }
+
 
   /** What you are looking at is fused first, so the chunk cap keeps the center of the view. */
   private enqueue(samples: DepthSample[], field: RoomField, forward?: Vector3): void {
@@ -1352,6 +1433,8 @@ export function bindRoomSpace(space: XRReferenceSpace | null): void {
 function onShell(shell: Shell, x: number, y: number, z: number): boolean {
   const reach = 0.035
   if (Math.hypot(x - shell.cx, y - shell.cy, z - shell.cz) > shell.radius + reach) return false
+  // The table it stands on is lower than its lowest point.
+  if (y < shell.bottom - 0.005) return false
   const p = shell.positions
   const r2 = reach * reach
   for (let i = 0; i < p.length; i += 3) {

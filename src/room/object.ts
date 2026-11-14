@@ -541,10 +541,14 @@ function smooth(positions: Float32Array, indices: readonly number[], passes: num
  * on past arm's reach, it is part of something big. If the coarse field instead
  * found a bigger whole thing, the fine window only covered part of it.
  */
+/** A shell shallower than this is a patch of a surface, not a thing, metres. */
+const FLAT_PATCH = 0.025
+
 export function pickShell(coarse: Shell | null, fine: Shell | null): Shell | null {
   if (!fine) return coarse
   if (!coarse) return fine
-  if (fine.kind === 'object' && coarse.kind === 'piece' && coarse.runsOn) return coarse
+  // Only a flat patch: a thing standing just in front of a wall has depth of its own.
+  if (fine.kind === 'object' && coarse.kind === 'piece' && coarse.runsOn && fine.relief < FLAT_PATCH) return coarse
   if (coarse.kind === 'object' && coarse.radius > fine.radius * 1.4 + 0.05) return coarse
   return fine
 }

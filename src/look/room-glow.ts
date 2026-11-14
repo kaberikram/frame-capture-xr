@@ -552,9 +552,9 @@ export function cutoutMaterial(palette: Palette, seed: number): ShaderMaterial {
       void main() {
         float d = uR - torn(vL, uSeed);
         // The line draws around both ways from the side nearest the finger.
-        float start = atan(uHand.y, uHand.x);
+        float start = dot(uHand, uHand) > 1e-8 ? atan(uHand.y, uHand.x) : 0.0;
         float ang = abs(mod(atan(vL.y, vL.x) - start + 3.14159265, 6.2831853) - 3.14159265) / 3.14159265;
-        float drawn = 1.0 - smoothstep(uDraw - 0.04, uDraw, ang);
+        float drawn = uDraw >= 1.0 ? 1.0 : 1.0 - smoothstep(uDraw - 0.04, uDraw, ang);
         float line = exp(-pow(d / 0.0024, 2.0)) * drawn;
         float groove = (1.0 - step(0.0, d)) * exp(-pow((d + 0.003) / 0.0035, 2.0)) * drawn;
         float inside = smoothstep(0.0, 0.004, d);

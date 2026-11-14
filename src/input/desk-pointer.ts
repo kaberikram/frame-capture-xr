@@ -33,6 +33,8 @@ export class DeskPointer {
     if (this.ctx.renderer.xr.isPresenting) return
     if (event.button === 2 || event.altKey) {
       this.deskCamera.startOrbit(event.clientX, event.clientY)
+      // Looking around is not pointing at the room.
+      if (this.room && !this.room.holding) this.room.hover(0, null, null, 3.6, 0.8)
       return
     }
     if (event.button !== 0 || this.blocked()) return
@@ -174,6 +176,12 @@ export class DeskPointer {
     view?.addEventListener('pointerup', this.onUp)
     view?.addEventListener('pointercancel', this.onUp)
     view?.addEventListener('contextmenu', this.onContextMenu)
+    view?.addEventListener('pointerleave', this.onLeave)
+  }
+
+  /** The cursor left the view: it is no longer pointing at anything in the room. */
+  private readonly onLeave = (): void => {
+    if (this.room && !this.room.holding) this.room.hover(0, null, null, 3.6, 0.8)
   }
 
   detach(): void {
@@ -183,6 +191,7 @@ export class DeskPointer {
     view?.removeEventListener('pointerup', this.onUp)
     view?.removeEventListener('pointercancel', this.onUp)
     view?.removeEventListener('contextmenu', this.onContextMenu)
+    view?.removeEventListener('pointerleave', this.onLeave)
     this.view = null
   }
 

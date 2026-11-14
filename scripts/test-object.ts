@@ -241,6 +241,10 @@ if (lifted) {
   const ballSeed = { x: 0, y: 0.86, z: 0.1, nx: 0, ny: 0, nz: 1 }
   const pickedBall = pickShell(liftShell(ballScene, ballSeed, view), liftShell(room(0.02, (x, y, z) => Math.min(Math.hypot(x, y - 0.85, z) - 0.1, table(x, y, z))), ballSeed, view))
   assert(pickedBall !== null && pickedBall.kind === 'object', `a ball on a table stays a thing, got ${pickedBall?.kind}`)
+  // A ball 4 cm in front of a wall: the coarse field runs it into the wall, but the fine one sees it has depth of its own.
+  const wallBall = (x: number, y: number, z: number) => Math.min(Math.hypot(x, y - 0.85, z) - 0.1, z + 0.14)
+  const nearWall = pickShell(liftShell(room(0.04, wallBall), ballSeed, view), liftShell(room(0.02, wallBall), ballSeed, view))
+  assert(nearWall !== null && nearWall.kind === 'object', `a ball in front of a wall stays a thing, got ${nearWall?.kind}`)
 }
 
 console.log('object ok')
