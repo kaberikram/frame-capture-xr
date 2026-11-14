@@ -531,6 +531,7 @@ export class CaptureSystem extends createSystem({
       pool: this.room.poolLevel,
       kind: this.room.kind,
       attention: this.room.attention,
+      outline: this.room.outline,
     })
   }
 

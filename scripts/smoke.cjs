@@ -119,6 +119,7 @@ async function room(browser, failures) {
     pieces: window.__capture.roomPatches,
     kind: window.__capture.roomKind,
     attention: window.__capture.roomAttention,
+    outline: window.__capture.roomOutline,
     count: window.__capture.count,
   }))
   const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
@@ -131,8 +132,9 @@ async function room(browser, failures) {
   const [wx, wy] = at(0.2, 0.36)
   await page.mouse.move(wx - 20, wy)
   await page.mouse.move(wx, wy)
-  state = await until((s) => s.pool > 0.5, 5000)
+  state = await until((s) => s.pool > 0.5 && s.outline > 0.5, 5000)
   check(state.pool > 0.5, `peel: light gathers on the wall under the cursor (level ${state.pool.toFixed(2)})`, failures)
+  check(state.outline > 0.5 && state.attention < 0.1, `peel: the outline of the cut shows on the bare wall before the pinch (outline ${state.outline.toFixed(2)}, ghost ${state.attention.toFixed(2)})`, failures)
 
   // A small tug settles back and leaves nothing.
   await page.mouse.down()
@@ -142,7 +144,8 @@ async function room(browser, failures) {
   state = await until((s) => s.pieces === 0, 4000)
   check(state.pieces === 0 && state.lights === 0, `peel: a small tug settles back into the wall (pieces ${state.pieces})`, failures)
 
-  // A steady pull grows the piece, and a full one pops it free.
+  // The piece is the cut the outline showed, from the first pull to the pop.
+  state = await until((s) => s.outline > 0.5, 3000)
   await page.mouse.down()
   await page.mouse.move(wx, wy - 20, { steps: 6 })
   await page.waitForTimeout(300)
@@ -150,7 +153,8 @@ async function room(browser, failures) {
   await page.mouse.move(wx, wy - 50, { steps: 8 })
   await page.waitForTimeout(300)
   const large = await api()
-  check(small.piece === 'lifting' && large.piece === 'lifting' && large.radius > small.radius + 0.02, `peel: the piece grows as it is pulled (${small.radius.toFixed(3)} then ${large.radius.toFixed(3)} m)`, failures)
+  check(small.piece === 'lifting' && small.kind === 'flat' && Math.abs(small.radius - 0.11) < 0.005 && Math.abs(large.radius - small.radius) < 1e-6, `peel: the piece is the size its outline showed, and stays it (${small.radius.toFixed(3)} then ${large.radius.toFixed(3)} m)`, failures)
+  check(small.outline < 0.05, `peel: the outline becomes the piece (outline ${small.outline.toFixed(2)})`, failures)
   await page.mouse.move(wx, wy - 100, { steps: 10 })
   state = await until((s) => s.piece === 'carried' && s.lights === 1, 4000)
   check(state.piece === 'carried', `peel: a full pull pops it free in the hand (got ${state.piece})`, failures)
@@ -173,7 +177,7 @@ async function room(browser, failures) {
   await page.waitForTimeout(300)
   await page.mouse.up()
   state = await until((s) => s.piece === 'free', 4000)
-  check(state.piece === 'free' && state.radius < 0.155 && state.lights === 2, `peel: let go part way and it floats at that size (got ${state.piece}, ${state.radius.toFixed(3)} m)`, failures)
+  check(state.piece === 'free' && Math.abs(state.radius - 0.11) < 0.005, `peel: let go part way and it tears free and floats (got ${state.piece}, ${state.radius.toFixed(3)} m)`, failures)
   check(state.kind === 'flat', `peel: a piece of wall is a flat piece (got ${state.kind})`, failures)
 
   // A thing: the vase on its stand. Light gathers on its shape, and it comes away whole, in three dimensions.
@@ -181,7 +185,7 @@ async function room(browser, failures) {
   await page.mouse.move(vx + 10, vy, { steps: 4 })
   await page.mouse.move(vx, vy)
   state = await until((s) => s.attention > 0.5, 6000)
-  check(state.attention > 0.5, `lift: light gathers on the shape of the vase (level ${state.attention.toFixed(2)})`, failures)
+  check(state.attention > 0.5 && state.outline < 0.1, `lift: the ghost of the vase shows, not a cut (ghost ${state.attention.toFixed(2)}, outline ${state.outline.toFixed(2)})`, failures)
   const before = state.lights
   await page.mouse.down()
   await page.mouse.move(vx, vy - 30, { steps: 6 })

@@ -1,9 +1,11 @@
 import {
+  BufferAttribute,
   BufferGeometry,
   Group,
   Mesh,
   OrthographicCamera,
   PlaneGeometry,
+  Quaternion,
   Raycaster,
   Scene,
   Vector2,
@@ -19,12 +21,12 @@ import { makeContactRing } from '../look/contact.js'
 import { motesEffect, type Effect } from '../look/effects.js'
 import { makeDust } from '../look/motes.js'
 import { PALETTE } from '../look/palette.js'
-import { auraMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
+import { cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
 import { focusRect, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
 import { liftShell, type Shell } from './object.js'
-import { ObjectPiece, shellGeometry } from './object-piece.js'
+import { ObjectPiece, shellGeometry, shellImageCoords } from './object-piece.js'
 import { PIECE_MAX, STICK_GAP, TOUCH_GAP, canLand, tangentBasis } from './patch.js'
 import { PeelPiece, type PieceState, type RoomPiece } from './peel-piece.js'
 import type { RoomPlates, Skin } from './plates.js'
@@ -36,9 +38,10 @@ const SAMPLE_BUDGET = 140
 const MAX_PIECES = 12
 /** A fingertip this far from a surface starts to gather light on it, metres. */
 const POOL_REACH = 0.3
-/** Pool slots: one per hand, one for where a carried piece will rest, one for where you look. */
+/** Pool slots: one per hand, and one for where a carried piece will rest. */
 const LANDING = 2
-const GAZE = 3
+/** The size of a piece of bare surface, the same in its outline and when it comes away, metres. */
+const CUT_R = 0.11
 /** How far away a thing can be and still be lifted by looking at it, metres. */
 const GAZE_REACH = 3.2
 /** Seconds a look stays live after the hand that was raised closes to pinch. */
@@ -53,8 +56,6 @@ const FOCUS_TALL = 0.5
 /** The fine field: small voxels, held only around what has your attention. */
 const FINE_VOXEL = 0.02
 const FINE_CHUNKS = 300
-/** A piece of something big is lifted in its real shape when it has this much shape, metres. */
-const SHAPELY = 0.06
 /** Depth this close to a hand is the hand. */
 const HAND_CLEAR = 0.14
 
@@ -82,11 +83,44 @@ interface Pool {
   placed: boolean
   readonly at: Vector3
   readonly normal: Vector3
+  /** Where it is gliding to. */
+  readonly to: Vector3
+  readonly toNormal: Vector3
 }
 
 interface Touch {
   on: boolean
   readonly hit: SurfacePoint
+  /** The fingertip, and how near it is to the surface, 0..1. */
+  readonly from: Vector3
+  near: number
+}
+
+/**
+ * What a pinch would take, shown before the pinch: the ghost of a thing, or
+ * the outline of a cut in a bare surface. A pinch takes exactly this.
+ */
+interface Preview {
+  /** The thing whose ghost shows. */
+  shell: Shell | null
+  /** It was found by looking, not by reaching. */
+  remote: boolean
+  age: number
+  wait: number
+  /** How near the hand is, 0..1. */
+  near: number
+  readonly ghost: Mesh
+  readonly ghostMat: ShaderMaterial
+  ghostLevel: number
+  ghostSkin: Skin | null
+  readonly cut: Mesh
+  readonly cutMat: ShaderMaterial
+  cutLevel: number
+  cutDraw: number
+  /** The torn shape the cut will have. */
+  seed: number
+  readonly cutAt: Vector3
+  readonly cutNormal: Vector3
 }
 
 /**
@@ -117,8 +151,8 @@ export class RoomScan {
   private readonly effects: Effect[] = []
   private readonly pools: Pool[] = []
   private readonly touch: Touch[] = [
-    { on: false, hit: surfacePoint() },
-    { on: false, hit: surfacePoint() },
+    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0 },
+    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0 },
   ]
   private readonly hands = [new Vector3(), new Vector3()]
   private readonly handOn = [false, false]
@@ -144,14 +178,15 @@ export class RoomScan {
   private readonly focus = new Vector3()
   private readonly lookedAt = new Vector3(0, -99, 0)
   private focusOn = false
-  /** The light on the shape a pinch would lift. */
-  private readonly preview: { mesh: Mesh; mat: ShaderMaterial; shell: Shell | null; level: number; goal: number; age: number; wait: number; remote: boolean }
+  private readonly preview: Preview
+  private readonly cutHand = new Vector3()
   private readonly raycaster = new Raycaster()
   private readonly ndc = new Vector2()
   private readonly forward = new Vector3(0, 0, 1)
   private readonly scratch = new Vector3()
   private readonly local = new Vector3()
   private readonly centre = new Vector3()
+  private readonly quat = new Quaternion()
   private readonly hitA = surfacePoint()
   private readonly hitB = surfacePoint()
   private readonly hitC = surfacePoint()
@@ -170,28 +205,52 @@ export class RoomScan {
     this.group.visible = false
     parent.add(this.group)
     const quad = new PlaneGeometry(1, 1)
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 3; i++) {
       const mat = poolMaterial(PALETTE)
       const mesh = new Mesh(quad, mat)
-      mesh.name = i === LANDING ? 'room-landing' : i === GAZE ? 'room-gaze' : 'room-pool'
+      mesh.name = i === LANDING ? 'room-landing' : 'room-pool'
       mesh.renderOrder = 2
       mesh.frustumCulled = false
       mesh.visible = false
       this.group.add(mesh)
-      this.pools.push({ mesh, mat, level: 0, goal: 0, radius: 0.1, placed: false, at: new Vector3(), normal: new Vector3(0, 1, 0) })
+      this.pools.push({ mesh, mat, level: 0, goal: 0, radius: 0.1, placed: false, at: new Vector3(), normal: new Vector3(0, 1, 0), to: new Vector3(), toNormal: new Vector3(0, 1, 0) })
     }
-    const aura = auraMaterial(PALETTE)
-    const auraMesh = new Mesh(new BufferGeometry(), aura)
-    auraMesh.name = 'room-attention'
-    auraMesh.renderOrder = 3
-    auraMesh.frustumCulled = false
-    auraMesh.visible = false
-    this.group.add(auraMesh)
-    this.preview = { mesh: auraMesh, mat: aura, shell: null, level: 0, goal: 0, age: 0, wait: 0, remote: false }
+    const ghostMat = ghostMaterial(PALETTE)
+    const ghost = new Mesh(new BufferGeometry(), ghostMat)
+    ghost.name = 'room-ghost'
+    ghost.renderOrder = 4
+    ghost.frustumCulled = false
+    ghost.visible = false
+    const seed = Math.random() * 40
+    const cutMat = cutoutMaterial(PALETTE, seed)
+    const cut = new Mesh(quad, cutMat)
+    cut.name = 'room-cut'
+    cut.renderOrder = 3
+    cut.frustumCulled = false
+    cut.visible = false
+    this.group.add(ghost, cut)
+    this.preview = {
+      shell: null,
+      remote: false,
+      age: 0,
+      wait: 0,
+      near: 0,
+      ghost,
+      ghostMat,
+      ghostLevel: 0,
+      ghostSkin: null,
+      cut,
+      cutMat,
+      cutLevel: 0,
+      cutDraw: 0,
+      seed,
+      cutAt: new Vector3(),
+      cutNormal: new Vector3(0, 1, 0),
+    }
     // Compile the shaders now, so the first pinch does not hitch.
     const scene = new Scene()
     const shell = shellMaterial(PALETTE)
-    scene.add(new Mesh(quad, this.pools[0].mat), new Mesh(quad, aura), new Mesh(quad, shell))
+    scene.add(new Mesh(quad, this.pools[0].mat), new Mesh(quad, ghostMat), new Mesh(quad, cutMat), new Mesh(quad, shell))
     const cam = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
     cam.position.z = 1
     renderer.compile(scene, cam)
@@ -257,9 +316,14 @@ export class RoomScan {
     return Math.max(this.pools[0].level, this.pools[1].level)
   }
 
-  /** Light is on the shape of a thing that a pinch would lift, 0 to 1. */
+  /** The ghost of a thing a pinch would lift is showing, 0 to 1. */
   get attention(): number {
-    return this.preview.level
+    return this.preview.ghostLevel
+  }
+
+  /** The outline of the cut a pinch would make in a bare surface is showing, 0 to 1. */
+  get outline(): number {
+    return this.preview.cutLevel
   }
 
   /** At least one piece has been laid on a surface. */
@@ -300,8 +364,9 @@ export class RoomScan {
 
   /**
    * A pinch closed at `point`. It takes hold of a loose piece if one is there,
-   * then of whatever the fingers are on, then of whatever is being looked at.
-   * False when the pinch is on nothing.
+   * then of whatever was showing as about to be taken (a thing's ghost, or the
+   * outline of a cut), then of whatever the fingers are on, then of whatever
+   * thing is being looked at. False when the pinch is on nothing.
    */
   press(point: Vector3, view: Vector3 | null): boolean {
     if (!this.active || this.held) return false
@@ -309,6 +374,20 @@ export class RoomScan {
     if (piece) {
       piece.grab(point)
       this.held = piece
+      return true
+    }
+    if (view) this.eye.copy(view)
+    // What you saw is what you get.
+    const seen = this.preview
+    if (seen.shell && seen.ghostLevel > 0.25) {
+      const away = Math.hypot(point.x - seen.shell.cx, point.y - seen.shell.cy, point.z - seen.shell.cz)
+      if (seen.remote || away <= seen.shell.radius + TOUCH_GAP) {
+        this.beginObject(seen.shell, point, seen.remote && away > seen.shell.radius + TOUCH_GAP)
+        return true
+      }
+    }
+    if (seen.cutLevel > 0.25 && point.distanceTo(seen.cutAt) <= CUT_R + TOUCH_GAP) {
+      this.beginCut(point, view)
       return true
     }
     let hit = this.field.near(point.x, point.y, point.z, TOUCH_GAP, this.hitA)
@@ -327,13 +406,12 @@ export class RoomScan {
       )
     }
     if (hit) {
-      if (view) this.eye.copy(view)
       const shell = this.shellAt(hit)
-      if (shell && (shell.kind === 'object' || shell.relief > SHAPELY)) this.beginObject(shell, point, false)
-      else this.begin(hit, point, view)
+      if (shell && shell.kind === 'object') this.beginObject(shell, point, false)
+      else this.begin(hit, point, view, Math.random() * 40, CUT_R)
       return true
     }
-    // Nothing in reach. Take what is being looked at, from where you stand.
+    // Nothing in reach. Take the thing being looked at, from where you stand.
     if (this.time > this.gazeUntil) return false
     const far = this.surfaceOnRay(this.eye, this.gazeDir, GAZE_REACH, this.hitA)
     const loose = this.pieceOnRay(this.eye, this.gazeDir, far ? far.dist + 0.03 : GAZE_REACH)
@@ -343,9 +421,9 @@ export class RoomScan {
       return true
     }
     if (!far) return false
-    const seen = this.preview
-    const shell = seen.shell && seen.remote && seen.age < 0.5 && seen.goal > 0 ? seen.shell : this.shellAt(far)
-    if (!shell) return false
+    // Only a whole thing comes from across the room. A bare wall stays where it is.
+    const shell = this.shellAt(far)
+    if (!shell || shell.kind !== 'object') return false
     this.beginObject(shell, point, true)
     return true
   }
@@ -366,10 +444,19 @@ export class RoomScan {
     }
     if (!surface) return -1
     this.eye.copy(origin)
-    const start = this.scratch.set(surface.x, surface.y, surface.z).clone()
+    const start = new Vector3(surface.x, surface.y, surface.z)
+    const seen = this.preview
+    if (seen.shell && seen.ghostLevel > 0.25 && start.distanceTo(this.local.set(seen.shell.cx, seen.shell.cy, seen.shell.cz)) <= seen.shell.radius + 0.03) {
+      this.beginObject(seen.shell, start, false)
+      return surface.dist
+    }
+    if (seen.cutLevel > 0.25 && start.distanceTo(seen.cutAt) <= CUT_R) {
+      this.beginCut(start, origin)
+      return surface.dist
+    }
     const shell = this.shellAt(surface)
-    if (shell && (shell.kind === 'object' || shell.relief > SHAPELY)) this.beginObject(shell, start, false)
-    else this.begin(surface, start, origin)
+    if (shell && shell.kind === 'object') this.beginObject(shell, start, false)
+    else this.begin(surface, start, origin, Math.random() * 40, CUT_R)
     return surface.dist
   }
 
@@ -420,6 +507,8 @@ export class RoomScan {
     touch.on = true
     Object.assign(touch.hit, hit)
     const close = 1 - Math.min(1, hit.dist / reach)
+    touch.from.copy(origin)
+    touch.near = level >= 0 ? level : close
     pool.goal = level >= 0 ? level : Math.pow(close, 0.7)
     // The light draws in under the finger as it nears.
     pool.radius = level >= 0 ? 0.085 : 0.13 - 0.06 * close
@@ -438,7 +527,9 @@ export class RoomScan {
       this.depthMiss = 0
       this.depthNote = null
       this.preview.shell = null
-      this.preview.goal = 0
+      this.preview.ghostLevel = 0
+      this.preview.cutLevel = 0
+      this.releaseGhostSkin()
     }
     this.presenting = presenting
     if (!this.active) return
@@ -473,8 +564,10 @@ export class RoomScan {
     for (let i = 0; i < this.effects.length; i++) this.effects[i].dispose()
     this.pools[0].mesh.geometry.dispose()
     for (let i = 0; i < this.pools.length; i++) this.pools[i].mat.dispose()
-    this.preview.mesh.geometry.dispose()
-    this.preview.mat.dispose()
+    this.preview.ghost.geometry.dispose()
+    this.preview.ghostMat.dispose()
+    this.preview.cutMat.dispose()
+    this.releaseGhostSkin()
   }
 
   /** The surface a ray meets first, in whichever field sees it better. */
@@ -525,14 +618,28 @@ export class RoomScan {
     return skin
   }
 
-  /** Peel a flat piece off the surface at `hit`. */
-  private begin(hit: SurfacePoint, start: Vector3, view: Vector3 | null): void {
+  /** Peel a flat piece off the surface at `hit`, `radius` across with the torn shape `seed`. */
+  private begin(hit: SurfacePoint, start: Vector3, view: Vector3 | null, seed: number, radius: number): void {
     const pinch = start.clone()
     this.makeRoom()
     this.centre.set(hit.x, hit.y, hit.z)
-    const skin = this.takeSkin(this.centre, this.scratch.set(hit.nx, hit.ny, hit.nz), PIECE_MAX * 1.15)
-    const piece = new PeelPiece({ hit, start: pinch, view, field: this.field, skin, palette: PALETTE, scale: PEEL_SCALE })
+    const skin = this.takeSkin(this.centre, this.scratch.set(hit.nx, hit.ny, hit.nz), Math.min(PIECE_MAX, radius) * 1.15)
+    const piece = new PeelPiece({ hit, start: pinch, view, field: this.field, skin, palette: PALETTE, scale: PEEL_SCALE, seed, radius })
     this.hold(piece)
+  }
+
+  /** Peel exactly the cut whose outline was showing. */
+  private beginCut(start: Vector3, view: Vector3 | null): void {
+    const seen = this.preview
+    const hit = this.hitC
+    hit.x = seen.cutAt.x
+    hit.y = seen.cutAt.y
+    hit.z = seen.cutAt.z
+    hit.nx = seen.cutNormal.x
+    hit.ny = seen.cutNormal.y
+    hit.nz = seen.cutNormal.z
+    hit.dist = 0
+    this.begin(hit, start, view, seen.seed, CUT_R)
   }
 
   /** Lift a thing out in its own shape. */
@@ -554,32 +661,44 @@ export class RoomScan {
     this.pieces.push(piece)
     this.held = piece
     this.lastAmount = 0
-    this.preview.goal = 0
-    this.preview.level = 0
+    // The ghost or the outline becomes the piece itself.
+    this.preview.ghostLevel = 0
+    this.preview.cutLevel = 0
+    this.preview.ghost.visible = false
+    this.preview.cut.visible = false
   }
 
   /**
    * What has your attention: what a fingertip is nearing, or what you are
-   * looking at with a hand raised. Depth is read closely there, and if it is a
-   * thing that can be lifted whole, light gathers on its shape.
+   * looking at with a hand raised. Depth is read closely there. What a pinch
+   * would take shows itself: a whole thing as a ghost of its own shape, lifting
+   * a little off it; a bare surface as the outline of the cut.
    */
   private attend(dt: number): void {
     const seen = this.preview
-    const dot = this.pools[GAZE]
-    dot.goal = 0
     seen.wait -= dt
     seen.age += dt
     let target: SurfacePoint | null = null
     let remote = false
+    let near = 0
+    let hand: Vector3 | null = null
     if (!this.held) {
-      if (this.touch[0].on) target = this.touch[0].hit
-      else if (this.touch[1].on) target = this.touch[1].hit
-      else if (this.time <= this.gazeUntil) {
+      const a = this.touch[0]
+      const b = this.touch[1]
+      const touch = a.on && (!b.on || a.hit.dist <= b.hit.dist) ? a : b.on ? b : null
+      if (touch) {
+        target = touch.hit
+        near = touch.near
+        hand = touch.from
+      } else if (this.time <= this.gazeUntil) {
         target = this.surfaceOnRay(this.eye, this.gazeDir, GAZE_REACH, this.hitC)
         remote = true
+        near = 0.35
       }
     }
     this.focusOn = target !== null
+    let wantGhost = 0
+    let wantCut = 0
     if (target) {
       const at = target
       this.focus.set(at.x, at.y, at.z)
@@ -592,22 +711,78 @@ export class RoomScan {
         this.lookedAt.set(at.x, at.y, at.z)
         this.show(this.shellAt(at), remote)
       }
-      seen.goal = on(seen.shell) ? 1 : 0
-      if (remote && seen.goal === 0) {
-        // Nothing to lift whole here: a small soft light where you are looking.
-        dot.goal = 0.55
-        dot.radius = 0.06
-        this.aimPool(dot, at)
+      seen.remote = remote
+      if (on(seen.shell)) wantGhost = 1
+      else if (!remote) {
+        wantCut = 1
+        this.aimCut(at, hand)
       }
-    } else seen.goal = 0
-    const rate = REDUCE_MOTION ? 1 : Math.min(1, dt * (seen.goal > seen.level ? 6 : 4))
-    seen.level += (seen.goal - seen.level) * rate
-    seen.mesh.visible = seen.level > 0.01
-    seen.mat.uniforms.uLevel.value = seen.level * 0.6
-    seen.mat.uniforms.uTime.value = REDUCE_MOTION ? 0 : this.time
+    }
+    const ease = (from: number, to: number, up: number, down: number) =>
+      REDUCE_MOTION ? to : from + (to - from) * Math.min(1, dt * (to > from ? up : down))
+    seen.near = ease(seen.near, near, 8, 4)
+    seen.ghostLevel = ease(seen.ghostLevel, wantGhost, 5, 6)
+    // A cut that has gone out is a new cut next time, with its own torn shape.
+    if (wantCut > 0 && seen.cutLevel < 0.01) {
+      seen.seed = Math.random() * 40
+      seen.cutDraw = REDUCE_MOTION ? 1 : 0
+    }
+    seen.cutLevel = ease(seen.cutLevel, wantCut, 7, 6)
+    seen.cutDraw = Math.min(1, seen.cutDraw + dt / 0.4)
+
+    const g = seen.ghostMat.uniforms
+    seen.ghost.visible = seen.ghostLevel > 0.01
+    g.uLevel.value = seen.ghostLevel
+    g.uNear.value = seen.near
+    g.uTime.value = REDUCE_MOTION ? 0 : this.time
+    if (seen.shell && seen.ghost.visible) {
+      // It leans out of the real thing toward you, more as the hand nears.
+      this.scratch.copy(this.eye).sub(this.local.set(seen.shell.cx, seen.shell.cy, seen.shell.cz))
+      const lean = this.scratch.lengthSq() > 1e-6 ? (0.004 + 0.014 * seen.near) * seen.ghostLevel : 0
+      seen.ghost.position.copy(this.local).addScaledVector(this.scratch.normalize(), lean)
+    }
+    if (seen.ghostLevel < 0.01 && wantGhost === 0) this.releaseGhostSkin()
+
+    const c = seen.cutMat.uniforms
+    seen.cut.visible = seen.cutLevel > 0.01
+    c.uLevel.value = seen.cutLevel
+    c.uNear.value = seen.near
+    c.uDraw.value = seen.cutDraw
+    c.uSeed.value = seen.seed
+    c.uR.value = CUT_R
+    c.uHalf.value = CUT_R * 1.5
+    c.uTime.value = REDUCE_MOTION ? 0 : this.time
+    if (seen.cut.visible) {
+      seen.cut.position.copy(seen.cutAt).addScaledVector(seen.cutNormal, 0.004)
+      seen.cut.quaternion.setFromUnitVectors(this.forward, seen.cutNormal)
+      seen.cut.scale.setScalar(CUT_R * 3)
+      // Where the fingertip is over the cut, in the cut's own metres.
+      this.cutHand.copy(hand ?? seen.cutAt).sub(seen.cutAt).applyQuaternion(this.quatInverse(seen.cut))
+      c.uHand.value.set(this.cutHand.x, this.cutHand.y)
+    }
   }
 
-  /** Put the light on a new shape. */
+  /** The cut sits under the fingertip, and glides with it. */
+  private aimCut(hit: SurfacePoint, hand: Vector3 | null): void {
+    const seen = this.preview
+    this.scratch.set(hit.x, hit.y, hit.z)
+    this.local.set(hit.nx, hit.ny, hit.nz)
+    // It faces whoever is looking at it.
+    if (this.local.dot(this.cutHand.copy(hand ?? this.eye).sub(this.scratch)) < 0) this.local.negate()
+    if (seen.cutLevel < 0.02) {
+      seen.cutAt.copy(this.scratch)
+      seen.cutNormal.copy(this.local)
+      return
+    }
+    seen.cutAt.lerp(this.scratch, 0.3)
+    seen.cutNormal.lerp(this.local, 0.2).normalize()
+  }
+
+  private quatInverse(mesh: Mesh) {
+    return this.quat.copy(mesh.quaternion).invert()
+  }
+
+  /** Show the ghost of a new thing, wearing the newest picture of it with no hand in the way. */
   private show(shell: Shell | null, remote: boolean): void {
     const seen = this.preview
     const moved = !seen.shell || !shell || Math.hypot(shell.cx - seen.shell.cx, shell.cy - seen.shell.cy, shell.cz - seen.shell.cz) > 0.08
@@ -615,13 +790,34 @@ export class RoomScan {
     seen.remote = remote
     seen.age = 0
     if (!shell || shell.kind !== 'object') return
-    seen.mesh.geometry.dispose()
-    seen.mesh.geometry = shellGeometry(shell)
-    seen.mesh.position.set(shell.cx, shell.cy, shell.cz)
-    seen.mat.uniforms.uLow.value = shell.bottom - shell.cy
-    seen.mat.uniforms.uSpan.value = Math.max(0.02, (shell.cy - shell.bottom) * 2)
-    // The light does not jump from one thing to the next: it dims and comes up again.
-    if (moved) seen.level *= 0.25
+    const geo = shellGeometry(shell)
+    this.releaseGhostSkin()
+    const centre = this.centre.set(shell.cx, shell.cy, shell.cz)
+    this.scratch.copy(this.eye).sub(centre)
+    if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
+    const skin = this.takeSkin(centre, this.scratch.normalize(), shell.radius)
+    seen.ghostSkin = skin
+    geo.setAttribute('aUv', new BufferAttribute(shellImageCoords(shell, skin), 2))
+    seen.ghost.geometry.dispose()
+    seen.ghost.geometry = geo
+    seen.ghost.position.set(shell.cx, shell.cy, shell.cz)
+    const g = seen.ghostMat.uniforms
+    g.uMap.value = skin ? skin.texture : null
+    g.uHasMap.value = skin ? 1 : 0
+    g.uEncode.value = skin?.linear ? 1 : 0
+    g.uLow.value = shell.bottom - shell.cy
+    g.uSpan.value = Math.max(0.02, (shell.cy - shell.bottom) * 2)
+    // The ghost does not jump from one thing to the next: it dims and comes up again.
+    if (moved) seen.ghostLevel *= 0.25
+  }
+
+  private releaseGhostSkin(): void {
+    const seen = this.preview
+    if (!seen.ghostSkin) return
+    seen.ghostSkin.dispose()
+    seen.ghostSkin = null
+    seen.ghostMat.uniforms.uMap.value = null
+    seen.ghostMat.uniforms.uHasMap.value = 0
   }
 
   private stepHeld(dt: number): void {
@@ -718,17 +914,14 @@ export class RoomScan {
   }
 
   private aimPool(pool: Pool, hit: SurfacePoint): void {
-    this.scratch.set(hit.x + hit.nx * 0.006, hit.y + hit.ny * 0.006, hit.z + hit.nz * 0.006)
-    this.local.set(hit.nx, hit.ny, hit.nz)
-    // A light that has gone out appears where it is wanted. One that is lit glides there.
+    pool.to.set(hit.x + hit.nx * 0.006, hit.y + hit.ny * 0.006, hit.z + hit.nz * 0.006)
+    pool.toNormal.set(hit.nx, hit.ny, hit.nz)
+    // A light that has gone out appears where it is wanted. One that is lit glides there, frame by frame.
     if (!pool.placed || pool.level < 0.02) {
-      pool.at.copy(this.scratch)
-      pool.normal.copy(this.local)
+      pool.at.copy(pool.to)
+      pool.normal.copy(pool.toNormal)
       pool.placed = true
-      return
     }
-    pool.at.lerp(this.scratch, 0.35)
-    pool.normal.lerp(this.local, 0.2).normalize()
   }
 
   private stepPools(dt: number): void {
@@ -736,6 +929,11 @@ export class RoomScan {
       const pool = this.pools[i]
       const rate = REDUCE_MOTION ? 1 : Math.min(1, dt * (pool.goal > pool.level ? 9 : 5))
       pool.level += (pool.goal - pool.level) * rate
+      if (pool.placed) {
+        const glide = REDUCE_MOTION ? 1 : 1 - Math.exp(-dt / 0.045)
+        pool.at.lerp(pool.to, glide)
+        pool.normal.lerp(pool.toNormal, glide).normalize()
+      }
       const on = pool.level > 0.01 && pool.placed
       pool.mesh.visible = on
       if (!on) continue
@@ -744,7 +942,7 @@ export class RoomScan {
       u.uHalf.value = half
       u.uR.value = pool.radius
       u.uLevel.value = pool.level
-      u.uRing.value = i === LANDING || i === GAZE ? 1 : 0
+      u.uRing.value = i === LANDING ? 1 : 0
       u.uTime.value = REDUCE_MOTION ? 0 : this.time
       pool.mesh.position.copy(pool.at)
       pool.mesh.quaternion.setFromUnitVectors(this.forward, pool.normal)

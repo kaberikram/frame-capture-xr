@@ -151,6 +151,12 @@ export interface PieceInit {
   palette: Palette
   /** `?peel=1.3` makes it take more pull. */
   scale: number
+  /**
+   * The size and torn shape the outline showed before the pinch. Given, the
+   * piece is that size from the start; left out, it grows with the pull.
+   */
+  radius?: number
+  seed?: number
 }
 
 /**
@@ -202,6 +208,8 @@ export class PeelPiece implements RoomPiece {
   private readonly aside = new Vector3()
   private readonly matrix = new Matrix4()
   private readonly scale: number
+  /** The outline set the size before the pinch: pulling does not grow it. */
+  private fixedSize = false
   private skin: Skin | null
   private own: Texture | null = null
   private freeT = -1
@@ -230,7 +238,11 @@ export class PeelPiece implements RoomPiece {
     readRelief(field, this.source, basis, this.normal, this.h0)
     this.h1.set(this.h0)
 
-    const seed = Math.random() * 40
+    const seed = init.seed ?? Math.random() * 40
+    if (init.radius !== undefined) {
+      this.radius = init.radius
+      this.fixedSize = true
+    }
     const geo = gridGeometry(this.h0)
     geo.setAttribute('aH1', new BufferAttribute(this.h1, 1))
     geo.setAttribute('aUv', new BufferAttribute(this.imageCoords(), 2))
@@ -306,7 +318,7 @@ export class PeelPiece implements RoomPiece {
     this.pullLocal.set(this.scratch.dot(this.tangent), this.scratch.dot(this.bitangent), out)
     this.pull = this.pullLocal.length()
     this.amount = pullAmount(this.pull, this.scale)
-    this.radius = Math.max(this.radius, pieceRadius(this.pull, this.scale))
+    if (!this.fixedSize) this.radius = Math.max(this.radius, pieceRadius(this.pull, this.scale))
     if (peelFate(this.pull, this.scale) === 'pop') {
       this.part()
       this.state = 'carried'
