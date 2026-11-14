@@ -1433,8 +1433,6 @@ export function bindRoomSpace(space: XRReferenceSpace | null): void {
 function onShell(shell: Shell, x: number, y: number, z: number): boolean {
   const reach = 0.035
   if (Math.hypot(x - shell.cx, y - shell.cy, z - shell.cz) > shell.radius + reach) return false
-  // The table it stands on is lower than its lowest point.
-  if (y < shell.bottom - 0.005) return false
   const p = shell.positions
   const r2 = reach * reach
   for (let i = 0; i < p.length; i += 3) {
