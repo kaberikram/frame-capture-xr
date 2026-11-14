@@ -1,6 +1,7 @@
 import {
   CustomBlending,
   DoubleSide,
+  FrontSide,
   OneFactor,
   OneMinusSrcAlphaFactor,
   ShaderMaterial,
@@ -42,6 +43,13 @@ const TORN = /* glsl */ `
     return len * (1.0 + 0.3 * lobes) + tooth * 0.011;
   }
 `
+
+/**
+ * The headset camera exposes a dim room about a quarter brighter than
+ * passthrough shows it, so a peeled wall read cream against the real one.
+ * Camera pictures are scaled by this; the desk's renders are not.
+ */
+const CAMERA_GAIN = '0.8'
 
 function vec(rgb: readonly [number, number, number]): Vector3 {
   return new Vector3(rgb[0], rgb[1], rgb[2])
@@ -111,12 +119,15 @@ export function pieceMaterial(palette: Palette, seed: number): ShaderMaterial {
       varying vec2 vUv;
       varying vec3 vView;
       ${TORN}
+      const float CAMERA_GAIN = ${CAMERA_GAIN};
       void main() {
         float inside = uR - torn(vP, uSeed);
         if (inside <= 0.0) discard;
         vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
+        // The headset camera exposes a dim room brighter than passthrough shows it.
+        photo *= mix(CAMERA_GAIN, 1.0, uEncode);
         // Where the camera did not see, the piece is a warm film instead of a smear.
         float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
         vec3 col = mix(uFilm * 0.86, photo, seen);
@@ -321,12 +332,14 @@ export function shellMaterial(palette: Palette): ShaderMaterial {
       varying float vEdge;
       varying vec3 vView;
       varying vec3 vN;
+      const float CAMERA_GAIN = ${CAMERA_GAIN};
       void main() {
         float alpha = uShow * (1.0 - smoothstep(0.7, 1.0, vEdge));
         if (alpha < 0.02) discard;
         vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
+        photo *= mix(CAMERA_GAIN, 1.0, uEncode);
         float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
         vec3 col = mix(uFilm * 0.8, photo, seen);
         col = mix(col, col * vec3(1.03, 0.99, 0.94) + uWarm * 0.02, 0.6);
@@ -491,7 +504,9 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
     transparent: true,
     depthWrite: false,
     depthTest: false,
-    side: DoubleSide,
+    // Only the faces turned toward you: a shell's faces all point out of the thing,
+    // and drawing the far ones too would stack their opacity unevenly.
+    side: FrontSide,
     toneMapped: false,
   })
 }

@@ -184,7 +184,7 @@ async function room(browser, failures) {
   const [vx, vy] = at(0.22, 0.78)
   await page.mouse.move(vx + 10, vy, { steps: 4 })
   await page.mouse.move(vx, vy)
-  state = await until((s) => s.attention > 0.5, 6000)
+  state = await until((s) => s.attention > 0.5 && s.outline < 0.1, 6000)
   check(state.attention > 0.5 && state.outline < 0.1, `lift: the ghost of the vase shows, not a cut (ghost ${state.attention.toFixed(2)}, outline ${state.outline.toFixed(2)})`, failures)
   const before = state.lights
   await page.mouse.down()

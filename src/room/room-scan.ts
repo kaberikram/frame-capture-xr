@@ -56,8 +56,10 @@ const FOCUS_TALL = 0.5
 /** The fine field: small voxels, held only around what has your attention. */
 const FINE_VOXEL = 0.02
 const FINE_CHUNKS = 300
-/** Depth this close to a hand is the hand. */
-const HAND_CLEAR = 0.14
+/** Depth this close to a joint of a hand or forearm is the hand, metres. Depth arrives a little late, so it is generous. */
+const HAND_CLEAR = 0.055
+/** Hand joints kept: both hands' joints and a few points down each forearm. */
+const MAX_JOINTS = 64
 
 interface DepthView {
   transform: { matrix: ArrayLike<number> }
@@ -112,11 +114,16 @@ interface Preview {
   readonly ghost: Mesh
   readonly ghostMat: ShaderMaterial
   ghostLevel: number
+  /** The ghost's picture, taken before the hand arrived. The copy a pinch lifts keeps it. */
   ghostSkin: Skin | null
   readonly cut: Mesh
   readonly cutMat: ShaderMaterial
   cutLevel: number
   cutDraw: number
+  /** A picture of the cut, taken as the hand neared it, before it covered the spot. */
+  cutSkin: Skin | null
+  readonly cutSkinAt: Vector3
+  cutSkinWait: number
   /** The torn shape the cut will have. */
   seed: number
   readonly cutAt: Vector3
@@ -154,8 +161,11 @@ export class RoomScan {
     { on: false, hit: surfacePoint(), from: new Vector3(), near: 0 },
     { on: false, hit: surfacePoint(), from: new Vector3(), near: 0 },
   ]
-  private readonly hands = [new Vector3(), new Vector3()]
-  private readonly handOn = [false, false]
+  /** Where the hands are, joint by joint, so depth does not mistake them for the room. */
+  private readonly joints = Array.from({ length: MAX_JOINTS }, () => new Vector3())
+  private jointCount = 0
+  private readonly jointLo = new Vector3()
+  private readonly jointHi = new Vector3()
   private held: RoomPiece | null = null
   private landing: SurfacePoint | null = null
   private presenting = false
@@ -180,6 +190,11 @@ export class RoomScan {
   private focusOn = false
   private readonly preview: Preview
   private readonly cutHand = new Vector3()
+  /** Pieces that came without a camera picture, and when. A later frame that saw the spot will do. */
+  private readonly bare = new Map<RoomPiece, number>()
+  private bareWait = 0
+  /** The mouse's last ray, on the desk. */
+  private readonly mouse = { on: false, origin: new Vector3(), dir: new Vector3(), reach: 3.6, level: 0.8 }
   private readonly raycaster = new Raycaster()
   private readonly ndc = new Vector2()
   private readonly forward = new Vector3(0, 0, 1)
@@ -218,7 +233,8 @@ export class RoomScan {
     const ghostMat = ghostMaterial(PALETTE)
     const ghost = new Mesh(new BufferGeometry(), ghostMat)
     ghost.name = 'room-ghost'
-    ghost.renderOrder = 4
+    // Over pieces already set down, so a ghost is never hidden under an old copy.
+    ghost.renderOrder = 7
     ghost.frustumCulled = false
     ghost.visible = false
     const seed = Math.random() * 40
@@ -243,6 +259,9 @@ export class RoomScan {
       cutMat,
       cutLevel: 0,
       cutDraw: 0,
+      cutSkin: null,
+      cutSkinAt: new Vector3(),
+      cutSkinWait: 0,
       seed,
       cutAt: new Vector3(),
       cutNormal: new Vector3(0, 1, 0),
@@ -354,12 +373,23 @@ export class RoomScan {
     if (ready) this.gazeUntil = this.time + GAZE_GRACE
   }
 
-  /** Where the hands are, so depth does not mistake them for the room. Null for a hand that is not tracked. */
-  setHands(a: Vector3 | null, b: Vector3 | null): void {
-    this.handOn[0] = a !== null
-    this.handOn[1] = b !== null
-    if (a) this.hands[0].copy(a)
-    if (b) this.hands[1].copy(b)
+  /**
+   * Where the hands are, every joint and a few points down each forearm, so
+   * depth readings of a hand are not fused into the room.
+   */
+  setHandJoints(points: readonly Vector3[], count: number): void {
+    const n = Math.min(count, MAX_JOINTS)
+    this.jointCount = n
+    if (n === 0) return
+    this.jointLo.set(Infinity, Infinity, Infinity)
+    this.jointHi.set(-Infinity, -Infinity, -Infinity)
+    for (let i = 0; i < n; i++) {
+      this.joints[i].copy(points[i])
+      this.jointLo.min(points[i])
+      this.jointHi.max(points[i])
+    }
+    this.jointLo.subScalar(HAND_CLEAR)
+    this.jointHi.addScalar(HAND_CLEAR)
   }
 
   /**
@@ -380,13 +410,13 @@ export class RoomScan {
     // What you saw is what you get.
     const seen = this.preview
     if (seen.shell && seen.ghostLevel > 0.25) {
+      // A ghost shows only for what the finger is reaching toward or the eye is
+      // on. Pinched short of it, it comes to the hand.
       const away = Math.hypot(point.x - seen.shell.cx, point.y - seen.shell.cy, point.z - seen.shell.cz)
-      if (seen.remote || away <= seen.shell.radius + TOUCH_GAP) {
-        this.beginObject(seen.shell, point, seen.remote && away > seen.shell.radius + TOUCH_GAP)
-        return true
-      }
+      this.beginObject(seen.shell, point, away > seen.shell.radius + TOUCH_GAP)
+      return true
     }
-    if (seen.cutLevel > 0.25 && point.distanceTo(seen.cutAt) <= CUT_R + TOUCH_GAP) {
+    if (seen.cutLevel > 0.25 && point.distanceTo(seen.cutAt) <= CUT_R + POOL_REACH) {
       this.beginCut(point, view)
       return true
     }
@@ -489,6 +519,20 @@ export class RoomScan {
    * which is never near anything.
    */
   hover(index: 0 | 1, origin: Vector3 | null, dir: Vector3 | null, reach = POOL_REACH, level = -1): void {
+    // The mouse only says where it is when it moves. Keep its ray, and look along it again every frame.
+    if (level >= 0 && index === 0) {
+      if (origin && dir) {
+        this.mouse.origin.copy(origin)
+        this.mouse.dir.copy(dir)
+        this.mouse.reach = reach
+        this.mouse.level = level
+        this.mouse.on = true
+      } else this.mouse.on = false
+    } else if (index === 0 && !origin) this.mouse.on = false
+    this.look1(index, origin, dir, reach, level)
+  }
+
+  private look1(index: 0 | 1, origin: Vector3 | null, dir: Vector3 | null, reach: number, level: number): void {
     const pool = this.pools[index]
     const touch = this.touch[index]
     touch.on = false
@@ -530,13 +574,17 @@ export class RoomScan {
       this.preview.ghostLevel = 0
       this.preview.cutLevel = 0
       this.releaseGhostSkin()
+      this.preview.cutSkin?.dispose()
+      this.preview.cutSkin = null
     }
     this.presenting = presenting
     if (!this.active) return
     // On the desk the view camera is the eye. A headset says where its head is with `look`.
     if (!presenting) camera.getWorldPosition(this.eye)
     this.fuse(dt, presenting, frame, camera, standIn)
+    if (!presenting && this.mouse.on && !this.held) this.look1(0, this.mouse.origin, this.mouse.dir, this.mouse.reach, this.mouse.level)
     this.attend(dt)
+    this.dress(dt)
     this.stepHeld(dt)
     for (let i = this.pieces.length - 1; i >= 0; i--) {
       const piece = this.pieces[i]
@@ -568,6 +616,8 @@ export class RoomScan {
     this.preview.ghostMat.dispose()
     this.preview.cutMat.dispose()
     this.releaseGhostSkin()
+    this.preview.cutSkin?.dispose()
+    this.preview.cutSkin = null
   }
 
   /** The surface a ray meets first, in whichever field sees it better. */
@@ -590,6 +640,32 @@ export class RoomScan {
     // The close look only covers part of something big. Then the coarse shell is the whole of it.
     if (coarse && coarse.kind === 'object' && coarse.radius > close.radius * 1.4 + 0.05) return coarse
     return close
+  }
+
+  /**
+   * A piece that came without a camera picture (no kept frame had seen the
+   * spot) keeps asking for one for a few seconds. The room behind it has not
+   * changed, and the piece itself is never in a camera frame.
+   */
+  private dress(dt: number): void {
+    if (this.bare.size === 0) return
+    this.bareWait -= dt
+    if (this.bareWait > 0) return
+    this.bareWait = 0.3
+    for (const [piece, since] of this.bare) {
+      if (!piece.needsSkin || piece.done || this.time - since > 3) {
+        this.bare.delete(piece)
+        continue
+      }
+      // Across the way it faces, or for a thing, across the way it is seen.
+      if (piece.flat) this.scratch.copy(piece.normal)
+      else this.scratch.copy(this.eye).sub(piece.source)
+      if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
+      const skin = this.takeSkin(piece.source, this.scratch.normalize(), Math.max(0.03, piece.radius))
+      if (!skin) continue
+      piece.setSkin(skin)
+      this.bare.delete(piece)
+    }
   }
 
   /** Make room: the oldest piece that nobody is holding goes. */
@@ -619,11 +695,11 @@ export class RoomScan {
   }
 
   /** Peel a flat piece off the surface at `hit`, `radius` across with the torn shape `seed`. */
-  private begin(hit: SurfacePoint, start: Vector3, view: Vector3 | null, seed: number, radius: number): void {
+  private begin(hit: SurfacePoint, start: Vector3, view: Vector3 | null, seed: number, radius: number, taken: Skin | null = null): void {
     const pinch = start.clone()
     this.makeRoom()
     this.centre.set(hit.x, hit.y, hit.z)
-    const skin = this.takeSkin(this.centre, this.scratch.set(hit.nx, hit.ny, hit.nz), Math.min(PIECE_MAX, radius) * 1.15)
+    const skin = taken ?? this.takeSkin(this.centre, this.scratch.set(hit.nx, hit.ny, hit.nz), Math.min(PIECE_MAX, radius) * 1.15)
     const piece = new PeelPiece({ hit, start: pinch, view, field: this.field, skin, palette: PALETTE, scale: PEEL_SCALE, seed, radius })
     this.hold(piece)
   }
@@ -639,7 +715,13 @@ export class RoomScan {
     hit.ny = seen.cutNormal.y
     hit.nz = seen.cutNormal.z
     hit.dist = 0
-    this.begin(hit, start, view, seen.seed, CUT_R)
+    // The picture taken as the hand neared, if it is of this spot.
+    let skin: Skin | null = null
+    if (seen.cutSkin && seen.cutSkinAt.distanceTo(seen.cutAt) < 0.05) {
+      skin = seen.cutSkin
+      seen.cutSkin = null
+    }
+    this.begin(hit, start, view, seen.seed, CUT_R, skin)
   }
 
   /** Lift a thing out in its own shape. */
@@ -647,16 +729,27 @@ export class RoomScan {
     const pinch = start.clone()
     this.makeRoom()
     this.centre.set(shell.cx, shell.cy, shell.cz)
-    // The picture is taken across the way the thing is seen.
-    this.scratch.copy(this.eye).sub(this.centre)
-    if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
-    const skin = this.takeSkin(this.centre, this.scratch.normalize(), shell.radius)
+    // The ghost's picture was taken before the hand got in the way. Otherwise
+    // one is taken now, across the way the thing is seen.
+    const seen = this.preview
+    let skin: Skin | null = null
+    if (shell === seen.shell && seen.ghostSkin) {
+      skin = seen.ghostSkin
+      seen.ghostSkin = null
+      seen.ghostMat.uniforms.uMap.value = null
+      seen.ghostMat.uniforms.uHasMap.value = 0
+    } else {
+      this.scratch.copy(this.eye).sub(this.centre)
+      if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
+      skin = this.takeSkin(this.centre, this.scratch.normalize(), shell.radius)
+    }
     const piece = new ObjectPiece({ shell, start: pinch, skin, palette: PALETTE, scale: PEEL_SCALE, remote })
     piece.eye.copy(this.eye)
     this.hold(piece)
   }
 
   private hold(piece: RoomPiece): void {
+    if (piece.needsSkin) this.bare.set(piece, this.time)
     this.group.add(piece.holeAnchor, piece.anchor)
     this.pieces.push(piece)
     this.held = piece
@@ -686,7 +779,10 @@ export class RoomScan {
       const a = this.touch[0]
       const b = this.touch[1]
       const touch = a.on && (!b.on || a.hit.dist <= b.hit.dist) ? a : b.on ? b : null
-      if (touch) {
+      // A finger on a piece already lifted takes that piece: nothing else is offered.
+      if (touch && this.pieceAt(touch.from)) {
+        target = null
+      } else if (touch) {
         target = touch.hit
         near = touch.near
         hand = touch.from
@@ -702,8 +798,7 @@ export class RoomScan {
     if (target) {
       const at = target
       this.focus.set(at.x, at.y, at.z)
-      const on = (shell: Shell | null) =>
-        shell !== null && shell.kind === 'object' && Math.hypot(at.x - shell.cx, at.y - shell.cy, at.z - shell.cz) <= shell.radius * 1.15 + 0.02
+      const on = (shell: Shell | null) => shell !== null && shell.kind === 'object' && onShell(shell, at.x, at.y, at.z)
       // Look again when the attention has moved somewhere new, and now and then as depth fills in.
       const moved = Math.hypot(at.x - this.lookedAt.x, at.y - this.lookedAt.y, at.z - this.lookedAt.z) > 0.05
       if (seen.wait <= 0 && (seen.age > 0.8 || (moved && !on(seen.shell)))) {
@@ -718,6 +813,7 @@ export class RoomScan {
         this.aimCut(at, hand)
       }
     }
+    this.pictureCut(dt, wantCut > 0)
     const ease = (from: number, to: number, up: number, down: number) =>
       REDUCE_MOTION ? to : from + (to - from) * Math.min(1, dt * (to > from ? up : down))
     seen.near = ease(seen.near, near, 8, 4)
@@ -760,6 +856,31 @@ export class RoomScan {
       this.cutHand.copy(hand ?? seen.cutAt).sub(seen.cutAt).applyQuaternion(this.quatInverse(seen.cut))
       c.uHand.value.set(this.cutHand.x, this.cutHand.y)
     }
+  }
+
+  /**
+   * In the headset, take the cut's picture as the hand nears, before the hand
+   * is over the spot, and again if the cut moves on. On the desk there is no
+   * hand in the way, and a picture is a render, so it waits for the pinch.
+   */
+  private pictureCut(dt: number, showing: boolean): void {
+    const seen = this.preview
+    seen.cutSkinWait -= dt
+    if (!showing || !this.presenting) {
+      if (!showing && seen.cutLevel < 0.01 && seen.cutSkin) {
+        seen.cutSkin.dispose()
+        seen.cutSkin = null
+      }
+      return
+    }
+    if (seen.cutSkinWait > 0) return
+    if (seen.cutSkin && seen.cutSkinAt.distanceTo(seen.cutAt) < 0.04) return
+    seen.cutSkinWait = 0.3
+    const skin = this.takeSkin(seen.cutAt, seen.cutNormal, CUT_R * 1.15)
+    if (!skin) return
+    seen.cutSkin?.dispose()
+    seen.cutSkin = skin
+    seen.cutSkinAt.copy(seen.cutAt)
   }
 
   /** The cut sits under the fingertip, and glides with it. */
@@ -1167,10 +1288,17 @@ export class RoomScan {
   }
 
   private isHand(x: number, y: number, z: number): boolean {
-    for (let i = 0; i < 2; i++) {
-      if (!this.handOn[i]) continue
-      const h = this.hands[i]
-      if (Math.hypot(x - h.x, y - h.y, z - h.z) < HAND_CLEAR) return true
+    if (this.jointCount === 0) return false
+    const lo = this.jointLo
+    const hi = this.jointHi
+    if (x < lo.x || y < lo.y || z < lo.z || x > hi.x || y > hi.y || z > hi.z) return false
+    const r2 = HAND_CLEAR * HAND_CLEAR
+    for (let i = 0; i < this.jointCount; i++) {
+      const j = this.joints[i]
+      const dx = x - j.x
+      const dy = y - j.y
+      const dz = z - j.z
+      if (dx * dx + dy * dy + dz * dz < r2) return true
     }
     return false
   }
@@ -1202,6 +1330,24 @@ let boundSpace: XRReferenceSpace | null = null
 /** The session's reference space, set from the renderer when a headset session starts. */
 export function bindRoomSpace(space: XRReferenceSpace | null): void {
   boundSpace = space
+}
+
+/**
+ * Is a point on this thing: within a few centimetres of its surface, not just
+ * near its middle? A finger on the table beside it is not on it.
+ */
+function onShell(shell: Shell, x: number, y: number, z: number): boolean {
+  const reach = 0.035
+  if (Math.hypot(x - shell.cx, y - shell.cy, z - shell.cz) > shell.radius + reach) return false
+  const p = shell.positions
+  const r2 = reach * reach
+  for (let i = 0; i < p.length; i += 3) {
+    const dx = p[i] - x
+    const dy = p[i + 1] - y
+    const dz = p[i + 2] - z
+    if (dx * dx + dy * dy + dz * dz < r2) return true
+  }
+  return false
 }
 
 /** True when a depth reading sits well between the readings either side of it. */

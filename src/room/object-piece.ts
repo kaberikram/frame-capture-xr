@@ -113,6 +113,9 @@ export class ObjectPiece implements RoomPiece {
   private remote: boolean
   private skin: Skin | null
   private own: Texture | null = null
+  private readonly shell: Shell
+  /** It has a camera picture. */
+  private pictured: boolean
   private freed = false
   private since = 0
   private landT = -1
@@ -124,6 +127,8 @@ export class ObjectPiece implements RoomPiece {
 
   constructor(init: ObjectInit) {
     const { shell } = init
+    this.shell = shell
+    this.pictured = init.skin !== null
     this.scale = init.scale
     this.remote = init.remote
     this.skin = init.skin
@@ -165,6 +170,29 @@ export class ObjectPiece implements RoomPiece {
 
   center(out: Vector3): Vector3 {
     return out.copy(this.anchor.position)
+  }
+
+  /** Its points are kept where they were in the room, so a picture can be found for them at any time. */
+  get needsSkin(): boolean {
+    return !this.pictured && !this.disposed
+  }
+
+  setSkin(skin: Skin): void {
+    if (!this.needsSkin) {
+      skin.dispose()
+      return
+    }
+    this.skin = skin
+    this.pictured = true
+    const geo = this.mesh.geometry
+    const uv = geo.getAttribute('aUv') as BufferAttribute
+    ;(uv.array as Float32Array).set(shellImageCoords(this.shell, skin))
+    uv.needsUpdate = true
+    this.mat.uniforms.uMap.value = skin.texture
+    this.mat.uniforms.uHasMap.value = 1
+    this.mat.uniforms.uEncode.value = skin.linear ? 1 : 0
+    this.mat.uniforms.uUvRect.value.set(0, 0, 1, 1)
+    this.cropSkin(geo)
   }
 
   get loose(): boolean {

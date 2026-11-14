@@ -68,6 +68,10 @@ export interface RoomPiece {
   contains(point: Vector3): number
   /** How far along a ray the piece is, or -1. */
   rayHit(origin: Vector3, dir: Vector3): number
+  /** It came without a camera picture, and one can still be given. */
+  readonly needsSkin: boolean
+  /** Give it the camera picture it came without. It owns the skin from here on. */
+  setSkin(skin: Skin): void
   drag(hand: Vector3): void
   letGo(): void
   grab(hand: Vector3, remote?: boolean): void
@@ -210,6 +214,8 @@ export class PeelPiece implements RoomPiece {
   private readonly scale: number
   /** The outline set the size before the pinch: pulling does not grow it. */
   private fixedSize = false
+  /** It has a camera picture. */
+  private pictured = false
   private skin: Skin | null
   private own: Texture | null = null
   private freeT = -1
@@ -247,6 +253,7 @@ export class PeelPiece implements RoomPiece {
     geo.setAttribute('aH1', new BufferAttribute(this.h1, 1))
     geo.setAttribute('aUv', new BufferAttribute(this.imageCoords(), 2))
     this.mat = pieceMaterial(palette, seed)
+    this.pictured = this.skin !== null
     if (this.skin) {
       this.mat.uniforms.uMap.value = this.skin.texture
       this.mat.uniforms.uHasMap.value = 1
@@ -286,6 +293,28 @@ export class PeelPiece implements RoomPiece {
   /** The light has opened for good: the piece left the wall. */
   get parted(): boolean {
     return this.freeT >= 0
+  }
+
+  /** Where each point sits in a picture is worked out on the surface it came from, so only until it lands somewhere else. */
+  get needsSkin(): boolean {
+    return !this.pictured && !this.disposed && this.landT < 0
+  }
+
+  setSkin(skin: Skin): void {
+    if (!this.needsSkin) {
+      skin.dispose()
+      return
+    }
+    this.skin = skin
+    this.pictured = true
+    const uv = this.attribute('aUv')
+    ;(uv.array as Float32Array).set(this.imageCoords())
+    uv.needsUpdate = true
+    this.mat.uniforms.uMap.value = skin.texture
+    this.mat.uniforms.uHasMap.value = 1
+    this.mat.uniforms.uEncode.value = skin.linear ? 1 : 0
+    this.mat.uniforms.uUvRect.value.set(0, 0, 1, 1)
+    this.cropSkin()
   }
 
   contains(point: Vector3): number {
