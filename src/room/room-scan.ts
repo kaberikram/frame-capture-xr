@@ -36,7 +36,7 @@ import type { RoomPlates, Skin } from './plates.js'
 
 const FUSE_EVERY = 0.1
 /** Samples fused on one frame. The rest of a depth image waits, so the frame stays smooth. */
-const SAMPLE_BUDGET = 200
+const SAMPLE_BUDGET = 260
 /** Pieces kept. The oldest fades to make room for a new one. */
 const MAX_PIECES = 12
 /** A fingertip this far from a surface starts to gather light on it, metres. */
@@ -63,8 +63,8 @@ const GAZE_REACH = 3.2
 const GAZE_GRACE = 0.6
 
 /** Depth readings taken across the view each pass, and down it. */
-const DEPTH_COLS = 28
-const DEPTH_ROWS = 20
+const DEPTH_COLS = 40
+const DEPTH_ROWS = 30
 /** The close look: this much of the room around what has your attention, metres. */
 const FOCUS_WIDE = 0.84
 const FOCUS_TALL = 0.6
@@ -174,7 +174,8 @@ export class RoomScan {
   onLand: ((at: Vector3) => void) | null = null
   /** Pixels per metre at one metre, so dust keeps its size at any distance. */
   pixelScale: () => number = () => 760
-  private readonly field = new RoomField()
+  // Written two voxels deep behind each surface, so the live mesh has no holes.
+  private readonly field = new RoomField(undefined, undefined, 2)
   private readonly fine: RoomField | null = queryFlag('fine') === '0' ? null : new RoomField(FINE_VOXEL, FINE_CHUNKS, 2)
   private readonly pieces: RoomPiece[] = []
   private readonly effects: Effect[] = []
@@ -202,6 +203,8 @@ export class RoomScan {
   private queue: DepthSample[] = []
   private queueField: RoomField = this.field
   private queueAt = 0
+  /** The angle between neighbouring readings in the queue, radians. */
+  private queueStep = 0
   private queueFresh = false
   private depthMiss = 0
   private depthMode: string | null = null
@@ -242,6 +245,7 @@ export class RoomScan {
   private readonly hitD = surfacePoint()
   private readonly rim = [new Vector3(), new Vector3(), new Vector3(), new Vector3()]
   private readonly metres = new Float32Array(DEPTH_COLS * DEPTH_ROWS)
+  private readonly gridPoints = new Float32Array(DEPTH_COLS * DEPTH_ROWS * 3)
   private readonly us = new Float32Array(DEPTH_COLS * DEPTH_ROWS)
   private readonly vs = new Float32Array(DEPTH_COLS * DEPTH_ROWS)
 
@@ -678,7 +682,8 @@ export class RoomScan {
     this.stepPools(dt)
     this.motes?.step(this.time, this.pixelScale(), REDUCE_MOTION)
     // The live mesh is drawn from the field a pinch lifts from: the fine one, or the coarse one without it.
-    this.live?.step(dt, this.time, this.fine ?? this.field, this.focus, this.focusOn, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
+    // The live mesh is the whole room's: the coarse field, which every wide depth pass fills.
+    this.live?.step(dt, this.time, this.field, this.eye, this.focusOn ? this.focus : this.eye, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
   }
 
   dispose(): void {
@@ -1209,14 +1214,15 @@ export class RoomScan {
     }
     if (this.queueAt < this.queue.length) {
       const end = Math.min(this.queue.length, this.queueAt + SAMPLE_BUDGET)
-      this.queueField.integrateRange(this.queue, this.queueAt, end, this.queueFresh)
+      this.queueField.integrateRange(this.queue, this.queueAt, end, this.queueFresh, this.queueStep)
       this.queueFresh = false
       this.queueAt = end
     }
     // Chunks a field let go of are gone. Nothing is drawn from them.
     const gone = this.field.takeRetired()
     const goneFine = this.fine?.takeRetired()
-    this.live?.drop(this.fine ? (goneFine ?? []) : gone)
+    void goneFine
+    this.live?.drop(gone)
   }
 
   private fuseDesk(camera: PerspectiveCamera, standIn: Object3D, close: boolean): void {
@@ -1244,7 +1250,7 @@ export class RoomScan {
           this.raycaster.set(origin, this.rim[1])
           const hit = this.raycaster.intersectObject(standIn, true)[0]
           if (!hit || hit.distance < 0.25 || hit.distance > 3.4) continue
-          samples.push({ ox: origin.x, oy: origin.y, oz: origin.z, px: hit.point.x, py: hit.point.y, pz: hit.point.z })
+          samples.push(this.deskSample(origin, hit))
         }
       }
       this.enqueue(samples, this.fine ?? this.field)
@@ -1258,11 +1264,23 @@ export class RoomScan {
         this.raycaster.setFromCamera(this.ndc, camera)
         const hit = this.raycaster.intersectObject(standIn, true)[0]
         if (!hit || hit.distance < 0.25 || hit.distance > 3.4) continue
-        samples.push({ ox: origin.x, oy: origin.y, oz: origin.z, px: hit.point.x, py: hit.point.y, pz: hit.point.z })
+        samples.push(this.deskSample(origin, hit))
       }
     }
     camera.getWorldDirection(this.scratch)
-    this.enqueue(samples, this.field, this.scratch)
+    this.enqueue(samples, this.field, this.scratch, (2 * Math.tan((camera.fov * Math.PI) / 360) * camera.aspect) / w)
+  }
+
+  /** A ray's hit on the stand-in room as a depth reading, with the way the surface faces. */
+  private deskSample(origin: Vector3, hit: { point: Vector3; face?: { normal: Vector3 } | null; object: Object3D }): DepthSample {
+    const sample: DepthSample = { ox: origin.x, oy: origin.y, oz: origin.z, px: hit.point.x, py: hit.point.y, pz: hit.point.z }
+    if (hit.face) {
+      const n = this.cutB.copy(hit.face.normal).transformDirection(hit.object.matrixWorld)
+      sample.nx = n.x
+      sample.ny = n.y
+      sample.nz = n.z
+    }
+    return sample
   }
 
   private fuseHeadset(frame: DepthFrame | null, close: boolean): void {
@@ -1396,24 +1414,63 @@ export class RoomScan {
     const origin = transformPoint(viewMatrix, { x: 0, y: 0, z: 0 })
     const samples: DepthSample[] = []
     const m = this.metres
+    const at = this.gridPoints
+    const count = DEPTH_COLS * DEPTH_ROWS
+    // Every reading as a point in the room first, so each can see its neighbours.
+    for (let k = 0; k < count; k++) {
+      const d = m[k]
+      const local = d > 0 ? viewFromDepth(projection, this.us[k], this.vs[k], d) : null
+      if (!local) {
+        at[k * 3] = NaN
+        continue
+      }
+      const world = transformPoint(viewMatrix, local)
+      at[k * 3] = world.x
+      at[k * 3 + 1] = world.y
+      at[k * 3 + 2] = world.z
+    }
     for (let row = 0; row < DEPTH_ROWS; row++) {
       for (let col = 0; col < DEPTH_COLS; col++) {
         const k = col + row * DEPTH_COLS
         const d = m[k]
-        if (!(d > 0)) continue
+        if (at[k * 3] !== at[k * 3]) continue
         // Depth blurs across an edge. A reading part way between its neighbours on either side is that blur.
         if (col > 0 && col < DEPTH_COLS - 1 && between(d, m[k - 1], m[k + 1])) continue
         if (row > 0 && row < DEPTH_ROWS - 1 && between(d, m[k - DEPTH_COLS], m[k + DEPTH_COLS])) continue
-        const local = viewFromDepth(projection, this.us[k], this.vs[k], d)
-        if (!local) continue
-        const world = transformPoint(viewMatrix, local)
-        if (this.isHand(world.x, world.y, world.z, snapped)) continue
-        samples.push({ ox: origin.x, oy: origin.y, oz: origin.z, px: world.x, py: world.y, pz: world.z })
+        const x = at[k * 3]
+        const y = at[k * 3 + 1]
+        const z = at[k * 3 + 2]
+        if (this.isHand(x, y, z, snapped)) continue
+        const sample: DepthSample = { ox: origin.x, oy: origin.y, oz: origin.z, px: x, py: y, pz: z }
+        // The way the surface faces, from the readings beside and above: across an edge there is none.
+        const side = col + 1 < DEPTH_COLS ? k + 1 : k - 1
+        const up = row + 1 < DEPTH_ROWS ? k + DEPTH_COLS : k - DEPTH_COLS
+        const gap = 0.04 + 0.06 * d
+        if (at[side * 3] === at[side * 3] && at[up * 3] === at[up * 3] && Math.abs(m[side] - d) < gap && Math.abs(m[up] - d) < gap) {
+          const ax = at[side * 3] - x
+          const ay = at[side * 3 + 1] - y
+          const az = at[side * 3 + 2] - z
+          const bx = at[up * 3] - x
+          const by = at[up * 3 + 1] - y
+          const bz = at[up * 3 + 2] - z
+          const nx = ay * bz - az * by
+          const ny = az * bx - ax * bz
+          const nz = ax * by - ay * bx
+          const nl = Math.hypot(nx, ny, nz)
+          if (nl > 1e-9) {
+            sample.nx = nx / nl
+            sample.ny = ny / nl
+            sample.nz = nz / nl
+          }
+        }
+        samples.push(sample)
       }
     }
     const ahead = transformPoint(viewMatrix, { x: 0, y: 0, z: -1 })
     this.scratch.set(ahead.x - origin.x, ahead.y - origin.y, ahead.z - origin.z)
-    this.enqueue(samples, field, field === this.field ? this.scratch : undefined)
+    // How far apart the readings are, as an angle: the view's width over the readings across it.
+    const step = (2 / Math.abs(projection[0])) / DEPTH_COLS * (this.us[DEPTH_COLS - 1] - this.us[0]) * (DEPTH_COLS / (DEPTH_COLS - 1))
+    this.enqueue(samples, field, field === this.field ? this.scratch : undefined, step)
   }
 
   /** Keep where the hands are now, for a depth reading that will come back later. */
@@ -1445,7 +1502,8 @@ export class RoomScan {
 
 
   /** What you are looking at is fused first, so the chunk cap keeps the center of the view. */
-  private enqueue(samples: DepthSample[], field: RoomField, forward?: Vector3): void {
+  private enqueue(samples: DepthSample[], field: RoomField, forward?: Vector3, step = 0): void {
+    this.queueStep = step
     if (forward && forward.lengthSq() > 1e-6) {
       const fx = forward.x
       const fy = forward.y

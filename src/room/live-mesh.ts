@@ -4,15 +4,15 @@ import { GHOST_JOINTS } from '../look/room-glow.js'
 import type { NetMesh, RoomField } from './field.js'
 
 /** Milliseconds a frame may spend re-meshing. */
-const BUDGET_MS = 2.5
-/** The mesh shows this far around what has your attention, metres. */
-export const MESH_REACH = 0.36
+const BUDGET_MS = 3
+/** The mesh shows this far from you, metres. */
+export const MESH_REACH = 4
 
 /**
- * The live mesh of the room, shown: a fine grid of light lying on the real
- * surfaces around whatever has your attention, re-meshed a few chunks a frame
- * as depth comes in. It is the same field a pinch lifts from, so what you see
- * forming is what you can pull.
+ * The live mesh of the room, shown: one connected skin over everything the
+ * headset has seen, a few metres out, with a square grid drawn on it. It is
+ * re-meshed a few chunks a frame as depth comes in, nearest your attention
+ * first.
  */
 export class LiveMesh {
   readonly group = new Group()
@@ -36,12 +36,18 @@ export class LiveMesh {
       vertexShader: /* glsl */ `
         attribute float aBorn;
         varying vec3 vWorld;
+        varying vec3 vNormal;
         varying float vBorn;
         void main() {
           vec4 world = modelMatrix * vec4(position, 1.0);
           vWorld = world.xyz;
           vBorn = aBorn;
-          gl_Position = projectionMatrix * viewMatrix * world;
+          vNormal = normal;
+          // Drawn a touch nearer along the line of sight: the same place on screen, but in front of
+          // the desk's stand-in wall it lies on, which would otherwise hide it.
+          vec4 mv = viewMatrix * world;
+          mv.xyz *= 0.985;
+          gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: /* glsl */ `
         uniform float uTime, uLevel, uReach;
@@ -49,11 +55,12 @@ export class LiveMesh {
         uniform vec3 uJoints[${GHOST_JOINTS}];
         uniform int uJointCount;
         varying vec3 vWorld;
+        varying vec3 vNormal;
         varying float vBorn;
-        const float CELL = 0.04;
+        const float CELL = 0.12;
         void main() {
           float away = length(vWorld - uFocus);
-          float near = 1.0 - smoothstep(uReach * 0.45, uReach, away);
+          float near = 1.0 - smoothstep(uReach * 0.82, uReach, away);
           if (near * uLevel < 0.01) discard;
           // Behind your hand, as seen from the eye, the mesh gives way to the hand.
           vec3 ray = vWorld - cameraPosition;
@@ -67,25 +74,28 @@ export class LiveMesh {
             if (along > far + 0.01) continue;
             clear = min(clear, smoothstep(0.018, 0.04, length(j - ray * along)));
           }
-          // Grid lines every few centimetres, in the room's own axes, so they lie still on the surface.
-          vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+          // One square grid per surface, laid across whichever of the room's axes it faces most,
+          // so the lines on a wall or a table all run the same two ways.
+          vec3 n = normalize(vNormal);
+          vec3 w = pow(abs(n), vec3(8.0));
+          w /= w.x + w.y + w.z;
           vec3 g = vWorld / CELL;
           vec3 d = abs(fract(g - 0.5) - 0.5) / max(fwidth(g), 1e-5);
-          vec3 lines = (1.0 - smoothstep(0.6, 1.6, d)) * (1.0 - abs(n) * abs(n));
-          float line = max(lines.x, max(lines.y, lines.z));
+          vec3 on = 1.0 - smoothstep(0.7, 1.7, d);
+          float line = w.x * max(on.y, on.z) + w.y * max(on.x, on.z) + w.z * max(on.x, on.y);
           // A chunk forms: it comes up bright, then settles.
           float age = uTime - vBorn;
           float form = smoothstep(0.0, 0.25, age);
           float fresh = exp(-age / 0.6);
           // A slow ripple running out from where you are attending.
-          float ripple = exp(-pow((away - fract(uTime * 0.35) * uReach) / 0.05, 2.0));
-          float a = (line * (0.34 + 0.4 * fresh + 0.25 * ripple) + 0.035 + 0.1 * fresh) * near * form * uLevel * clear;
+          float a = (line * (0.5 + 0.3 * fresh) + 0.16 + 0.1 * fresh) * near * form * uLevel * clear;
           if (a < 0.012) discard;
           gl_FragColor = vec4(mix(uGlow, uCore, 0.35 + 0.65 * line), a);
         }`,
       transparent: true,
-      depthWrite: false,
-      depthTest: false,
+      // It hides its own far side, so a table does not show through the thing standing on it.
+      depthWrite: true,
+      depthTest: true,
       side: DoubleSide,
       toneMapped: false,
     })
@@ -96,22 +106,17 @@ export class LiveMesh {
   }
 
   /**
-   * Re-mesh what has changed near `focus`, and draw. `on` is whether anything
-   * has your attention. `joints` are the hand's, for hiding behind.
+   * Re-mesh what has changed, nearest `first` first, and draw what lies within
+   * reach of `eye`. `joints` are the hand's, for hiding behind.
    */
-  step(dt: number, time: number, field: RoomField, focus: Vector3, on: boolean, joints: readonly Vector3[], jointCount: number, still: boolean): void {
-    const goal = on ? 1 : 0
-    this.level += (goal - this.level) * (still ? 1 : Math.min(1, dt * (goal > this.level ? 4 : 1.2)))
+  step(dt: number, time: number, field: RoomField, eye: Vector3, first: Vector3, joints: readonly Vector3[], jointCount: number, still: boolean): void {
+    this.level += (1 - this.level) * (still ? 1 : Math.min(1, dt * 2))
     const u = this.mat.uniforms
     u.uTime.value = time
     u.uLevel.value = this.level
-    this.group.visible = this.level > 0.01
-    if (on) {
-      // The pool of mesh glides to where your attention goes.
-      u.uFocus.value.lerp(focus, still ? 1 : Math.min(1, dt * 6))
-      const built = field.netStale(BUDGET_MS, focus, MESH_REACH)
-      for (let i = 0; i < built.length; i++) this.put(built[i], time)
-    }
+    u.uFocus.value.copy(eye)
+    const built = field.netStale(BUDGET_MS, first, MESH_REACH + 1)
+    for (let i = 0; i < built.length; i++) this.put(built[i], time)
     const hide = Math.min(GHOST_JOINTS, Math.ceil(jointCount / 2))
     for (let i = 0; i < hide; i++) u.uJoints.value[i].copy(joints[i * 2])
     u.uJointCount.value = hide
@@ -152,6 +157,7 @@ export class LiveMesh {
     geo.setAttribute('position', new BufferAttribute(net.positions, 3))
     geo.setAttribute('aBorn', new BufferAttribute(new Float32Array(net.positions.length / 3).fill(mesh.userData.born as number), 1))
     geo.setIndex(new BufferAttribute(net.indices, 1))
+    geo.computeVertexNormals()
   }
 
   private remove(key: string): void {

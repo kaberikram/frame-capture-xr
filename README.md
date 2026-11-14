@@ -120,7 +120,7 @@ An echo photo can include a hand that was in the pane a moment ago, even after t
 
 `/peel` is its own page. Nothing is drawn on the room, and nothing is written in the air, until you mean to take something. It needs no room scan: the headset's live depth builds the room as you look around (see How it works).
 
-**You see the live mesh form.** Wherever you look, a fine grid of light grows over the real surfaces there, about 70 cm across, wrapping the shape of whatever it lies on, and small motes of light drift in and settle as the headset measures them. It moves on with your look and fades behind it. This is the depth mesh being built as you watch; nothing comes from a room scan. It is hidden behind your hand. `?mesh=0` hides the grid and `?motes=0` the motes.
+**You see the live mesh form.** Everything the headset has measured, out to about four metres, wears one connected skin with a square grid of light on it, 12 cm to a square. It wraps the real shape of walls, tables and the things on them, and grows as you look around. Small motes of light settle where depth is being read. This is the depth mesh being built as you watch; nothing comes from a room scan. It is hidden behind your hand. `?mesh=0` hides the mesh and `?motes=0` the motes.
 
 **You always see what a pinch will take, before you pinch.** Bring a hand near anything, or raise an open hand and look at a thing across the room. A ghost of the depth mesh shows there: a pale copy in the real shape of the surface, standing a few millimetres off it, with a bright line where it turns away and where it ends. A whole thing (a mug, a bag) shows as itself. Part of something bigger (a wall, a sofa, a tabletop) shows as a round piece about 38 cm across, in its real relief. The ghost is hidden behind your hand, the way the real thing is.
 
@@ -142,7 +142,7 @@ The piece is a 25 by 25 grid laid on the surface around the pinch, with the heig
 
 The place a piece left is carved out of the field, so new depth does not paint the wall back in behind the light. When the light has gone, about two seconds later, the field there is allowed to fill in again.
 
-The live mesh on show is built from the fine field with surface nets, chunk by chunk: each frame the chunks whose field changed are meshed again, nearest your attention first, until 2.5 ms are spent (`RoomField.netStale`, `src/room/live-mesh.ts`). Chunks read one voxel into their neighbours, so they join without gaps.
+The live mesh on show is built from the coarse field with surface nets, chunk by chunk: each frame the chunks whose surface has really moved are meshed again, nearest your attention first, until 3 ms are spent (`RoomField.netStale`, `src/room/live-mesh.ts`). Chunks read one voxel into their neighbours, and a change at a chunk's face marks the neighbour too, so they join without gaps. Each depth pass reads 40 by 30 places. A reading is spread along the surface it lies on (worked out from its neighbours in the depth image), and further for far readings, so the skin has no holes and a table seen at a shallow angle stays flat.
 
 A second, finer field (2 cm to a voxel) is kept only around whatever has your attention: what a fingertip is nearing, or what you are looking at with a hand raised. Every other depth pass reads an 84 by 60 cm window there instead of the whole view. A pass starts every tenth of a second. `?fine=0` turns it off.
 
