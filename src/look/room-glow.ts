@@ -430,6 +430,9 @@ export function auraMaterial(palette: Palette): ShaderMaterial {
  * blending with real opacity, so it reads over passthrough in a dim room,
  * where faint added light does not.
  */
+/** Hand joints the ghost can hide behind. */
+export const GHOST_JOINTS = 24
+
 export function ghostMaterial(palette: Palette): ShaderMaterial {
   return new ShaderMaterial({
     uniforms: {
@@ -447,6 +450,9 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       uSpan: { value: 1 },
       uCore: { value: vec(palette.core) },
       uGlow: { value: vec(palette.glow) },
+      /** Hand joints, in the room, so the ghost is hidden behind your hand like the real thing is. */
+      uJoints: { value: Array.from({ length: GHOST_JOINTS }, () => new Vector3()) },
+      uJointCount: { value: 0 },
     },
     vertexShader: /* glsl */ `
       attribute vec2 aUv;
@@ -457,6 +463,7 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       varying float vY;
       varying vec3 vView;
       varying vec3 vN;
+      varying vec3 vWorld;
       void main() {
         vUv = aUv;
         vEdge = aEdge;
@@ -466,6 +473,7 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vView = mv.xyz;
         vN = normalMatrix * normal;
+        vWorld = (modelMatrix * vec4(p, 1.0)).xyz;
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: /* glsl */ `
@@ -478,7 +486,23 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       varying float vY;
       varying vec3 vView;
       varying vec3 vN;
+      varying vec3 vWorld;
+      uniform vec3 uJoints[${GHOST_JOINTS}];
+      uniform int uJointCount;
       void main() {
+        // Behind a hand joint, as seen from the eye, the ghost gives way to the hand.
+        vec3 ray = vWorld - cameraPosition;
+        float far = length(ray);
+        ray /= max(far, 1e-4);
+        float clear = 1.0;
+        for (int i = 0; i < ${GHOST_JOINTS}; i++) {
+          if (i >= uJointCount) break;
+          vec3 j = uJoints[i] - cameraPosition;
+          float along = dot(j, ray);
+          if (along > far + 0.01) continue;
+          clear = min(clear, smoothstep(0.016, 0.034, length(j - ray * along)));
+        }
+        if (clear < 0.02) discard;
         vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
@@ -488,7 +512,7 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
         float facing = abs(dot(normalize(vN), normalize(-vView)));
         // The outline: where the shape turns away from you, and where it ends.
         float rim = smoothstep(0.55, 0.05, facing);
-        float ends = smoothstep(0.35, 0.9, vEdge);
+        float ends = smoothstep(0.8, 0.93, vEdge);
         float line = max(rim, ends);
         // A slow band of light rising through it.
         float h = (vY - uLow) / max(uSpan, 1e-3);
@@ -497,7 +521,7 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
         float breathe = 0.9 + 0.1 * sin(uTime * 2.3);
         vec3 col = mix(fill, mix(uCore, uGlow, 0.25), clamp(line * 0.85 + band * 0.4, 0.0, 1.0));
         float a = (0.2 + 0.16 * uNear) + line * 0.7 + band * 0.18;
-        a = clamp(a, 0.0, 0.92) * uLevel * breathe;
+        a = clamp(a, 0.0, 0.92) * uLevel * breathe * clear * (1.0 - smoothstep(0.95, 1.0, vEdge));
         if (a < 0.01) discard;
         gl_FragColor = vec4(col, a);
       }`,

@@ -533,6 +533,7 @@ export class CaptureSystem extends createSystem({
       kind: this.room.kind,
       attention: this.room.attention,
       outline: this.room.outline,
+      mesh: this.room.meshChunks,
     })
   }
 

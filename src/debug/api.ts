@@ -34,6 +34,8 @@ export interface CaptureApi {
   roomAttention: number
   /** How present the outline of a cut in a bare surface is, 0..1. */
   roomOutline: number
+  /** Chunks of the live mesh on show. */
+  roomMesh: number
 }
 
 export interface PhaseInputs {
@@ -66,12 +68,13 @@ export function publishApi(): void {
     roomKind: 'none',
     roomAttention: 0,
     roomOutline: 0,
+    roomMesh: 0,
   }
   ;(window as unknown as { __capture: CaptureApi }).__capture = api
 }
 
 /** Point the debug hook at the live time window. */
-export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number; kind: string; attention: number; outline: number }): void {
+export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number; kind: string; attention: number; outline: number; mesh: number }): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return
   api.room = room.active
@@ -84,6 +87,7 @@ export function publishRoom(room: { active: boolean; chunks: number; pieces: num
   api.roomKind = room.kind
   api.roomAttention = room.attention
   api.roomOutline = room.outline
+  api.roomMesh = room.mesh
 }
 
 export function bindWarpApi(cycle: () => string): void {

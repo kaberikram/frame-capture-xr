@@ -22,7 +22,9 @@ import { makeContactRing } from '../look/contact.js'
 import { motesEffect, type Effect } from '../look/effects.js'
 import { makeDust } from '../look/motes.js'
 import { PALETTE } from '../look/palette.js'
-import { cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
+import { DepthMotes } from '../look/depth-motes.js'
+import { LiveMesh } from './live-mesh.js'
+import { GHOST_JOINTS, cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
 import { focusRect, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
@@ -32,9 +34,9 @@ import { PIECE_MAX, STICK_GAP, TOUCH_GAP, canLand, tangentBasis } from './patch.
 import { PeelPiece, type PieceState, type RoomPiece } from './peel-piece.js'
 import type { RoomPlates, Skin } from './plates.js'
 
-const FUSE_EVERY = 0.16
+const FUSE_EVERY = 0.1
 /** Samples fused on one frame. The rest of a depth image waits, so the frame stays smooth. */
-const SAMPLE_BUDGET = 140
+const SAMPLE_BUDGET = 200
 /** Pieces kept. The oldest fades to make room for a new one. */
 const MAX_PIECES = 12
 /** A fingertip this far from a surface starts to gather light on it, metres. */
@@ -43,6 +45,16 @@ const POOL_REACH = 0.3
 const LANDING = 2
 /** The size of a piece of bare surface, the same in its outline and when it comes away, metres. */
 const CUT_R = 0.11
+/**
+ * `?flat=1` brings back the flat peel: a bare surface gives a torn flat piece
+ * with an outline first. Without it, everything a pinch takes is a piece of
+ * the depth mesh in its real shape.
+ */
+const FLAT = queryFlag('flat') === '1'
+/** `?motes=0` hides the motes of light that show depth being read. */
+const MOTES = queryFlag('motes') !== '0'
+/** `?mesh=0` hides the live mesh. */
+const MESH = queryFlag('mesh') !== '0'
 /** A pinch this close to the fingertip a preview follows is that hand's pinch, metres. */
 const OFFER_HAND = 0.12
 /** How far away a thing can be and still be lifted by looking at it, metres. */
@@ -54,8 +66,8 @@ const GAZE_GRACE = 0.6
 const DEPTH_COLS = 28
 const DEPTH_ROWS = 20
 /** The close look: this much of the room around what has your attention, metres. */
-const FOCUS_WIDE = 0.7
-const FOCUS_TALL = 0.5
+const FOCUS_WIDE = 0.84
+const FOCUS_TALL = 0.6
 /** The fine field: small voxels, held only around what has your attention. */
 const FINE_VOXEL = 0.02
 const FINE_CHUNKS = 300
@@ -205,6 +217,8 @@ export class RoomScan {
   private focusOn = false
   private readonly preview: Preview
   private readonly cutHand = new Vector3()
+  private readonly motes: DepthMotes | null = MOTES ? new DepthMotes(PALETTE) : null
+  private readonly live: LiveMesh | null = MESH ? new LiveMesh(PALETTE) : null
   /** Pieces that came without a camera picture, and when. A later frame that saw the spot will do. */
   private readonly bare = new Map<RoomPiece, number>()
   /** Flat pieces whose place in the wall has been given back. */
@@ -265,6 +279,8 @@ export class RoomScan {
     cut.frustumCulled = false
     cut.visible = false
     this.group.add(ghost, cut)
+    if (this.live) this.group.add(this.live.group)
+    if (this.motes) this.group.add(this.motes.points)
     this.preview = {
       shell: null,
       ghostShell: null,
@@ -362,6 +378,11 @@ export class RoomScan {
   /** The ghost of a thing a pinch would lift is showing, 0 to 1. */
   get attention(): number {
     return this.preview.ghostLevel
+  }
+
+  /** Chunks of live mesh on show. */
+  get meshChunks(): number {
+    return this.live?.chunkCount ?? 0
   }
 
   /** The outline of the cut a pinch would make in a bare surface is showing, 0 to 1. */
@@ -464,7 +485,7 @@ export class RoomScan {
     }
     if (hit) {
       const shell = this.shellAt(hit)
-      if (shell && shell.kind === 'object') this.beginObject(shell, point, false)
+      if (shell && (!FLAT || shell.kind === 'object')) this.beginObject(shell, point, false)
       else this.begin(hit, point, view, Math.random() * 40, CUT_R)
       return true
     }
@@ -513,7 +534,7 @@ export class RoomScan {
       return surface.dist
     }
     const shell = this.shellAt(surface)
-    if (shell && shell.kind === 'object') this.beginObject(shell, start, false)
+    if (shell && (!FLAT || shell.kind === 'object')) this.beginObject(shell, start, false)
     else this.begin(surface, start, origin, Math.random() * 40, CUT_R)
     return surface.dist
   }
@@ -594,6 +615,8 @@ export class RoomScan {
       // stand-in must not be left standing in your real one.
       this.field.clear()
       this.fine?.clear()
+      this.motes?.clear()
+      this.live?.clear()
       this.queue = []
       this.queueAt = 0
       this.depthMiss = 0
@@ -653,6 +676,9 @@ export class RoomScan {
       this.effects.splice(i, 1)
     }
     this.stepPools(dt)
+    this.motes?.step(this.time, this.pixelScale(), REDUCE_MOTION)
+    // The live mesh is drawn from the field a pinch lifts from: the fine one, or the coarse one without it.
+    this.live?.step(dt, this.time, this.fine ?? this.field, this.focus, this.focusOn, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
   }
 
   dispose(): void {
@@ -667,6 +693,8 @@ export class RoomScan {
     this.releaseGhostSkin()
     this.preview.cutSkin?.dispose()
     this.preview.cutSkin = null
+    this.motes?.dispose()
+    this.live?.dispose()
   }
 
   /** The surface a ray meets first, in whichever field sees it better. */
@@ -849,12 +877,26 @@ export class RoomScan {
       }
     }
     this.focusOn = target !== null
+    if (!target && this.presenting && !this.held) {
+      // No hand is up, but the mesh still forms where you look.
+      const far = this.surfaceOnRay(this.eye, this.gazeDir, GAZE_REACH, this.hitC)
+      if (far) {
+        this.focus.set(far.x, far.y, far.z)
+        this.focusOn = true
+      }
+    }
     let wantGhost = 0
     let wantCut = 0
     if (target) {
       const at = target
       this.focus.set(at.x, at.y, at.z)
-      const on = (shell: Shell | null) => shell !== null && shell.kind === 'object' && onShell(shell, at.x, at.y, at.z)
+      // A whole thing is offered while the finger is on it. A piece of something bigger is cut
+      // where the finger is, so it is offered only while the finger stays near its middle.
+      const on = (shell: Shell | null) =>
+        shell !== null &&
+        (shell.kind === 'object'
+          ? onShell(shell, at.x, at.y, at.z)
+          : !FLAT && !remote && Math.hypot(at.x - shell.cx, at.y - shell.cy, at.z - shell.cz) < 0.05)
       // Look again when the attention has moved somewhere new, and now and then as depth fills in.
       const moved = Math.hypot(at.x - this.lookedAt.x, at.y - this.lookedAt.y, at.z - this.lookedAt.z) > 0.05
       if (seen.wait <= 0 && (seen.age > 0.8 || (moved && !on(seen.shell)))) {
@@ -864,7 +906,7 @@ export class RoomScan {
       }
       seen.remote = remote
       if (on(seen.shell)) wantGhost = 1
-      else if (!remote) {
+      else if (!remote && FLAT) {
         wantCut = 1
         this.aimCut(at)
       }
@@ -890,6 +932,10 @@ export class RoomScan {
     g.uLevel.value = seen.ghostLevel
     g.uNear.value = seen.near
     g.uTime.value = REDUCE_MOTION ? 0 : this.time
+    // Every other joint is enough for the ghost to hide behind the hand.
+    const hide = Math.min(GHOST_JOINTS, Math.ceil(this.jointCount / 2))
+    for (let i = 0; i < hide; i++) g.uJoints.value[i].copy(this.joints[i * 2])
+    g.uJointCount.value = this.presenting ? hide : 0
     if (seen.ghostShell && seen.ghost.visible) {
       // It leans out of the real thing toward you, more as the hand nears.
       this.scratch.copy(this.eye).sub(this.local.set(seen.ghostShell.cx, seen.ghostShell.cy, seen.ghostShell.cz))
@@ -980,7 +1026,7 @@ export class RoomScan {
     seen.remote = remote
     seen.age = 0
     // Anything but a whole thing leaves the ghost as it is, fading out on the thing it was.
-    if (!shell || shell.kind !== 'object') return
+    if (!shell || (shell.kind !== 'object' && (FLAT || remote))) return
     const was = seen.ghostShell
     const moved = !was || Math.hypot(shell.cx - was.cx, shell.cy - was.cy, shell.cz - was.cz) > 0.08
     seen.ghostShell = shell
@@ -1168,8 +1214,9 @@ export class RoomScan {
       this.queueAt = end
     }
     // Chunks a field let go of are gone. Nothing is drawn from them.
-    this.field.takeRetired()
-    this.fine?.takeRetired()
+    const gone = this.field.takeRetired()
+    const goneFine = this.fine?.takeRetired()
+    this.live?.drop(this.fine ? (goneFine ?? []) : gone)
   }
 
   private fuseDesk(camera: PerspectiveCamera, standIn: Object3D, close: boolean): void {
@@ -1404,6 +1451,15 @@ export class RoomScan {
       const fy = forward.y
       const fz = forward.z
       samples.sort((a, b) => alignment(b, fx, fy, fz) - alignment(a, fx, fy, fz))
+    }
+    // Show the depth as it is read: all of a close look, a scattering of the wide one.
+    if (this.motes) {
+      const share = field === this.field ? 0.25 : 0.35
+      for (let i = 0; i < samples.length; i++) {
+        if (Math.random() > share) continue
+        const p = samples[i]
+        this.motes.add(p.px, p.py, p.pz, this.eye, this.time)
+      }
     }
     this.queue = samples
     this.queueField = field

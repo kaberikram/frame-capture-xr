@@ -139,3 +139,39 @@ wide.extract(1)
 assert(DIAL_MODES.length === WARP_MODES.length && !DIAL_MODES.includes('peel' as never), 'the palm stack is only time effects; the peel has its own page')
 
 console.log('room ok')
+
+// The live mesh: smooth chunks that join without gaps and face the open side.
+{
+  const live = new RoomField(0.02, 300, 2)
+  const rays = []
+  // 676 readings, under the cap on one fuse.
+  for (let y = 0; y < 26; y++) for (let x = 0; x < 26; x++) rays.push({ ox: 0, oy: 1, oz: 0, px: -0.375 + x * 0.03, py: 0.625 + y * 0.03, pz: -1.003 })
+  for (let pass = 0; pass < 3; pass++) live.integrate(rays)
+  const meshes = live.netStale(1000, { x: 0, y: 1, z: -1 }, 5)
+  let tris = 0
+  let area = 0
+  let facing = 0
+  for (const mesh of meshes) {
+    for (let t = 0; t < mesh.indices.length; t += 3) {
+      const a = mesh.indices[t] * 3
+      const b = mesh.indices[t + 1] * 3
+      const c = mesh.indices[t + 2] * 3
+      const p = mesh.positions
+      const nz = (p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[b + 1] - p[a + 1]) * (p[c] - p[a])
+      area += Math.abs(nz) / 2
+      if (nz > 0) facing++
+      tris++
+      assert(Math.abs(p[a + 2] + 1.003) < 0.02, `the live mesh lies on the wall, got z ${p[a + 2]}`)
+    }
+  }
+  assert(meshes.length > 4 && tris > 500, `a wall across several chunks is meshed (${meshes.length} chunks, ${tris} triangles)`)
+  // All but the few that curl round the edge of what was seen.
+  assert(facing > tris * 0.99, `the live mesh faces the eye, ${facing} of ${tris}`)
+  // A 0.75 m square was seen; the mesh should cover nearly all of it, so the chunks join without gaps.
+  assert(area > 0.75 * 0.75 * 0.93 && area < 0.85 * 0.85, `the chunks join into one sheet, area ${area.toFixed(3)}`)
+  assert(live.netStale(1000, { x: 0, y: 1, z: -1 }, 5).length === 0, 'an unchanged field has nothing to re-mesh')
+  live.integrate(rays.slice(0, 5))
+  const again = live.netStale(1000, { x: 0, y: 1, z: -1 }, 5).length
+  assert(again > 0 && again < meshes.length, `only the chunks that changed are meshed again (${again})`)
+}
+console.log('live mesh ok')
