@@ -267,24 +267,57 @@ async function peelHeadset(browser, failures, usage) {
     await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
     check(await until(async () => (await api()).roomPiece === 'free', 3000), `${name}: let go in the air and it floats (got ${(await api()).roomPiece})`, failures)
   }
-  // Lift from where you stand: a hand raised in view, nothing in reach, and a pinch takes what you are looking at.
+  // Lift from where you stand. Turn the head; with a hand raised in view, the ghost of a thing shows where you look.
   await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
-  await hand([0.12, 1.45, -0.4])
+  const look = (yaw, pitch) => page.evaluate(([yaw, pitch]) => {
+    const d = window.IWER_DEVICE
+    const sy = Math.sin(yaw / 2), cy = Math.cos(yaw / 2), sx = Math.sin(pitch / 2), cx = Math.cos(pitch / 2)
+    d.quaternion.set(cy * sx, sy * cx, -sy * sx, cy * cx)
+    // The hand is held up in front, a little to the right: rotate (0.12, -0.05, -0.4) by the head.
+    const q = { x: cy * sx, y: sy * cx, z: -sy * sx, w: cy * cx }
+    const v = { x: 0.12, y: -0.05, z: -0.4 }
+    const tx = 2 * (q.y * v.z - q.z * v.y), ty = 2 * (q.z * v.x - q.x * v.z), tz = 2 * (q.x * v.y - q.y * v.x)
+    const rx = v.x + q.w * tx + (q.y * tz - q.z * ty)
+    const ry = v.y + q.w * ty + (q.z * tx - q.x * tz)
+    const rz = v.z + q.w * tz + (q.x * ty - q.y * tx)
+    const p = d.position
+    d.hands.right.position.set(p.x + rx, p.y + ry, p.z + rz)
+    return [rx, ry, rz]
+  }, [yaw, pitch])
+  // A bare wall straight ahead is not taken from across the room.
+  await look(0, 0)
   await page.waitForTimeout(1200)
-  const piecesBefore = (await api()).roomPatches
+  const before = (await api()).roomPatches
   await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))
-  const far = await until(async () => { const a = await api(); return a.roomPiece === 'lifting' && a.roomPatches === piecesBefore + 1 }, 3000)
-  check(far, `${name}: a pinch in the air takes what you are looking at (got ${(await api()).roomPiece}, ${(await api()).roomKind})`, failures)
-  if (far) {
-    check((await api()).roomKind === 'object', `${name}: it comes as a shape, not a flat piece (got ${(await api()).roomKind})`, failures)
-    for (let i = 1; i <= 12; i++) {
-      await hand([0.12, 1.45, -0.4 + 0.012 * i])
-      await page.waitForTimeout(80)
+  await page.waitForTimeout(700)
+  check((await api()).roomPatches === before, `${name}: a pinch in the air at a bare wall takes nothing (pieces ${before} then ${(await api()).roomPatches})`, failures)
+  await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+  let aim = null
+  for (const pitch of [-0.45, -0.3, -0.6, -0.15]) {
+    for (const yaw of [0, 0.25, -0.25, 0.5, -0.5, 0.75, -0.75]) {
+      await look(yaw, pitch)
+      if (await until(async () => (await api()).roomAttention > 0.6, 1600)) { aim = [yaw, pitch]; break }
     }
-    check(await until(async () => (await api()).roomPiece === 'carried', 3000), `${name}: a short pull brings it to the hand (got ${(await api()).roomPiece})`, failures)
-    await page.waitForTimeout(900)
-    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
-    check(await until(async () => (await api()).roomPiece === 'free', 3000), `${name}: let go and it floats by the hand (got ${(await api()).roomPiece})`, failures)
+    if (aim) break
+  }
+  check(aim !== null, `${name}: looking at a thing with a hand raised shows its ghost (at ${aim})`, failures)
+  if (aim) {
+    const hand = await look(aim[0], aim[1])
+    const count = (await api()).roomPatches
+    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))
+    const far = await until(async () => { const a = await api(); return a.roomPiece === 'lifting' && a.roomPatches === count + 1 }, 3000)
+    check(far && (await api()).roomKind === 'object', `${name}: a pinch in the air takes the thing whose ghost showed (got ${(await api()).roomPiece}, ${(await api()).roomKind})`, failures)
+    if (far) {
+      // Pull back toward you.
+      for (let i = 1; i <= 12; i++) {
+        await page.evaluate(([x, y, z, k]) => { const p = window.IWER_DEVICE.position; window.IWER_DEVICE.hands.right.position.set(p.x + x * k, p.y + y * k, p.z + z * k) }, [...hand, 1 - 0.03 * i])
+        await page.waitForTimeout(80)
+      }
+      check(await until(async () => (await api()).roomPiece === 'carried', 3000), `${name}: a short pull brings it to the hand (got ${(await api()).roomPiece})`, failures)
+      await page.waitForTimeout(900)
+      await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+      check(await until(async () => ['free', 'landing', 'stuck'].includes((await api()).roomPiece), 3000), `${name}: let go and it stays by the hand (got ${(await api()).roomPiece})`, failures)
+    }
   }
   check((await api()).count === 0, `${name}: no frame is drawn`, failures)
   check(errors.length === 0, `${name}: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
