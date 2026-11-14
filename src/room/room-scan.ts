@@ -2,6 +2,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   Group,
+  Matrix4,
   Mesh,
   OrthographicCamera,
   PlaneGeometry,
@@ -204,6 +205,9 @@ export class RoomScan {
   private readonly local = new Vector3()
   private readonly centre = new Vector3()
   private readonly quat = new Quaternion()
+  private readonly basis = new Matrix4()
+  private readonly cutT = new Vector3()
+  private readonly cutB = new Vector3()
   private readonly hitA = surfacePoint()
   private readonly hitB = surfacePoint()
   private readonly hitC = surfacePoint()
@@ -814,7 +818,7 @@ export class RoomScan {
       if (on(seen.shell)) wantGhost = 1
       else if (!remote) {
         wantCut = 1
-        this.aimCut(at, hand)
+        this.aimCut(at)
       }
     }
     this.pictureCut(dt, wantCut > 0)
@@ -854,7 +858,12 @@ export class RoomScan {
     c.uTime.value = REDUCE_MOTION ? 0 : this.time
     if (seen.cut.visible) {
       seen.cut.position.copy(seen.cutAt).addScaledVector(seen.cutNormal, 0.004)
-      seen.cut.quaternion.setFromUnitVectors(this.forward, seen.cutNormal)
+      // The same axes across the surface as the piece will have, so the torn
+      // outline shown is the one that comes away, not a turned copy of it.
+      const n = seen.cutNormal
+      const basis = tangentBasis(n.x, n.y, n.z)
+      this.basis.makeBasis(this.cutT.set(basis.tx, basis.ty, basis.tz), this.cutB.set(basis.bx, basis.by, basis.bz), n)
+      seen.cut.quaternion.setFromRotationMatrix(this.basis)
       seen.cut.scale.setScalar(CUT_R * 3)
       // Where the fingertip is over the cut, in the cut's own metres.
       this.cutHand.copy(hand ?? seen.cutAt).sub(seen.cutAt).applyQuaternion(this.quatInverse(seen.cut))
@@ -888,12 +897,12 @@ export class RoomScan {
   }
 
   /** The cut sits under the fingertip, and glides with it. */
-  private aimCut(hit: SurfacePoint, hand: Vector3 | null): void {
+  private aimCut(hit: SurfacePoint): void {
     const seen = this.preview
     this.scratch.set(hit.x, hit.y, hit.z)
     this.local.set(hit.nx, hit.ny, hit.nz)
-    // It faces whoever is looking at it.
-    if (this.local.dot(this.cutHand.copy(hand ?? this.eye).sub(this.scratch)) < 0) this.local.negate()
+    // It faces the eye, the same way the piece will.
+    if (this.local.dot(this.cutHand.copy(this.eye).sub(this.scratch)) < 0) this.local.negate()
     if (seen.cutLevel < 0.02) {
       seen.cutAt.copy(this.scratch)
       seen.cutNormal.copy(this.local)
