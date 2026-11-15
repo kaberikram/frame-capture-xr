@@ -18,6 +18,8 @@ export class LiveMesh {
   private readonly mat: ShaderMaterial
   private readonly meshes = new Map<string, Mesh>()
   private level = 0
+  /** False in a headset session. */
+  deskDepth = true
 
   constructor(palette: Palette) {
     this.group.name = 'room-live-mesh'
@@ -120,6 +122,13 @@ export class LiveMesh {
    * touches are re-meshed. `joints` are the hand's, for hiding behind.
    */
   step(dt: number, time: number, field: RoomField, centre: Vector3, radius: number, across: Vector3, up: Vector3, on: boolean, joints: readonly Vector3[], jointCount: number, still: boolean): void {
+    // Depth is only tested on the desk, where the stand-in room is drawn. Over passthrough nothing
+    // real is in the depth buffer, and the mesh must never lose to whatever a headset leaves there.
+    const desk = jointCount === 0 && this.deskDepth
+    if (this.mat.depthTest !== desk) {
+      this.mat.depthTest = desk
+      this.mat.depthWrite = desk
+    }
     const goal = on ? 1 : 0
     this.level += (goal - this.level) * (still ? 1 : Math.min(1, dt * (goal > this.level ? 10 : 6)))
     const u = this.mat.uniforms
