@@ -193,7 +193,8 @@ async function room(browser, failures) {
   check(state.lights === 1, `peel: warm light opens where it was (lights ${state.lights})`, failures)
 
   // Carry it over the table and let go.
-  const [tx, ty] = at(0.79, 0.965)
+  // Well onto the table, not at its front edge, where the depth is ragged.
+  const [tx, ty] = at(0.76, 0.955)
   await page.mouse.move(tx, ty, { steps: 24 })
   await page.waitForTimeout(500)
   await page.mouse.up()

@@ -2,6 +2,7 @@ import { BufferAttribute, BufferGeometry, DoubleSide, Group, Mesh, ShaderMateria
 import type { Palette } from '../look/palette.js'
 import { GHOST_JOINTS } from '../look/room-glow.js'
 import type { NetMesh, RoomField } from './field.js'
+import { SQUARE_CORNER } from './object.js'
 
 /** Milliseconds a frame may spend re-meshing. */
 const BUDGET_MS = 3
@@ -29,6 +30,9 @@ export class LiveMesh {
         uCore: { value: new Vector3(...palette.core) },
         uGlow: { value: new Vector3(...palette.glow) },
         uRim: { value: new Vector3(1, 0.72, 0.38) },
+        /** The two directions across the surface that the square's sides run along. */
+        uAcross: { value: new Vector3(1, 0, 0) },
+        uUp: { value: new Vector3(0, 1, 0) },
         uJoints: { value: Array.from({ length: GHOST_JOINTS }, () => new Vector3()) },
         uJointCount: { value: 0 },
       },
@@ -50,7 +54,7 @@ export class LiveMesh {
         }`,
       fragmentShader: /* glsl */ `
         uniform float uTime, uLevel, uReach;
-        uniform vec3 uFocus, uCore, uGlow, uRim;
+        uniform vec3 uFocus, uCore, uGlow, uRim, uAcross, uUp;
         uniform vec3 uJoints[${GHOST_JOINTS}];
         uniform int uJointCount;
         varying vec3 vWorld;
@@ -58,11 +62,15 @@ export class LiveMesh {
         varying float vBorn;
         const float CELL = 0.12;
         void main() {
-          float away = length(vWorld - uFocus);
-          float near = 1.0 - smoothstep(uReach - 0.006, uReach, away);
+          // The torch's lit area: a rounded square across the surface, as deep as it is wide.
+          vec3 off = vWorld - uFocus;
+          float corner = uReach * ${SQUARE_CORNER.toFixed(2)};
+          vec2 q = abs(vec2(dot(off, uAcross), dot(off, uUp))) - (uReach - corner);
+          float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - corner;
+          float near = (1.0 - smoothstep(-0.006, 0.0, sd)) * (1.0 - smoothstep(uReach * 1.6, uReach * 2.0, length(off)));
           if (near * uLevel < 0.01) discard;
-          // The rim of the torch's circle, drawn on the surface itself.
-          float rim = exp(-pow((away - (uReach - 0.012)) / 0.006, 2.0));
+          // Its rim, drawn on the surface itself.
+          float rim = exp(-pow((sd + 0.012) / 0.006, 2.0));
           // Behind your hand, as seen from the eye, the mesh gives way to the hand.
           vec3 ray = vWorld - cameraPosition;
           float far = length(ray);
@@ -107,10 +115,11 @@ export class LiveMesh {
   }
 
   /**
-   * Light the mesh inside a circle: `centre` and `radius`, while `on`. Only the
-   * chunks the circle touches are re-meshed. `joints` are the hand's, for hiding behind.
+   * Light the mesh inside a rounded square: `centre`, half-width `radius`, and
+   * the two directions its sides run along, while `on`. Only the chunks it
+   * touches are re-meshed. `joints` are the hand's, for hiding behind.
    */
-  step(dt: number, time: number, field: RoomField, centre: Vector3, radius: number, on: boolean, joints: readonly Vector3[], jointCount: number, still: boolean): void {
+  step(dt: number, time: number, field: RoomField, centre: Vector3, radius: number, across: Vector3, up: Vector3, on: boolean, joints: readonly Vector3[], jointCount: number, still: boolean): void {
     const goal = on ? 1 : 0
     this.level += (goal - this.level) * (still ? 1 : Math.min(1, dt * (goal > this.level ? 10 : 6)))
     const u = this.mat.uniforms
@@ -122,7 +131,9 @@ export class LiveMesh {
       const fresh = this.level < 0.05 || still
       u.uFocus.value.lerp(centre, fresh ? 1 : Math.min(1, dt * 16))
       u.uReach.value += (radius - u.uReach.value) * (fresh ? 1 : Math.min(1, dt * 10))
-      const built = field.netStale(BUDGET_MS, centre, radius + 0.3)
+      u.uAcross.value.lerp(across, fresh ? 1 : Math.min(1, dt * 10)).normalize()
+      u.uUp.value.lerp(up, fresh ? 1 : Math.min(1, dt * 10)).normalize()
+      const built = field.netStale(BUDGET_MS, centre, radius * 1.42 + 0.3)
       for (let i = 0; i < built.length; i++) this.put(built[i], time)
     }
     const hide = Math.min(GHOST_JOINTS, Math.ceil(jointCount / 2))

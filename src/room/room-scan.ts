@@ -30,7 +30,7 @@ import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
 import { liftShell, pickShell, type Shell } from './object.js'
 import { ObjectPiece, shellGeometry, shellImageCoords } from './object-piece.js'
-import { PIECE_MAX, STICK_GAP, TOUCH_GAP, canLand, tangentBasis } from './patch.js'
+import { PIECE_MAX, STICK_GAP, TOUCH_GAP, basisKeeping, canLand, tangentBasis, type Basis } from './patch.js'
 import { PeelPiece, type PieceState, type RoomPiece } from './peel-piece.js'
 import type { RoomPlates, Skin } from './plates.js'
 
@@ -746,10 +746,11 @@ export class RoomScan {
     // The live mesh is lit only inside the torch's circle: that is what a pinch takes.
     if (this.live) {
       const seen = this.preview
-      if (MESH_ALL) this.live.step(dt, this.time, this.field, this.eye, 4, true, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
+      if (MESH_ALL) this.live.step(dt, this.time, this.field, this.eye, 4, this.cutT.set(1, 0, 0), this.cutB.set(0, 1, 0), true, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
       else {
         this.spotAt.set(seen.spotHit.x, seen.spotHit.y, seen.spotHit.z)
-        this.live.step(dt, this.time, this.field, this.spotAt, seen.spotR, seen.offer !== null && seen.offer !== 'cut' && !this.held, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
+        const sides = this.squareAt(seen.spotHit)
+        this.live.step(dt, this.time, this.field, this.spotAt, seen.spotR, this.cutT.set(sides.tx, sides.ty, sides.tz), this.cutB.set(sides.bx, sides.by, sides.bz), seen.offer !== null && seen.offer !== 'cut' && !this.held, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
       }
     }
   }
@@ -782,7 +783,7 @@ export class RoomScan {
 
   /** The shell a pinch at `hit` would lift: from the fine field where it has looked closely, or else the coarse one. */
   private shellAt(hit: SurfacePoint, piece?: number): Shell | null {
-    const options = piece === undefined ? undefined : { piece }
+    const options = piece === undefined ? undefined : { piece, square: this.squareAt(hit) }
     const coarse = liftShell(this.field, hit, this.eye, options)
     const fine = this.fine
     if (!fine || !fine.near(hit.x, hit.y, hit.z, 0.04, this.hitD)) return coarse
@@ -824,6 +825,28 @@ export class RoomScan {
       this.field.carve(at.x, at.y, at.z, other.radius * 0.8)
       this.fine?.carve(at.x, at.y, at.z, other.radius * 0.8)
     }
+  }
+
+  /**
+   * The sides of the torch's square on the surface at `hit`: level across the
+   * way you see it, so on a wall it stands upright and on a table it faces you.
+   */
+  private squareAt(hit: { x: number; y: number; z: number; nx: number; ny: number; nz: number }): Basis {
+    let nx = hit.nx
+    let ny = hit.ny
+    let nz = hit.nz
+    const vx = this.eye.x - hit.x
+    const vy = this.eye.y - hit.y
+    const vz = this.eye.z - hit.z
+    if (nx * nx + ny * ny + nz * nz < 1e-6) {
+      const l = Math.hypot(vx, vy, vz) || 1
+      nx = vx / l
+      ny = vy / l
+      nz = vz / l
+    }
+    // Your right, as you look at it: level, and square to the line of sight.
+    const rl = Math.hypot(vz, vx)
+    return rl > 1e-4 ? basisKeeping(nx, ny, nz, -vz / rl, 0, vx / rl) : tangentBasis(nx, ny, nz)
   }
 
   /** Make room: the oldest piece that nobody is holding goes. */
@@ -984,6 +1007,10 @@ export class RoomScan {
         seen.spotHit.x = thing.cx
         seen.spotHit.y = thing.cy
         seen.spotHit.z = thing.cz
+        // Round a thing, the square faces you.
+        seen.spotHit.nx = 0
+        seen.spotHit.ny = 0
+        seen.spotHit.nz = 0
         seen.spotR = thing.radius * 1.15 + 0.02
       } else if (!remote && FLAT) {
         wantCut = 1
@@ -1182,6 +1209,15 @@ export class RoomScan {
       hit =
         this.field.near(c.x, c.y, c.z, STICK_GAP, this.hitB) ??
         this.field.surfaceAlong(c.x + n.x * 0.02, c.y + n.y * 0.02, c.z + n.z * 0.02, -n.x, -n.y, -n.z, STICK_GAP + 0.03, this.hitB)
+      if (!hit) {
+        // Carried a little way into a surface, it is past where the field knows how near it is.
+        // Come at the surface from your side of it.
+        this.scratch.copy(this.eye).sub(c)
+        if (this.scratch.lengthSq() > 1e-6) {
+          this.scratch.normalize()
+          hit = this.field.surfaceAlong(c.x + this.scratch.x * 0.12, c.y + this.scratch.y * 0.12, c.z + this.scratch.z * 0.12, -this.scratch.x, -this.scratch.y, -this.scratch.z, 0.12 + STICK_GAP, this.hitB)
+        }
+      }
     }
     if (!hit) return
     const fromSource = piece.flat

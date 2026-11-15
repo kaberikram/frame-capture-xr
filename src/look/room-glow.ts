@@ -334,7 +334,7 @@ export function shellMaterial(palette: Palette): ShaderMaterial {
       varying vec3 vN;
       const float CAMERA_GAIN = ${CAMERA_GAIN};
       void main() {
-        float alpha = uShow * (1.0 - smoothstep(0.7, 1.0, vEdge));
+        float alpha = uShow * (1.0 - smoothstep(0.86, 1.0, vEdge));
         if (alpha < 0.02) discard;
         vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
