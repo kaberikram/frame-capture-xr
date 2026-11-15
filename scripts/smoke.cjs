@@ -118,10 +118,8 @@ async function mesh(browser, failures) {
   const wy = (box?.y ?? 0) + (box?.height ?? 640) * 0.36
   await page.mouse.move(wx - 20, wy)
   await page.mouse.move(wx, wy)
-  let state = await until((s) => s.roomSpot > 0.5, 6000)
-  check(state.roomSpot > 0.5 && state.roomOutline < 0.05 && state.roomAttention < 0.1, `mesh: the torch's circle lights the mesh on a bare wall (circle ${state.roomSpot.toFixed(2)}, outline ${state.roomOutline.toFixed(2)}, ghost ${state.roomAttention.toFixed(2)})`, failures)
-  state = await until((s) => s.roomMesh > 3, 6000)
-  check(state.roomMesh > 3, `mesh: the live mesh forms on the wall under the cursor (${state.roomMesh} chunks)`, failures)
+  let state = await until((s) => s.roomAttention > 0.5, 6000)
+  check(state.roomAttention > 0.5 && state.roomOutline < 0.05, `mesh: the piece of wall a pinch would take shows as a grid on its own mesh (ghost ${state.roomAttention.toFixed(2)}, outline ${state.roomOutline.toFixed(2)})`, failures)
   await page.mouse.down()
   await page.mouse.move(wx, wy - 30, { steps: 6 })
   await page.waitForTimeout(300)
@@ -261,7 +259,6 @@ async function peelHeadset(browser, failures, usage) {
   const api = () => page.evaluate(() => ({ ...window.__capture }))
   check(await until(async () => logs.some((l) => l.includes('depth-sensing')), 30000), `${name}: the session is granted depth sensing`, failures)
   check(await until(async () => logs.some((l) => l.includes(`room depth is ${usage}-optimized`)), 20000), `${name}: depth arrives the ${usage} way`, failures)
-  check(await until(async () => (await api()).roomMesh > 3, 30000), `${name}: the live mesh forms where you look (${(await api()).roomMesh} chunks)`, failures)
   check(await until(async () => (await api()).roomChunks > 220, 40000), `${name}: depth builds the room (chunks ${(await api()).roomChunks})`, failures)
   const hand = (p) => page.evaluate(([x, y, z]) => window.IWER_DEVICE.hands.right.position.set(x, y, z), p)
   // Reach forward until light gathers under the fingertip: that is a surface.
@@ -323,8 +320,8 @@ async function peelHeadset(browser, failures, usage) {
   }, [yaw, pitch])
   // The hand is a torch. Held up in the air, its circle lights the mesh across the room, and a pinch takes what is lit.
   await look(0, 0)
-  const lit = await until(async () => (await api()).roomSpot > 0.6, 5000)
-  check(lit, `${name}: a hand held up lights a circle of mesh where it points (circle ${(await api()).roomSpot.toFixed(2)})`, failures)
+  const lit = await until(async () => (await api()).roomAttention > 0.6, 6000)
+  check(lit, `${name}: a hand held up shows the piece of mesh it points at (ghost ${(await api()).roomAttention.toFixed(2)})`, failures)
   if (lit) {
     const before = (await api()).roomPatches
     await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))

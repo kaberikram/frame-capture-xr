@@ -450,6 +450,11 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       uSpan: { value: 1 },
       uCore: { value: vec(palette.core) },
       uGlow: { value: vec(palette.glow) },
+      uRim: { value: new Vector3(1, 0.72, 0.38) },
+      /** 1 draws the grid on the shape, for the preview of what a pinch takes. */
+      uGrid: { value: 0 },
+      /** Metres to a grid square. */
+      uCell: { value: 0.04 },
       /** Hand joints, in the room, so the ghost is hidden behind your hand like the real thing is. */
       uJoints: { value: Array.from({ length: GHOST_JOINTS }, () => new Vector3()) },
       uJointCount: { value: 0 },
@@ -480,7 +485,8 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       uniform sampler2D uMap;
       uniform vec4 uUvRect;
       uniform float uHasMap, uEncode, uLevel, uNear, uTime, uLow, uSpan;
-      uniform vec3 uCore, uGlow;
+      uniform vec3 uCore, uGlow, uRim;
+      uniform float uGrid, uCell;
       varying vec2 vUv;
       varying float vEdge;
       varying float vY;
@@ -513,13 +519,23 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
         // The outline: where the shape turns away from you, and where it ends.
         float rim = smoothstep(0.55, 0.05, facing);
         float ends = smoothstep(0.8, 0.93, vEdge);
-        float line = max(rim, ends);
+        // A square grid on its real shape, laid across whichever of the room's axes each part faces most.
+        vec3 wn = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+        vec3 w = pow(abs(wn), vec3(8.0));
+        w /= w.x + w.y + w.z;
+        vec3 gp = vWorld / uCell;
+        vec3 gd = abs(fract(gp - 0.5) - 0.5) / max(fwidth(gp), 1e-5);
+        vec3 gl = 1.0 - smoothstep(0.7, 1.7, gd);
+        float grid = (w.x * max(gl.y, gl.z) + w.y * max(gl.x, gl.z) + w.z * max(gl.x, gl.y)) * uGrid;
+        float line = max(max(rim * (1.0 - 0.6 * uGrid), ends), grid * 0.8);
         // A slow band of light rising through it.
         float h = (vY - uLow) / max(uSpan, 1e-3);
         float sweep = fract(uTime * 0.32) * 1.5 - 0.25;
         float band = exp(-pow((h - sweep) / 0.09, 2.0));
         float breathe = 0.9 + 0.1 * sin(uTime * 2.3);
         vec3 col = mix(fill, mix(uCore, uGlow, 0.25), clamp(line * 0.85 + band * 0.4, 0.0, 1.0));
+        // The edge of what will come away is drawn warm.
+        col = mix(col, uRim, ends * uGrid);
         float a = (0.2 + 0.16 * uNear) + line * 0.7 + band * 0.18;
         a = clamp(a, 0.0, 0.92) * uLevel * breathe * clear * (1.0 - smoothstep(0.95, 1.0, vEdge));
         if (a < 0.01) discard;
