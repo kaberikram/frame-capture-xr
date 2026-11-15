@@ -455,8 +455,8 @@ export class CaptureSystem extends createSystem({
       const away = this.reach.length()
       const ahead = away > 1e-4 ? this.reach.dot(this.gaze) / away : 0
       if (away > 0.2 && ahead > 0.5) ready = true
-      // A hand hanging at your side is not pointing at anything.
-      if (ahead < 0.25) {
+      // A hand behind the way you face is not pointing at anything.
+      if (ahead < 0) {
         this.room.hover(i as 0 | 1, null, null)
         continue
       }
@@ -566,6 +566,7 @@ export class CaptureSystem extends createSystem({
       [
         `camera ${this.rig.state} ${feed.width}x${feed.height}${stamp === null ? '' : `  frame age ${Math.round(nowMs - stamp * 1000)} ms`}`,
         `hands L ${hand('left')}  R ${hand('right')}`,
+        ...(PEEL ? this.room.debugLines() : []),
         `frames ${this.captures.length}  phase ${this.phase}  depth ${last?.depth ?? '-'}`,
         this.warp.debugLine(),
       ],

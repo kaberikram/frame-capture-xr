@@ -239,6 +239,9 @@ export class RoomScan {
   private readonly preview: Preview
   private readonly cutHand = new Vector3()
   private readonly spotAt = new Vector3()
+  /** The last error thrown while stepping, if any, and how many readings the last depth pass gave. */
+  private fault: string | null = null
+  private lastReadings = 0
   private readonly motes: DepthMotes | null = MOTES ? new DepthMotes(PALETTE) : null
   private readonly live: LiveMesh | null = MESH ? new LiveMesh(PALETTE) : null
   /** Pieces that came without a camera picture, and when. A later frame that saw the spot will do. */
@@ -655,6 +658,11 @@ export class RoomScan {
     if (!hit && dir && dir.lengthSq() > 1e-6) {
       hit = this.surfaceOnRay(origin, this.local.copy(dir).normalize(), reach, this.hitB)
     }
+    if (!hit && level < 0 && this.presenting) {
+      // The torch found nothing the way the hand points. Try the line from your eye through the fingertip.
+      this.local.copy(origin).sub(this.eye)
+      if (this.local.lengthSq() > 1e-6) hit = this.surfaceOnRay(origin, this.local.normalize(), reach, this.hitB)
+    }
     if (!hit) {
       pool.goal = 0
       return
@@ -672,6 +680,34 @@ export class RoomScan {
   }
 
   step(dt: number, presenting: boolean, frame: DepthFrame | null, camera: PerspectiveCamera, standIn: Object3D): void {
+    try {
+      this.run(dt, presenting, frame, camera, standIn)
+    } catch (error) {
+      // Never fail silently: say so where it can be read in the headset.
+      const message = error instanceof Error ? error.message : String(error)
+      if (this.fault !== message) console.error(`[frame] room error: ${message}`, error)
+      this.fault = message
+      this.depthNote = `Room error: ${message}`
+    }
+  }
+
+  /**
+   * What the room is doing, for the `?debug=1` panel: whether depth is
+   * arriving, how much room has been built, and whether a hand's torch is
+   * landing on it.
+   */
+  debugLines(): string[] {
+    const t = (i: number) => (this.touch[i].on ? `${this.touch[i].hit.dist.toFixed(2)}m` : this.time - this.touch[i].at < 1 ? 'lost' : '-')
+    const seen = this.preview
+    return [
+      `depth ${this.depthMode ?? 'none'}  readings ${this.lastReadings}  passes ${this.pass}  miss ${this.depthMiss}`,
+      `room ${this.field.chunkCount} chunks  fine ${this.fine ? this.fine.chunkCount : 'off'}  mesh ${this.live?.chunkCount ?? 'off'}  joints ${this.jointCount}`,
+      `torch L ${t(0)} R ${t(1)}  offer ${seen.offer ?? '-'}  lit ${seen.spotLevel.toFixed(2)} r ${seen.spotR.toFixed(2)}`,
+      ...(this.fault ? [`ERROR ${this.fault}`] : []),
+    ]
+  }
+
+  private run(dt: number, presenting: boolean, frame: DepthFrame | null, camera: PerspectiveCamera, standIn: Object3D): void {
     this.time += dt
     if (presenting !== this.presenting) {
       // Going into or out of the headset changes which room this is: the desk's
@@ -746,6 +782,7 @@ export class RoomScan {
     // The live mesh is lit only inside the torch's circle: that is what a pinch takes.
     if (this.live) {
       const seen = this.preview
+      this.live.deskDepth = !presenting
       if (MESH_ALL) this.live.step(dt, this.time, this.field, this.eye, 4, this.cutT.set(1, 0, 0), this.cutB.set(0, 1, 0), true, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
       else {
         this.spotAt.set(seen.spotHit.x, seen.spotHit.y, seen.spotHit.z)
@@ -1625,6 +1662,7 @@ export class RoomScan {
   /** What you are looking at is fused first, so the chunk cap keeps the center of the view. */
   private enqueue(samples: DepthSample[], field: RoomField, forward?: Vector3, step = 0): void {
     this.queueStep = step
+    this.lastReadings = samples.length
     if (forward && forward.lengthSq() > 1e-6) {
       const fx = forward.x
       const fy = forward.y
