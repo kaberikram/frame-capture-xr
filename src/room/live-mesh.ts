@@ -5,8 +5,6 @@ import type { NetMesh, RoomField } from './field.js'
 
 /** Milliseconds a frame may spend re-meshing. */
 const BUDGET_MS = 3
-/** The mesh shows this far from you, metres. */
-export const MESH_REACH = 4
 
 /**
  * The live mesh of the room, shown: one connected skin over everything the
@@ -27,9 +25,10 @@ export class LiveMesh {
         uTime: { value: 0 },
         uLevel: { value: 0 },
         uFocus: { value: new Vector3() },
-        uReach: { value: MESH_REACH },
+        uReach: { value: 0.1 },
         uCore: { value: new Vector3(...palette.core) },
         uGlow: { value: new Vector3(...palette.glow) },
+        uRim: { value: new Vector3(1, 0.72, 0.38) },
         uJoints: { value: Array.from({ length: GHOST_JOINTS }, () => new Vector3()) },
         uJointCount: { value: 0 },
       },
@@ -51,7 +50,7 @@ export class LiveMesh {
         }`,
       fragmentShader: /* glsl */ `
         uniform float uTime, uLevel, uReach;
-        uniform vec3 uFocus, uCore, uGlow;
+        uniform vec3 uFocus, uCore, uGlow, uRim;
         uniform vec3 uJoints[${GHOST_JOINTS}];
         uniform int uJointCount;
         varying vec3 vWorld;
@@ -60,8 +59,10 @@ export class LiveMesh {
         const float CELL = 0.12;
         void main() {
           float away = length(vWorld - uFocus);
-          float near = 1.0 - smoothstep(uReach * 0.82, uReach, away);
+          float near = 1.0 - smoothstep(uReach - 0.006, uReach, away);
           if (near * uLevel < 0.01) discard;
+          // The rim of the torch's circle, drawn on the surface itself.
+          float rim = exp(-pow((away - (uReach - 0.012)) / 0.006, 2.0));
           // Behind your hand, as seen from the eye, the mesh gives way to the hand.
           vec3 ray = vWorld - cameraPosition;
           float far = length(ray);
@@ -88,9 +89,9 @@ export class LiveMesh {
           float form = smoothstep(0.0, 0.25, age);
           float fresh = exp(-age / 0.6);
           // A slow ripple running out from where you are attending.
-          float a = (line * (0.5 + 0.3 * fresh) + 0.16 + 0.1 * fresh) * near * form * uLevel * clear;
+          float a = (max(line * (0.5 + 0.3 * fresh), rim * 0.95) + 0.16 + 0.1 * fresh) * near * form * uLevel * clear;
           if (a < 0.012) discard;
-          gl_FragColor = vec4(mix(uGlow, uCore, 0.35 + 0.65 * line), a);
+          gl_FragColor = vec4(mix(mix(uGlow, uCore, 0.35 + 0.65 * line), uRim, rim), a);
         }`,
       transparent: true,
       // It hides its own far side, so a table does not show through the thing standing on it.
@@ -106,17 +107,24 @@ export class LiveMesh {
   }
 
   /**
-   * Re-mesh what has changed, nearest `first` first, and draw what lies within
-   * reach of `eye`. `joints` are the hand's, for hiding behind.
+   * Light the mesh inside a circle: `centre` and `radius`, while `on`. Only the
+   * chunks the circle touches are re-meshed. `joints` are the hand's, for hiding behind.
    */
-  step(dt: number, time: number, field: RoomField, eye: Vector3, first: Vector3, joints: readonly Vector3[], jointCount: number, still: boolean): void {
-    this.level += (1 - this.level) * (still ? 1 : Math.min(1, dt * 2))
+  step(dt: number, time: number, field: RoomField, centre: Vector3, radius: number, on: boolean, joints: readonly Vector3[], jointCount: number, still: boolean): void {
+    const goal = on ? 1 : 0
+    this.level += (goal - this.level) * (still ? 1 : Math.min(1, dt * (goal > this.level ? 10 : 6)))
     const u = this.mat.uniforms
     u.uTime.value = time
     u.uLevel.value = this.level
-    u.uFocus.value.copy(eye)
-    const built = field.netStale(BUDGET_MS, first, MESH_REACH + 1)
-    for (let i = 0; i < built.length; i++) this.put(built[i], time)
+    this.group.visible = this.level > 0.01
+    if (on) {
+      // The circle glides with the hand; it does not jump.
+      const fresh = this.level < 0.05 || still
+      u.uFocus.value.lerp(centre, fresh ? 1 : Math.min(1, dt * 16))
+      u.uReach.value += (radius - u.uReach.value) * (fresh ? 1 : Math.min(1, dt * 10))
+      const built = field.netStale(BUDGET_MS, centre, radius + 0.3)
+      for (let i = 0; i < built.length; i++) this.put(built[i], time)
+    }
     const hide = Math.min(GHOST_JOINTS, Math.ceil(jointCount / 2))
     for (let i = 0; i < hide; i++) u.uJoints.value[i].copy(joints[i * 2])
     u.uJointCount.value = hide

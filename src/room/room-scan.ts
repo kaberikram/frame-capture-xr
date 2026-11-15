@@ -53,10 +53,19 @@ const CUT_R = 0.11
 const FLAT = queryFlag('flat') === '1'
 /** `?motes=0` hides the motes of light that show depth being read. */
 const MOTES = queryFlag('motes') !== '0'
-/** `?mesh=0` hides the live mesh. */
+/** `?mesh=0` hides the live mesh. `?mesh=all` shows all of it, not just where the hand points. */
 const MESH = queryFlag('mesh') !== '0'
+const MESH_ALL = queryFlag('mesh') === 'all'
+/** How far a hand's torch reaches, metres. */
+export const TORCH_REACH = 3
+/** The torch's circle on a surface `dist` metres from the hand: wider the further it falls, like a beam. */
+export function torchRadius(dist: number): number {
+  return Math.min(0.28, Math.max(0.08, 0.05 + 0.12 * dist))
+}
 /** A pinch this close to the fingertip a preview follows is that hand's pinch, metres. */
 const OFFER_HAND = 0.12
+/** Seconds an offer stays good after the hand stops showing it. */
+const OFFER_GRACE = 0.35
 /** How far away a thing can be and still be lifted by looking at it, metres. */
 const GAZE_REACH = 3.2
 /** Seconds a look stays live after the hand that was raised closes to pinch. */
@@ -111,6 +120,8 @@ interface Touch {
   /** The fingertip, and how near it is to the surface, 0..1. */
   readonly from: Vector3
   near: number
+  /** When it last had a surface. */
+  at: number
 }
 
 /**
@@ -123,7 +134,14 @@ interface Preview {
   /** The thing the ghost is drawn from. Only ever a whole thing. */
   ghostShell: Shell | null
   /** What is on offer this frame. A pinch takes only this. */
-  offer: 'ghost' | 'cut' | null
+  offer: 'ghost' | 'cut' | 'spot' | null
+  /** The last thing offered, and when. Closing the fingers to pinch lowers the torch a moment before the pinch lands. */
+  offered: 'ghost' | 'cut' | 'spot' | null
+  offeredAt: number
+  /** The torch's circle: where it falls, how wide, and how lit, 0..1. A pinch takes the mesh inside it. */
+  readonly spotHit: SurfacePoint
+  spotR: number
+  spotLevel: number
   /** The fingertip the preview follows, when it came from a hand. */
   readonly hand: Vector3
   fromHand: boolean
@@ -181,8 +199,8 @@ export class RoomScan {
   private readonly effects: Effect[] = []
   private readonly pools: Pool[] = []
   private readonly touch: Touch[] = [
-    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0 },
-    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0 },
+    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0, at: -1 },
+    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0, at: -1 },
   ]
   /** Where the hands are, joint by joint, so depth does not mistake them for the room. */
   private readonly joints = Array.from({ length: MAX_JOINTS }, () => new Vector3())
@@ -220,6 +238,7 @@ export class RoomScan {
   private focusOn = false
   private readonly preview: Preview
   private readonly cutHand = new Vector3()
+  private readonly spotAt = new Vector3()
   private readonly motes: DepthMotes | null = MOTES ? new DepthMotes(PALETTE) : null
   private readonly live: LiveMesh | null = MESH ? new LiveMesh(PALETTE) : null
   /** Pieces that came without a camera picture, and when. A later frame that saw the spot will do. */
@@ -289,6 +308,11 @@ export class RoomScan {
       shell: null,
       ghostShell: null,
       offer: null,
+      offered: null,
+      offeredAt: -1,
+      spotHit: surfacePoint(),
+      spotR: 0.1,
+      spotLevel: 0,
       hand: new Vector3(),
       fromHand: false,
       remote: false,
@@ -384,6 +408,11 @@ export class RoomScan {
     return this.preview.ghostLevel
   }
 
+  /** The torch's circle is lit on the mesh, 0 to 1. */
+  get spot(): number {
+    return this.preview.offer === 'spot' || this.preview.offer === 'ghost' ? this.preview.spotLevel : 0
+  }
+
   /** Chunks of live mesh on show. */
   get meshChunks(): number {
     return this.live?.chunkCount ?? 0
@@ -460,17 +489,39 @@ export class RoomScan {
     const seen = this.preview
     // Only the hand the preview follows takes it (or any pinch, when it came from looking).
     const mine = !seen.fromHand || point.distanceTo(seen.hand) <= OFFER_HAND
+    const offer = seen.offer ?? (this.time - seen.offeredAt < OFFER_GRACE ? seen.offered : null)
     const ghost = seen.ghostShell
-    if (seen.offer === 'ghost' && ghost && seen.ghostLevel > 0.25 && mine) {
+    if (offer === 'ghost' && ghost && seen.ghostLevel > 0.15 && mine) {
       // A ghost shows only for what the finger is reaching toward or the eye is
       // on. Pinched short of it, it comes to the hand.
       const away = Math.hypot(point.x - ghost.cx, point.y - ghost.cy, point.z - ghost.cz)
       this.beginObject(ghost, point, away > ghost.radius + TOUCH_GAP)
       return true
     }
-    if (seen.offer === 'cut' && seen.cutLevel > 0.25 && mine) {
+    if (offer === 'cut' && seen.cutLevel > 0.15 && mine) {
       this.beginCut(point, view)
       return true
+    }
+    if (offer === 'spot' && seen.spotLevel > 0.1 && mine) {
+      // The mesh inside the torch's circle, from wherever the hand is.
+      const lit = this.shellAt(seen.spotHit, seen.spotR)
+      if (lit) {
+        const away = Math.hypot(point.x - lit.cx, point.y - lit.cy, point.z - lit.cz)
+        this.beginObject(lit, point, away > lit.radius + TOUCH_GAP)
+        return true
+      }
+    }
+    // The preview follows one hand. The other hand's torch still works for its own pinch.
+    if (!mine && !FLAT) {
+      for (let i = 0; i < this.touch.length; i++) {
+        const own = this.touch[i]
+        if (this.time - own.at > OFFER_GRACE || point.distanceTo(own.from) > OFFER_HAND) continue
+        const lit = this.shellAt(own.hit, torchRadius(own.hit.dist))
+        if (!lit) continue
+        const away = Math.hypot(point.x - lit.cx, point.y - lit.cy, point.z - lit.cz)
+        this.beginObject(lit, point, away > lit.radius + TOUCH_GAP)
+        return true
+      }
     }
     let hit = this.field.near(point.x, point.y, point.z, TOUCH_GAP, this.hitA)
     if (!hit && view) {
@@ -532,6 +583,13 @@ export class RoomScan {
     if (seen.offer === 'ghost' && ghost && seen.ghostLevel > 0.25 && onShell(ghost, start.x, start.y, start.z)) {
       this.beginObject(ghost, start, false)
       return surface.dist
+    }
+    if (seen.offer === 'spot' && seen.spotLevel > 0.25) {
+      const lit = this.shellAt(seen.spotHit, seen.spotR)
+      if (lit) {
+        this.beginObject(lit, start, false)
+        return surface.dist
+      }
     }
     if (seen.offer === 'cut' && seen.cutLevel > 0.25 && start.distanceTo(seen.cutAt) <= CUT_R) {
       this.beginCut(start, origin)
@@ -605,6 +663,7 @@ export class RoomScan {
     Object.assign(touch.hit, hit)
     const close = 1 - Math.min(1, hit.dist / reach)
     touch.from.copy(origin)
+    touch.at = this.time
     touch.near = level >= 0 ? level : close
     pool.goal = level >= 0 ? level : Math.pow(close, 0.7)
     // The light draws in under the finger as it nears.
@@ -628,6 +687,8 @@ export class RoomScan {
       this.preview.shell = null
       this.preview.ghostShell = null
       this.preview.offer = null
+      this.preview.offered = null
+      this.preview.spotLevel = 0
       // Hands and the mouse from the other side of the change are gone.
       for (let i = 0; i < this.touch.length; i++) this.touch[i].on = false
       for (let i = 0; i < this.pools.length; i++) {
@@ -682,8 +743,15 @@ export class RoomScan {
     this.stepPools(dt)
     this.motes?.step(this.time, this.pixelScale(), REDUCE_MOTION)
     // The live mesh is drawn from the field a pinch lifts from: the fine one, or the coarse one without it.
-    // The live mesh is the whole room's: the coarse field, which every wide depth pass fills.
-    this.live?.step(dt, this.time, this.field, this.eye, this.focusOn ? this.focus : this.eye, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
+    // The live mesh is lit only inside the torch's circle: that is what a pinch takes.
+    if (this.live) {
+      const seen = this.preview
+      if (MESH_ALL) this.live.step(dt, this.time, this.field, this.eye, 4, true, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
+      else {
+        this.spotAt.set(seen.spotHit.x, seen.spotHit.y, seen.spotHit.z)
+        this.live.step(dt, this.time, this.field, this.spotAt, seen.spotR, seen.offer !== null && seen.offer !== 'cut' && !this.held, this.joints, presenting ? this.jointCount : 0, REDUCE_MOTION)
+      }
+    }
   }
 
   dispose(): void {
@@ -713,11 +781,12 @@ export class RoomScan {
   }
 
   /** The shell a pinch at `hit` would lift: from the fine field where it has looked closely, or else the coarse one. */
-  private shellAt(hit: SurfacePoint): Shell | null {
-    const coarse = liftShell(this.field, hit, this.eye)
+  private shellAt(hit: SurfacePoint, piece?: number): Shell | null {
+    const options = piece === undefined ? undefined : { piece }
+    const coarse = liftShell(this.field, hit, this.eye, options)
     const fine = this.fine
     if (!fine || !fine.near(hit.x, hit.y, hit.z, 0.04, this.hitD)) return coarse
-    return pickShell(coarse, liftShell(fine, hit, this.eye))
+    return pickShell(coarse, liftShell(fine, hit, this.eye, options))
   }
 
   /**
@@ -883,13 +952,14 @@ export class RoomScan {
     }
     this.focusOn = target !== null
     if (!target && this.presenting && !this.held) {
-      // No hand is up, but the mesh still forms where you look.
+      // No hand is up. Depth is still read closely where you look, ready for when one is.
       const far = this.surfaceOnRay(this.eye, this.gazeDir, GAZE_REACH, this.hitC)
       if (far) {
         this.focus.set(far.x, far.y, far.z)
         this.focusOn = true
       }
     }
+    let wantSpot = 0
     let wantGhost = 0
     let wantCut = 0
     if (target) {
@@ -897,11 +967,7 @@ export class RoomScan {
       this.focus.set(at.x, at.y, at.z)
       // A whole thing is offered while the finger is on it. A piece of something bigger is cut
       // where the finger is, so it is offered only while the finger stays near its middle.
-      const on = (shell: Shell | null) =>
-        shell !== null &&
-        (shell.kind === 'object'
-          ? onShell(shell, at.x, at.y, at.z)
-          : !FLAT && !remote && Math.hypot(at.x - shell.cx, at.y - shell.cy, at.z - shell.cz) < 0.05)
+      const on = (shell: Shell | null) => shell !== null && shell.kind === 'object' && onShell(shell, at.x, at.y, at.z)
       // Look again when the attention has moved somewhere new, and now and then as depth fills in.
       const moved = Math.hypot(at.x - this.lookedAt.x, at.y - this.lookedAt.y, at.z - this.lookedAt.z) > 0.05
       if (seen.wait <= 0 && (seen.age > 0.8 || (moved && !on(seen.shell)))) {
@@ -910,13 +976,32 @@ export class RoomScan {
         this.show(this.shellAt(at), remote)
       }
       seen.remote = remote
-      if (on(seen.shell)) wantGhost = 1
-      else if (!remote && FLAT) {
+      const thing = on(seen.shell) ? seen.shell : null
+      if (thing) {
+        // A whole thing: its ghost, with the torch's circle drawn in around it.
+        wantGhost = 1
+        wantSpot = 1
+        seen.spotHit.x = thing.cx
+        seen.spotHit.y = thing.cy
+        seen.spotHit.z = thing.cz
+        seen.spotR = thing.radius * 1.15 + 0.02
+      } else if (!remote && FLAT) {
         wantCut = 1
         this.aimCut(at)
+      } else if (!remote) {
+        // Anything else: the torch's circle on the mesh. What is lit is what a pinch takes.
+        wantSpot = 1
+        Object.assign(seen.spotHit, at)
+        const want = torchRadius(at.dist)
+        seen.spotR = seen.spotLevel < 0.02 ? want : seen.spotR + (want - seen.spotR) * Math.min(1, dt * 8)
       }
     }
-    seen.offer = wantGhost ? 'ghost' : wantCut ? 'cut' : null
+    seen.offer = wantGhost ? 'ghost' : wantCut ? 'cut' : wantSpot ? 'spot' : null
+    if (seen.offer) {
+      seen.offered = seen.offer
+      seen.offeredAt = this.time
+    }
+    seen.spotLevel += (wantSpot - seen.spotLevel) * (REDUCE_MOTION ? 1 : Math.min(1, dt * (wantSpot > seen.spotLevel ? 9 : 5)))
     seen.fromHand = hand !== null
     if (hand) seen.hand.copy(hand)
     this.pictureCut(dt, wantCut > 0)
@@ -1031,7 +1116,7 @@ export class RoomScan {
     seen.remote = remote
     seen.age = 0
     // Anything but a whole thing leaves the ghost as it is, fading out on the thing it was.
-    if (!shell || (shell.kind !== 'object' && (FLAT || remote))) return
+    if (!shell || shell.kind !== 'object') return
     const was = seen.ghostShell
     const moved = !was || Math.hypot(shell.cx - was.cx, shell.cy - was.cy, shell.cz - was.cz) > 0.08
     seen.ghostShell = shell
