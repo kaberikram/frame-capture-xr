@@ -20,7 +20,7 @@ import { Sheets } from '../interaction/sheets.js'
 import { Stickers } from '../interaction/stickers.js'
 import { TimePlay } from '../interaction/time-play.js'
 import { RoomPlates } from '../room/plates.js'
-import { bindRoomSpace, RoomScan } from '../room/room-scan.js'
+import { bindRoomSpace, RoomScan, TORCH_REACH } from '../room/room-scan.js'
 import type { Effect } from '../look/effects.js'
 import { makeGlowLine, setGlowLine, type GlowLine } from '../look/glow-line.js'
 import { PALETTE, voice } from '../look/palette.js'
@@ -76,6 +76,7 @@ export class CaptureSystem extends createSystem({
   private readonly reach = new Vector3()
   private readonly headAt = new Vector3()
   private readonly gaze = new Vector3()
+  private readonly torch = new Vector3()
   private readonly handJoints = Array.from({ length: 64 }, () => new Vector3())
   /** A piece has been carried at least once, so the hint for it can retire. */
   private pointer!: DeskPointer
@@ -451,9 +452,18 @@ export class CaptureSystem extends createSystem({
         continue
       }
       this.reach.copy(pose.index).sub(this.headAt)
-      this.room.hover(i as 0 | 1, pose.index, this.reach)
       const away = this.reach.length()
-      if (away > 0.2 && this.reach.dot(this.gaze) / away > 0.5) ready = true
+      const ahead = away > 1e-4 ? this.reach.dot(this.gaze) / away : 0
+      if (away > 0.2 && ahead > 0.5) ready = true
+      // A hand hanging at your side is not pointing at anything.
+      if (ahead < 0.25) {
+        this.room.hover(i as 0 | 1, null, null)
+        continue
+      }
+      // The hand is a torch: it shines the way it points (wrist to fingertip), steadied by the
+      // line from your eye through the fingertip, so the circle lands where it looks like it should.
+      this.torch.copy(pose.index).sub(pose.wrist).normalize().add(this.reach.multiplyScalar(1 / away)).normalize()
+      this.room.hover(i as 0 | 1, pose.index, this.torch, TORCH_REACH)
     }
     // Every joint, not the palm: the palm is a direction, and a hand is bigger than a point.
     this.room.setHandJoints(this.handJoints, this.hands.collectJoints(this.handJoints))
@@ -534,6 +544,7 @@ export class CaptureSystem extends createSystem({
       attention: this.room.attention,
       outline: this.room.outline,
       mesh: this.room.meshChunks,
+      spot: this.room.spot,
     })
   }
 

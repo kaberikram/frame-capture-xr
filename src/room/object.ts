@@ -45,7 +45,27 @@ export interface LiftOptions {
   reach?: number
   /** Radius of a piece cut from something bigger, metres. */
   piece?: number
+  /**
+   * Cut the piece as a rounded square, `piece` from its middle to each side,
+   * with these two unit directions across the surface as its sides.
+   */
+  square?: { tx: number; ty: number; tz: number; bx: number; by: number; bz: number }
 }
+
+/**
+ * How far a point is outside a rounded square, metres: negative inside, 0 on
+ * its edge. `u` and `v` are across it from its middle, `half` its half-width.
+ * The torch's lit area and the piece it cuts both use this.
+ */
+export function roundedSquare(u: number, v: number, half: number): number {
+  const corner = half * SQUARE_CORNER
+  const qx = Math.abs(u) - (half - corner)
+  const qy = Math.abs(v) - (half - corner)
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - corner
+}
+
+/** How round the square's corners are, as a share of its half-width. */
+export const SQUARE_CORNER = 0.32
 
 /** A thing can reach this far from where it was pinched and still be one object. */
 export const OBJECT_REACH = 0.42
@@ -251,7 +271,8 @@ export function liftShell(
     }
   }
 
-  const fill = (limit: number, bottom: number): { cells: number[]; open: boolean } => {
+  const sq = options.square
+  const fill = (limit: number, bottom: number, square = false): { cells: number[]; open: boolean } => {
     const seen = work.seen
     seen.fill(0, 0, cellCount)
     const cells: number[] = [start]
@@ -280,7 +301,11 @@ export function liftShell(
             const dx = px[next] - seed.x
             const dy = py[next] - seed.y
             const dz = pz[next] - seed.z
-            if (dx * dx + dy * dy + dz * dz > limit2) {
+            const outside =
+              square && sq
+                ? roundedSquare(dx * sq.tx + dy * sq.ty + dz * sq.tz, dx * sq.bx + dy * sq.by + dz * sq.bz, limit) > 0 || dx * dx + dy * dy + dz * dz > limit2 * 4
+                : dx * dx + dy * dy + dz * dz > limit2
+            if (outside) {
               open = true
               continue
             }
@@ -298,7 +323,7 @@ export function liftShell(
   if (filled.open) {
     // It runs on past reach, so it is not one thing. Take a round piece of it.
     kind = 'piece'
-    filled = fill(pieceReach, floor)
+    filled = fill(pieceReach, floor, true)
   }
   if (filled.cells.length < MIN_CELLS) return null
 
@@ -389,7 +414,8 @@ export function liftShell(
     const dz = positions[c * 3 + 2] - cz
     const d = Math.hypot(dx, dy, dz)
     if (d > radius) radius = d
-    edge[c] = d
+    // For a square piece, how far toward its edge: 0 in the middle, 1 on the edge.
+    edge[c] = kind === 'piece' && sq ? Math.max(0, 1 + roundedSquare(dx * sq.tx + dy * sq.ty + dz * sq.tz, dx * sq.bx + dy * sq.by + dz * sq.bz, pieceReach) / pieceReach) : d
   }
   // How much shape it has: its depth along the way the whole of it faces. The
   // facing at the pinch alone is too rough to tell a wall from a cushion.
@@ -427,7 +453,10 @@ export function liftShell(
   }
   if (kind === 'piece') {
     // The rim is wherever the cut came out, which smoothing pulls in a little.
-    for (let c = 0; c < cells.length; c++) edge[c] = radius > 0 ? edge[c] / radius : 0
+    let rim = 0
+    if (sq) for (let c = 0; c < cells.length; c++) rim = Math.max(rim, edge[c])
+    else rim = radius
+    for (let c = 0; c < cells.length; c++) edge[c] = rim > 0 ? Math.min(1, edge[c] / rim) : 0
   } else {
     // A whole thing ends where the eye stopped seeing it. That edge is feathered.
     edge.fill(0)
@@ -443,7 +472,7 @@ export function liftShell(
     cx,
     cy,
     cz,
-    radius: kind === 'piece' ? Math.min(radius, pieceReach) : radius,
+    radius: kind === 'piece' ? Math.min(radius, sq ? pieceReach * 1.42 : pieceReach) : radius,
     bottom: minY,
     relief: hi - lo,
   }

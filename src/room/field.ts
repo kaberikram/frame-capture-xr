@@ -20,6 +20,10 @@ export interface DepthSample {
   px: number
   py: number
   pz: number
+  /** The way the surface faces there, when its neighbours in the depth image say. The reading is then spread along the surface. */
+  nx?: number
+  ny?: number
+  nz?: number
 }
 
 export interface RoomHit {
@@ -161,15 +165,16 @@ export class RoomField {
 
   /**
    * Fuse a slice of a depth frame. `fresh` starts a new frame so chunks written
-   * earlier in that same frame are not treated as old and discarded.
+   * earlier in that same frame are not treated as old and discarded. `step` is
+   * the angle between neighbouring readings, in radians, when it is known.
    */
-  integrateRange(samples: readonly DepthSample[], start: number, end: number, fresh: boolean): number {
+  integrateRange(samples: readonly DepthSample[], start: number, end: number, fresh: boolean, step = 0): number {
     if (fresh) this.clock += 1
     const from = Math.max(0, start)
     const to = Math.min(samples.length, end, from + MAX_SAMPLES)
     let used = 0
     for (let i = from; i < to; i++) {
-      if (this.integrateOne(samples[i])) used += 1
+      if (this.integrateOne(samples[i], step)) used += 1
     }
     return used
   }
@@ -735,7 +740,7 @@ export class RoomField {
     return true
   }
 
-  private integrateOne(sample: DepthSample): boolean {
+  private integrateOne(sample: DepthSample, angle = 0): boolean {
     const dx = sample.px - sample.ox
     const dy = sample.py - sample.oy
     const dz = sample.pz - sample.oz
@@ -744,7 +749,11 @@ export class RoomField {
     const ix = dx / depth
     const iy = dy / depth
     const iz = dz / depth
-    const basis = tangentOf(ix, iy, iz)
+    // Spread along the surface where its facing is known, so a table seen at a shallow angle stays
+    // flat. Otherwise across the line of sight.
+    const basis = sample.nx !== undefined && sample.ny !== undefined && sample.nz !== undefined ? tangentOf(sample.nx, sample.ny, sample.nz) : tangentOf(ix, iy, iz)
+    // Far readings are further apart. Each is spread to meet its neighbours, so the sheet has no gaps.
+    const wide = angle > 0 && (depth * angle * 0.5) / this.voxel > 1.15 ? 2 : 1
     const step = this.voxel * 0.5
     for (let t = depth - this.trunc; t <= depth + this.behind; t += step) {
       if (t < 0.2) continue
@@ -754,8 +763,8 @@ export class RoomField {
       const y = sample.oy + iy * t
       const z = sample.oz + iz * t
       // A few voxels either side of the ray, so coarse depth samples join into a sheet.
-      for (let j = -1; j <= 1; j++) {
-        for (let i = -1; i <= 1; i++) {
+      for (let j = -wide; j <= wide; j++) {
+        for (let i = -wide; i <= wide; i++) {
           this.write(
             x + basis.tx * i * this.voxel + basis.bx * j * this.voxel,
             y + basis.ty * i * this.voxel + basis.by * j * this.voxel,
@@ -781,11 +790,29 @@ export class RoomField {
     const nw = Math.min(24, w + 1)
     const mixed = w === 0 ? sdf : (old * w + sdf) / nw
     const stored = Math.round((mixed > 1 ? 1 : mixed < -1 ? -1 : mixed) * 127)
+    const moved = w < 3 || Math.abs(stored - chunk.tsdf[index]) >= 4
     chunk.tsdf[index] = stored
     chunk.weight[index] = nw
     chunk.dirty = true
-    chunk.stale = true
     chunk.seen = this.clock
+    // The smooth mesh only needs making again when the surface has really moved, not for depth noise.
+    if (!moved) return
+    chunk.stale = true
+    // A chunk's mesh reads one voxel into its neighbours, so a change at a face is theirs too.
+    const lx = index % CHUNK
+    const ly = Math.floor(index / CHUNK) % CHUNK
+    const lz = Math.floor(index / (CHUNK * CHUNK))
+    if (lx === 0) this.staleAt(chunk.ix - 1, chunk.iy, chunk.iz)
+    else if (lx === CHUNK - 1) this.staleAt(chunk.ix + 1, chunk.iy, chunk.iz)
+    if (ly === 0) this.staleAt(chunk.ix, chunk.iy - 1, chunk.iz)
+    else if (ly === CHUNK - 1) this.staleAt(chunk.ix, chunk.iy + 1, chunk.iz)
+    if (lz === 0) this.staleAt(chunk.ix, chunk.iy, chunk.iz - 1)
+    else if (lz === CHUNK - 1) this.staleAt(chunk.ix, chunk.iy, chunk.iz + 1)
+  }
+
+  private staleAt(cx: number, cy: number, cz: number): void {
+    const chunk = this.byId.get(chunkId(cx, cy, cz))
+    if (chunk) chunk.stale = true
   }
 
   private cell(gx: number, gy: number, gz: number, create: boolean): { chunk: Chunk; index: number } | null {

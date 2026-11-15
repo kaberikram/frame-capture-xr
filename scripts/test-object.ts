@@ -1,6 +1,6 @@
 import { focusRect, viewFromDepth } from '../src/room/depth-project.ts'
 import { RoomField, surfacePoint } from '../src/room/field.ts'
-import { liftShell, pickShell, PIECE_REACH, type FieldBlock } from '../src/room/object.ts'
+import { liftShell, pickShell, roundedSquare, PIECE_REACH, type FieldBlock } from '../src/room/object.ts'
 
 function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message)
@@ -245,6 +245,31 @@ if (lifted) {
   const wallBall = (x: number, y: number, z: number) => Math.min(Math.hypot(x, y - 0.85, z) - 0.1, z + 0.14)
   const nearWall = pickShell(liftShell(room(0.04, wallBall), ballSeed, view), liftShell(room(0.02, wallBall), ballSeed, view))
   assert(nearWall !== null && nearWall.kind === 'object', `a ball in front of a wall stays a thing, got ${nearWall?.kind}`)
+}
+
+// The torch cuts a rounded square: a piece of wall reaches into the square's corners and not past its sides.
+{
+  const view = { x: 0, y: 1.2, z: 1 }
+  const sides = { tx: 1, ty: 0, tz: 0, bx: 0, by: 1, bz: 0 }
+  const piece = liftShell(room(0.02, (_x, _y, z) => z + 0.6), { x: 0, y: 1.2, z: -0.6, nx: 0, ny: 0, nz: 1 }, view, { piece: 0.15, square: sides })
+  assert(piece !== null && piece.kind === 'piece', 'a wall gives a square piece')
+  if (piece) {
+    let wide = 0
+    let far = 0
+    let rim = 0
+    for (let i = 0; i < piece.positions.length; i += 3) {
+      const u = piece.positions[i]
+      const v = piece.positions[i + 1] - 1.2
+      wide = Math.max(wide, Math.abs(u), Math.abs(v))
+      far = Math.max(far, Math.hypot(u, v))
+      rim = Math.max(rim, piece.edge[i / 3])
+      assert(roundedSquare(u, v, 0.15) < 0.02, `the piece stays inside the square, at ${u.toFixed(3)}, ${v.toFixed(3)}`)
+    }
+    assert(wide > 0.12 && wide < 0.16, `the square is as wide as asked, ${wide.toFixed(3)}`)
+    assert(far > 0.165, `it reaches into the corners, where a circle would not, ${far.toFixed(3)}`)
+    assert(rim > 0.99, `its edge is marked for fading, ${rim.toFixed(2)}`)
+  }
+  assert(roundedSquare(0, 0, 0.1) < -0.09 && Math.abs(roundedSquare(0.1, 0, 0.1)) < 1e-9 && roundedSquare(0.1, 0.1, 0.1) > 0, 'the square is measured from its middle to its sides, with round corners')
 }
 
 console.log('object ok')

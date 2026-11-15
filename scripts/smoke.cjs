@@ -118,8 +118,8 @@ async function mesh(browser, failures) {
   const wy = (box?.y ?? 0) + (box?.height ?? 640) * 0.36
   await page.mouse.move(wx - 20, wy)
   await page.mouse.move(wx, wy)
-  let state = await until((s) => s.roomAttention > 0.5, 6000)
-  check(state.roomAttention > 0.5 && state.roomOutline < 0.05, `mesh: a bare wall shows a ghost of its own surface, not a flat outline (ghost ${state.roomAttention.toFixed(2)}, outline ${state.roomOutline.toFixed(2)})`, failures)
+  let state = await until((s) => s.roomSpot > 0.5, 6000)
+  check(state.roomSpot > 0.5 && state.roomOutline < 0.05 && state.roomAttention < 0.1, `mesh: the torch's circle lights the mesh on a bare wall (circle ${state.roomSpot.toFixed(2)}, outline ${state.roomOutline.toFixed(2)}, ghost ${state.roomAttention.toFixed(2)})`, failures)
   state = await until((s) => s.roomMesh > 3, 6000)
   check(state.roomMesh > 3, `mesh: the live mesh forms on the wall under the cursor (${state.roomMesh} chunks)`, failures)
   await page.mouse.down()
@@ -193,7 +193,8 @@ async function room(browser, failures) {
   check(state.lights === 1, `peel: warm light opens where it was (lights ${state.lights})`, failures)
 
   // Carry it over the table and let go.
-  const [tx, ty] = at(0.79, 0.965)
+  // Well onto the table, not at its front edge, where the depth is ragged.
+  const [tx, ty] = at(0.76, 0.955)
   await page.mouse.move(tx, ty, { steps: 24 })
   await page.waitForTimeout(500)
   await page.mouse.up()
@@ -320,14 +321,18 @@ async function peelHeadset(browser, failures, usage) {
     d.hands.right.position.set(p.x + rx, p.y + ry, p.z + rz)
     return [rx, ry, rz]
   }, [yaw, pitch])
-  // A bare wall straight ahead is not taken from across the room.
+  // The hand is a torch. Held up in the air, its circle lights the mesh across the room, and a pinch takes what is lit.
   await look(0, 0)
-  await page.waitForTimeout(1200)
-  const before = (await api()).roomPatches
-  await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))
-  await page.waitForTimeout(700)
-  check((await api()).roomPatches === before, `${name}: a pinch in the air at a bare wall takes nothing (pieces ${before} then ${(await api()).roomPatches})`, failures)
-  await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+  const lit = await until(async () => (await api()).roomSpot > 0.6, 5000)
+  check(lit, `${name}: a hand held up lights a circle of mesh where it points (circle ${(await api()).roomSpot.toFixed(2)})`, failures)
+  if (lit) {
+    const before = (await api()).roomPatches
+    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))
+    const took = await until(async () => { const a = await api(); return a.roomPatches === before + 1 && a.roomKind === 'object' }, 3000)
+    check(took, `${name}: a pinch in the air takes the lit piece of mesh (pieces ${before} then ${(await api()).roomPatches}, ${(await api()).roomKind})`, failures)
+    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
+    await page.waitForTimeout(1200)
+  }
   let aim = null
   // The emulated room is a rough scan, mostly big furniture, which is rightly not a thing. Whether one of the
   // smaller things on its shelves reads as whole from 2-3 m varies with depth noise, so look twice around.

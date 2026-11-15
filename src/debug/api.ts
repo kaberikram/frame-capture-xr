@@ -36,6 +36,8 @@ export interface CaptureApi {
   roomOutline: number
   /** Chunks of the live mesh on show. */
   roomMesh: number
+  /** How lit the torch's circle on the mesh is, 0..1. */
+  roomSpot: number
 }
 
 export interface PhaseInputs {
@@ -69,12 +71,13 @@ export function publishApi(): void {
     roomAttention: 0,
     roomOutline: 0,
     roomMesh: 0,
+    roomSpot: 0,
   }
   ;(window as unknown as { __capture: CaptureApi }).__capture = api
 }
 
 /** Point the debug hook at the live time window. */
-export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number; kind: string; attention: number; outline: number; mesh: number }): void {
+export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number; kind: string; attention: number; outline: number; mesh: number; spot: number }): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return
   api.room = room.active
@@ -88,6 +91,7 @@ export function publishRoom(room: { active: boolean; chunks: number; pieces: num
   api.roomAttention = room.attention
   api.roomOutline = room.outline
   api.roomMesh = room.mesh
+  api.roomSpot = room.spot
 }
 
 export function bindWarpApi(cycle: () => string): void {
