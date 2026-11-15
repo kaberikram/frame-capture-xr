@@ -120,9 +120,14 @@ An echo photo can include a hand that was in the pane a moment ago, even after t
 
 `/peel` is its own page. Nothing is drawn on the room, and nothing is written in the air, until you mean to take something. It needs no room scan: the headset's live depth builds the room as you look around (see How it works).
 
-**Your hand is a torch.** Hold an open hand up and point. Where it points, a rounded square lights up on the room: inside it you see the live depth mesh, a grid of light wrapped over the real shape of the surface, with a warm line round the rim. The square is small when your hand is close (about 16 cm across) and wide when it falls far away (up to 56 cm), like a beam, and reaches three metres. It sits level as you see it: upright on a wall, facing you on a table. Nothing else is drawn: no mesh shows outside it. This is the depth mesh being built as you watch; nothing comes from a room scan. `?mesh=all` shows the whole room's mesh, `?mesh=0` none, and `?motes=0` hides the motes of light that settle where depth is read.
+**Your hand is a torch.** Hold an open hand up and point, near or far. Where it points, the very piece of the room a pinch would take shows itself: a ghost of the depth mesh in its real shape, with a grid of light on it and a warm line round its edge. Nothing else is drawn. This is real-time depth; nothing comes from a room scan.
 
-**What is lit is what a pinch takes.** On a wall, a table or a sofa, the pinch takes the rounded square of mesh that was lit, in its real relief. When the torch falls on a whole thing (a mug, a bag), the square closes in around it and a ghost of the thing shows too: a pale copy standing a few millimetres off it. The mesh and the ghost are hidden behind your hand, the way the real thing is. Either hand works; the square follows the hand whose torch falls nearer.
+- **A whole thing** (a mug, a stack of CDs, a bag): the grid wraps the thing itself, without the table it stands on.
+- **Part of something bigger** (a wall, a table, a sofa): a rounded square of it, small when your hand is close (about 24 cm across) and wide when the torch falls far away (up to 56 cm), up to three metres. It sits level as you see it.
+
+The ghost is worked out a few times a second from what depth has built, and holds still in between. It is hidden behind your hand, the way the real thing is, and is always bigger than your hand so it shows round it. Either hand works; it follows the hand whose torch falls nearer. `?mesh=all` also shows the whole room's live mesh, and `?motes=0` hides the motes of light that settle where depth is read.
+
+**What is shown is what a pinch takes:** exactly that piece of mesh.
 
 **Pinch and pull.** A copy of that piece of mesh slides out, wearing the camera's picture of it, taken before your hand got in the way. Pinched from across the room, about 9 cm of pull and it comes away and floats over to your hand. Let go sooner and it sinks back. The ghost stays on the real thing for a second or so, then goes. Nothing is left on your room.
 
