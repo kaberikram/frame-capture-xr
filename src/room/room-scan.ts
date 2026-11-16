@@ -25,7 +25,7 @@ import { PALETTE } from '../look/palette.js'
 import { DepthMotes } from '../look/depth-motes.js'
 import { LiveMesh } from './live-mesh.js'
 import { GHOST_JOINTS, cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
-import { focusRect, mixedPixel, onEdge, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
+import { DROP, EDGE, focusRect, onEdge, sortReadings, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
 import { liftShell, pickShell, type LiftOptions, type Shell } from './object.js'
@@ -282,6 +282,8 @@ export class RoomScan {
   private readonly hitD = surfacePoint()
   private readonly rim = [new Vector3(), new Vector3(), new Vector3(), new Vector3()]
   private readonly metres = new Float32Array(DEPTH_COLS * DEPTH_ROWS)
+  /** What each reading of the grid is: dropped, kept, or kept on an edge. */
+  private readonly sorted = new Uint8Array(DEPTH_COLS * DEPTH_ROWS)
   private readonly gridPoints = new Float32Array(DEPTH_COLS * DEPTH_ROWS * 3)
   private readonly us = new Float32Array(DEPTH_COLS * DEPTH_ROWS)
   private readonly vs = new Float32Array(DEPTH_COLS * DEPTH_ROWS)
@@ -881,9 +883,10 @@ export class RoomScan {
       probe.window = undefined
     }
     this.standFit = fit
-    const steady = this.stand.update(fit, hit, this.time, this.eye)
+    const steady = this.stand.update(fit, hit, this.time)
     if (steady) return steady
-    // The surface the fit found keeps the cut clear of the table, and the block it read is not read again.
+    // The surface the fit found all round the thing keeps the cut clear of the table, and the block it
+    // read is not read again. A fit that failed before it knew the surface leaves the plane unset.
     const options: LiftOptions = piece === undefined ? {} : { piece, square: this.squareAt(hit) }
     options.floor = probe.plane
     options.window = probe.window
@@ -1240,8 +1243,15 @@ export class RoomScan {
     seen.shell = shell
     seen.remote = remote
     seen.age = 0
-    // The very shape already on show, as a fitted thing held still gives: nothing to build again.
-    if (shell && shell === seen.ghostShell) return
+    if (shell && shell === seen.ghostShell) {
+      // The very shape already on show, as a fitted thing held still gives: nothing to build again.
+      // Only a picture it could not get before is asked for again, now that frames may show it.
+      if (!seen.ghostSkin) {
+        const skin = this.takeGhostSkin(shell)
+        if (skin) this.dressGhost(shell, seen.ghost.geometry, skin)
+      }
+      return
+    }
     // Anything but a whole thing leaves the ghost as it is, fading out on the thing it was.
     if (!shell || (shell.kind !== 'object' && (FLAT || remote))) return
     const was = seen.ghostShell
@@ -1250,28 +1260,42 @@ export class RoomScan {
     this.ghostBuilds++
     const geo = shellGeometry(shell)
     // The same thing again, as depth fills in: keep the picture taken before the hand arrived.
-    let skin = moved ? null : seen.ghostSkin
-    if (!skin) {
-      const centre = this.centre.set(shell.cx, shell.cy, shell.cz)
-      this.scratch.copy(this.eye).sub(centre)
-      if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
-      skin = this.takeSkin(centre, this.scratch.normalize(), shell.radius)
-      this.releaseGhostSkin()
-      seen.ghostSkin = skin
-    }
-    geo.setAttribute('aUv', new BufferAttribute(shellImageCoords(shell, skin), 2))
+    const skin = (moved ? null : seen.ghostSkin) ?? this.takeGhostSkin(shell)
     seen.ghost.geometry.dispose()
     seen.ghost.geometry = geo
+    this.dressGhost(shell, geo, skin)
     seen.ghost.position.set(shell.cx, shell.cy, shell.cz)
     const g = seen.ghostMat.uniforms
-    g.uMap.value = skin ? skin.texture : null
-    g.uHasMap.value = skin ? 1 : 0
-    g.uEncode.value = skin?.linear ? 1 : 0
     g.uLow.value = shell.bottom - shell.cy
     g.uSpan.value = Math.max(0.02, (shell.cy - shell.bottom) * 2)
     this.frameGrid(shell)
     // The ghost does not jump from one thing to the next: it dims and comes up again.
     if (moved) seen.ghostLevel *= 0.25
+  }
+
+  /** A new picture for the ghost of `shell`, across the way it is seen, in place of the one it had. */
+  private takeGhostSkin(shell: Shell): Skin | null {
+    const centre = this.centre.set(shell.cx, shell.cy, shell.cz)
+    this.scratch.copy(this.eye).sub(centre)
+    if (this.scratch.lengthSq() < 1e-6) this.scratch.set(0, 0, 1)
+    const skin = this.takeSkin(centre, this.scratch.normalize(), shell.radius)
+    this.releaseGhostSkin()
+    this.preview.ghostSkin = skin
+    return skin
+  }
+
+  /** Put the picture `skin` (or none) on the ghost's geometry `geo` of `shell`. */
+  private dressGhost(shell: Shell, geo: BufferGeometry, skin: Skin | null): void {
+    const uv = shellImageCoords(shell, skin)
+    const had = geo.getAttribute('aUv') as BufferAttribute | undefined
+    if (had && had.array.length === uv.length) {
+      ;(had.array as Float32Array).set(uv)
+      had.needsUpdate = true
+    } else geo.setAttribute('aUv', new BufferAttribute(uv, 3))
+    const g = this.preview.ghostMat.uniforms
+    g.uMap.value = skin ? skin.texture : null
+    g.uHasMap.value = skin ? 1 : 0
+    g.uEncode.value = skin?.linear ? 1 : 0
   }
 
   /**
@@ -1702,24 +1726,21 @@ export class RoomScan {
       at[k * 3 + 1] = world.y
       at[k * 3 + 2] = world.z
     }
+    // The blur across a step is left out, and the near side of a jump is marked.
+    const sorted = this.sorted
+    sortReadings(m, DEPTH_COLS, DEPTH_ROWS, sorted)
     for (let row = 0; row < DEPTH_ROWS; row++) {
       for (let col = 0; col < DEPTH_COLS; col++) {
         const k = col + row * DEPTH_COLS
         const d = m[k]
-        if (at[k * 3] !== at[k * 3]) continue
-        // Depth blurs across an edge. A reading part way between its neighbours on either side is that blur.
-        if (col > 0 && col < DEPTH_COLS - 1 && between(d, m[k - 1], m[k + 1])) continue
-        if (row > 0 && row < DEPTH_ROWS - 1 && between(d, m[k - DEPTH_COLS], m[k + DEPTH_COLS])) continue
-        // A smaller step's blur too, where the readings two out show each side is level.
-        if (col > 1 && col < DEPTH_COLS - 2 && mixedPixel(d, m[k - 1], m[k + 1], m[k - 2], m[k + 2])) continue
-        if (row > 1 && row < DEPTH_ROWS - 2 && mixedPixel(d, m[k - DEPTH_COLS], m[k + DEPTH_COLS], m[k - 2 * DEPTH_COLS], m[k + 2 * DEPTH_COLS])) continue
+        if (at[k * 3] !== at[k * 3] || sorted[k] === DROP) continue
         const x = at[k * 3]
         const y = at[k * 3 + 1]
         const z = at[k * 3 + 2]
         if (this.isHand(x, y, z, snapped)) continue
         const sample: DepthSample = { ox: origin.x, oy: origin.y, oz: origin.z, px: x, py: y, pz: z }
         // The edge of a thing, against what is behind it: kept where it was seen.
-        if (onEdge(m, DEPTH_COLS, DEPTH_ROWS, col, row)) sample.edge = true
+        if (sorted[k] === EDGE) sample.edge = true
         // The way the surface faces, from the readings beside and above: across an edge there is none.
         const side = col + 1 < DEPTH_COLS ? k + 1 : k - 1
         const up = row + 1 < DEPTH_ROWS ? k + DEPTH_COLS : k - DEPTH_COLS
@@ -1836,13 +1857,6 @@ function onShell(shell: Shell, x: number, y: number, z: number): boolean {
     if (dx * dx + dy * dy + dz * dz < r2) return true
   }
   return false
-}
-
-/** True when a depth reading sits well between the readings either side of it. */
-function between(d: number, a: number, b: number): boolean {
-  if (!(a > 0) || !(b > 0)) return false
-  const gap = 0.04 + 0.03 * d
-  return d - Math.min(a, b) > gap && Math.max(a, b) - d > gap
 }
 
 function alignment(sample: DepthSample, fx: number, fy: number, fz: number): number {

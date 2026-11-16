@@ -5,11 +5,12 @@
  *
  * It reads the same block of the distance field the lift reads. Looking down
  * each column of voxels gives a height map. The surface the thing stands on is
- * the nearest big level height below the pinch, and the outline is where the
- * height map rises above it. Each side is then moved to where its wall was
- * really seen. A side facing away from the eye was never seen: its edge comes
- * from the height map, pulled in by how far that edge smears. Balls, vases,
- * and patches cut off by the edge of what was seen are left to `liftShell`.
+ * the nearest big level height below the pinch that runs all round it, and the
+ * outline is where the height map rises above it. A side facing the eye is
+ * moved to where its wall was really seen. A slanted side is placed by the
+ * top's edge, and a side facing away from the eye, never seen, by the top's
+ * edge pulled in by how far it smears. Balls, vases, open pots, stools, and
+ * patches cut off by the edge of what was seen are left to `liftShell`.
  *
  * The room's space is level (y is up), so the surface is taken as level. This
  * file is plain maths, so it is tested without three.js.
@@ -22,6 +23,15 @@ import { OBJECT_REACH, STAND_AREA, TABLE_AREA, readWindow } from './object.js'
 const FOOT = 0.01
 /** A thing rises at least this far above what it stands on, metres. */
 const H_MIN = 0.012
+/** A pinch this far from the fitted solid, in any direction, is still on it, metres. */
+const NEAR = 0.03
+/** How far round a thing the level it stands on is looked for, metres. */
+const AROUND = 0.04
+/** Well inside its rim, an open pot or tray is lower than this share of its height. */
+const OPEN = 0.5
+/** Of the sides facing the eye, at least this share, and this many, must show a wall half way up. */
+const WALLS_SHARE = 0.5
+const WALLS_MIN = 3
 /** Bins of the height count that finds the surface, metres. */
 const PLANE_BIN = 0.005
 /** Column tops this close to a level are on it, metres. */
@@ -51,15 +61,26 @@ const ROUND_RATIO = 0.8
 const WALL_ROUND = 0.88
 /** The walls depth saw stray from a box or a round by at most this, in voxels (the median). Fused boxes: up to 0.25. */
 const WALL_FIT = 0.3
+/** The round through the walls depth saw is within this share of the outline's own round. */
+const ROUND_SIZE = 0.35
 /**
  * How far past the thing the height map's edge runs on a side facing away
  * from the eye, in voxels. Depth sees that top edge only against what is
- * behind it, and the edge smears into the hidden space. Tuned on fused
- * synthetic views from 34 to 67 degrees down. `?standfar=` can override it.
+ * behind it. The readings there are marked as an edge and not spread, so the
+ * smear is small. Tuned on synthetic views read through `sortReadings`, as
+ * the headset reads them, from three places, four turns and six seeds.
+ * `?standfar=` can override it.
  */
-export const FAR_K = 0.9
-/** A round's far rim curves away from the eye and smears about half as far as a box's straight edge. */
-const ROUND_PULL = 0.55
+export const FAR_K = 0.3
+/**
+ * A side is placed by the wall depth saw when it faces the eye at least as
+ * squarely as FACE_HI (the cosine of its turn from the eye, seen from above),
+ * and by the top's edge when it is as slanted as FACE_LO or more, with a
+ * share of each between. Fused views: a wall seen at a slant comes out up to
+ * 1.6 cm inside the real one, while the top's edge stays within 3 mm.
+ */
+const FACE_LO = 0.4
+const FACE_HI = 0.8
 /** A wall depth saw crosses zero this far outside the real one, in voxels (fused views: 0.4 to 1.6 mm at 2 cm). */
 const WALL_BIAS = 0.05
 /** The walls stop this far above the surface, metres, so a copy set down does not flicker into it. */
@@ -164,6 +185,7 @@ let order = new Int32Array(0)
 const sideT = new Float64Array(512)
 const sideD = new Float64Array(512)
 const highD = new Float64Array(512)
+const sideWalls = new Float64Array(512)
 const offs = new Float64Array(4)
 const turns = new Float64Array(4)
 const seenTurns = new Float64Array(4)
@@ -625,6 +647,54 @@ function outside(fit: StandFit, x: number, z: number): number {
   return Math.hypot(dx, dz) - reachAlong(fit, Math.atan2(dz, dx))
 }
 
+/** Whether a column's top stands clear above the level `h`. */
+function rises(col: number, h: number): boolean {
+  return topY[col] - h > H_MIN && !blocked[col]
+}
+
+/**
+ * Whether the thing whose columns are the first `count` in `queue` (marked in
+ * `mark`) stands on the level `h`: most of the ground seen just round it is at
+ * that height. A book or a laptop beside it has a level top below the thing's,
+ * but the table runs round the thing, not the book.
+ */
+function standsOn(n: number, v: number, count: number, h: number): boolean {
+  const reach = Math.max(1, Math.round(AROUND / v))
+  let seen = 0
+  let level = 0
+  for (let q = 0; q < count; q++) {
+    const col = queue[q]
+    const i = col % n
+    const k = (col - i) / n
+    for (let dk = -reach; dk <= reach; dk++) {
+      const kk = k + dk
+      if (kk < 0 || kk >= n) continue
+      for (let di = -reach; di <= reach; di++) {
+        const ii = i + di
+        if (ii < 0 || ii >= n) continue
+        const c = ii + kk * n
+        if (mark[c]) continue
+        mark[c] = 2
+        const y = topY[c]
+        if (y !== y || blocked[c]) continue
+        seen++
+        if (Math.abs(y - h) <= PLANE_BAND) level++
+      }
+    }
+  }
+  return seen >= 4 && level >= 0.5 * seen
+}
+
+/**
+ * Whether a point is on a fitted solid, within NEAR of it every way: not on a
+ * wall above it, nor on the table beside it.
+ */
+function onSolid(fit: StandFit, p: Point): boolean {
+  // A top that is not flat reaches above its middle height.
+  const top = fit.top + NEAR + (fit.flat ? 0 : 3 * fit.mad)
+  return p.y <= top && p.y >= fit.plane - 0.01 && outside(fit, p.x, p.z) <= NEAR
+}
+
 /**
  * The thing standing at `seed`, seen from `eye`, as a box, a round or a
  * prism. Null when it is not one: on a big level surface, a wall, a ball, a
@@ -709,77 +779,88 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   // The same rule as the lift's: a pinch on a big level surface is on the table itself.
   if (onLevel && seedLevel >= TABLE_AREA) return fail('on-table')
   // Not the biggest level in view: a low side table can have more floor or lower shelf in view than top.
-  let found = -1
+  // Nor the top of a book or a laptop beside it: the level it stands on runs all round it.
+  let h0 = NaN
+  let count = 0
+  let start = -1
+  let head = 0
+  let tail = 0
+  let i0 = n
+  let i1 = -1
+  let k0 = n
+  let k1 = -1
   for (let b = Math.min(bins - 2, Math.floor((seed.y - H_MIN - yBase) / PLANE_BIN)); b >= 1; b--) {
     const s = smoothed[b]
     if (s === 0 || s < smoothed[b - 1] || s < smoothed[b + 1]) continue
     const area = areaAt(b)
     if (area < STAND_AREA || (onLevel && area < seedLevel)) continue
-    found = b
-    break
-  }
-  if (found < 0) return fail('no-plane')
-  const level = yBase + (found + 0.5) * PLANE_BIN
-  let count = 0
-  for (let col = 0; col < nn; col++) if (Math.abs(topY[col] - level) <= PLANE_BAND) pick[count++] = topY[col]
-  const h0 = middle(count)
-  if (probe) probe.plane = h0
-  if (seed.y - h0 < H_MIN) return fail('on-plane')
+    const level = yBase + (b + 0.5) * PLANE_BIN
+    count = 0
+    for (let col = 0; col < nn; col++) if (Math.abs(topY[col] - level) <= PLANE_BAND) pick[count++] = topY[col]
+    const h = middle(count)
+    if (seed.y - h < H_MIN) return fail('on-plane')
 
-  // 3. The columns that rise above it, joined to the pinch. This bounds the rest of the work.
-  const rises = (col: number): boolean => topY[col] - h0 > H_MIN && !blocked[col]
-  let start = -1
-  let startD = Infinity
-  for (let dk = -2; dk <= 2; dk++) {
-    for (let di = -2; di <= 2; di++) {
-      const i = si + di
-      const k = sk + dk
-      if (i < 0 || k < 0 || i >= n || k >= n || !rises(i + k * n)) continue
-      const d = ((x0 + i + 0.5) * v - seed.x) ** 2 + ((z0 + k + 0.5) * v - seed.z) ** 2
-      if (d < startD) {
-        startD = d
-        start = i + k * n
+    // 3. The columns that rise above it, joined to the pinch. This bounds the rest of the work.
+    start = -1
+    let startD = Infinity
+    for (let dk = -2; dk <= 2; dk++) {
+      for (let di = -2; di <= 2; di++) {
+        const i = si + di
+        const k = sk + dk
+        if (i < 0 || k < 0 || i >= n || k >= n || !rises(i + k * n, h)) continue
+        const d = ((x0 + i + 0.5) * v - seed.x) ** 2 + ((z0 + k + 0.5) * v - seed.z) ** 2
+        if (d < startD) {
+          startD = d
+          start = i + k * n
+        }
       }
     }
+    if (start < 0) return fail('nothing')
+    // A pinch well above the top of what is under it is on something else: the wall behind it, say.
+    if (seed.y > topY[start] + NEAR) return fail('off')
+    mark.fill(0, 0, nn)
+    head = 0
+    tail = 0
+    queue[tail++] = start
+    mark[start] = 1
+    i0 = n
+    i1 = -1
+    k0 = n
+    k1 = -1
+    while (head < tail) {
+      const col = queue[head++]
+      const i = col % n
+      const k = (col - i) / n
+      // It runs on out of the block: a wall, a sofa, a desk. Lower levels only make it bigger.
+      if (i === 0 || k === 0 || i === n - 1 || k === n - 1) return fail('border')
+      if (i < i0) i0 = i
+      if (i > i1) i1 = i
+      if (k < k0) k0 = k
+      if (k > k1) k1 = k
+      if (!mark[col - 1] && rises(col - 1, h)) {
+        mark[col - 1] = 1
+        queue[tail++] = col - 1
+      }
+      if (!mark[col + 1] && rises(col + 1, h)) {
+        mark[col + 1] = 1
+        queue[tail++] = col + 1
+      }
+      if (!mark[col - n] && rises(col - n, h)) {
+        mark[col - n] = 1
+        queue[tail++] = col - n
+      }
+      if (!mark[col + n] && rises(col + n, h)) {
+        mark[col + n] = 1
+        queue[tail++] = col + n
+      }
+    }
+    if ((i1 - i0 + 1) * (k1 - k0 + 1) * v * v > 4 * FOOT_MAX) return fail('big')
+    if (!standsOn(n, v, tail, h)) continue
+    h0 = h
+    break
   }
-  if (start < 0) return fail('nothing')
-  mark.fill(0, 0, nn)
-  let head = 0
-  let tail = 0
-  queue[tail++] = start
-  mark[start] = 1
-  let i0 = n
-  let i1 = -1
-  let k0 = n
-  let k1 = -1
-  while (head < tail) {
-    const col = queue[head++]
-    const i = col % n
-    const k = (col - i) / n
-    // It runs on out of the block: a wall, a sofa, a desk.
-    if (i === 0 || k === 0 || i === n - 1 || k === n - 1) return fail('border')
-    if (i < i0) i0 = i
-    if (i > i1) i1 = i
-    if (k < k0) k0 = k
-    if (k > k1) k1 = k
-    if (!mark[col - 1] && rises(col - 1)) {
-      mark[col - 1] = 1
-      queue[tail++] = col - 1
-    }
-    if (!mark[col + 1] && rises(col + 1)) {
-      mark[col + 1] = 1
-      queue[tail++] = col + 1
-    }
-    if (!mark[col - n] && rises(col - n)) {
-      mark[col - n] = 1
-      queue[tail++] = col - n
-    }
-    if (!mark[col + n] && rises(col + n)) {
-      mark[col + n] = 1
-      queue[tail++] = col + n
-    }
-  }
-  if ((i1 - i0 + 1) * (k1 - k0 + 1) * v * v > 4 * FOOT_MAX) return fail('big')
+  if (h0 !== h0) return fail('no-plane')
+  if (probe) probe.plane = h0
 
   // 4. Its footprint at 1 cm, over those columns and two voxels round them.
   const per = v / FOOT
@@ -842,7 +923,7 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   const sa = Math.floor((seed.x - grid.x0) / FOOT)
   const sb = Math.floor((seed.z - grid.z0) / FOOT)
   start = -1
-  startD = Infinity
+  let startD = Infinity
   for (let b = Math.max(0, sb - 3); b <= Math.min(fd - 1, sb + 3); b++) {
     for (let a = Math.max(0, sa - 3); a <= Math.min(fw - 1, sa + 3); a++) {
       if (!maskA[a + b * fw]) continue
@@ -920,6 +1001,13 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   pick.subarray(0, count).sort()
   const hTop = pick[Math.floor(count * 0.9)]
   const half = Math.max(H_MIN, hTop * 0.5)
+  // Open at the top, as a pot, a mug or a tray is: well inside its rim the map drops to its
+  // inside bottom. Its top is not there, and a solid would fill it in.
+  morph(comp, maskB, fw, fd, false)
+  morph(maskB, maskA, fw, fd, false)
+  count = 0
+  for (let at = 0; at < cells; at++) if (maskA[at] && hf[at] === hf[at]) pick[count++] = hf[at]
+  if (count >= 3 && middle(count) < OPEN * hTop) return fail('open')
 
   // 5. The outline: where the height map crosses half the thing's height, smoothed a little.
   morph(comp, maskB, fw, fd, true)
@@ -999,30 +1087,38 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   const sinUp = (eye.y - topH) / (Math.hypot(eye.x - mx, eye.y - topH, eye.z - mz) || 1)
   const farBias = farK * v
   const gapBias = farBias * Math.min(1, Math.max(0, 2 * (sinUp - 0.5)))
-  // A side faces away when its outward direction points away from the eye, seen from the middle.
-  // Depth never saw that wall: what the field holds there leaked past the top's far edge. Seen
-  // from straight above, no side is the far one.
-  const away = (nx: number, nz: number, px: number, pz: number): boolean => {
+  // How a side stands to the eye, seen from the middle: the cosine of its turn from the eye, seen
+  // from above. Below -0.2 it faces away: depth never saw that wall, and what the field holds
+  // there leaked past the top's far edge. Seen from straight above, every wall is seen alike.
+  const toward = (nx: number, nz: number, px: number, pz: number): number => {
     const dx = eye.x - px
     const dz = eye.z - pz
     const across = Math.hypot(dx, dz)
-    return across > 0.05 && nx * dx + nz * dz < -0.2 * across
+    return across <= 0.05 ? 1 : (nx * dx + nz * dz) / across
   }
+  const away = (nx: number, nz: number, px: number, pz: number): boolean => toward(nx, nz, px, pz) < -0.2
   const midY = h0 + hTop * 0.5
-  // Where the thing's edge is along a line out from (px, pz): its wall where depth saw it, else
-  // the height map's edge, pulled in on a far side. NaN when neither is found.
+  // Where the thing's edge is along a line out from (px, pz), on a side at cosine `c` to the eye.
+  // A wall seen square on places it. A wall seen at a slant has few readings, and the field puts
+  // it inside where it is: the top's edge, seen against the table beyond, places that side
+  // better. Between the two, a share of each, so a side does not jump as the eye moves. A far
+  // side is the top's edge, pulled in by `pull` times its smear. NaN when nothing is found.
+  // `wallAt` keeps the wall found on any side but a far one, for telling a box from a round, and
+  // `sawWall` says whether it counted for much here.
   let sawWall = false
-  const edgeAlong = (px: number, pz: number, nx: number, nz: number, from: number, to: number, farSide: boolean, pull = 1): number => {
-    if (!farSide) {
-      const d = wallCrossing(win, px, pz, nx, nz, from, to, midY)
-      sawWall = d === d
-      if (sawWall) return d - WALL_BIAS * v
-    }
-    sawWall = false
+  let wallAt = NaN
+  const edgeAlong = (px: number, pz: number, nx: number, nz: number, from: number, to: number, c: number, pull = 1): number => {
+    const far = c < -0.2
+    const share = far ? 0 : Math.min(1, Math.max(0, (c - FACE_LO) / (FACE_HI - FACE_LO)))
+    wallAt = far ? NaN : wallCrossing(win, px, pz, nx, nz, from, to, midY) - WALL_BIAS * v
+    sawWall = wallAt === wallAt && share >= 0.5
+    if (share >= 1 && wallAt === wallAt) return wallAt
     const d = mapCrossing(px, pz, nx, nz, from, to, half)
-    return d === d && farSide ? d - pull * (mapGap ? gapBias : farBias) : d
+    if (far) return d === d ? d - pull * (mapGap ? gapBias : farBias) : d
+    if (wallAt !== wallAt || share <= 0) return d
+    return d === d ? wallAt * share + d * (1 - share) : wallAt
   }
-  // The seen wall points, to tell the shapes apart by.
+  // The wall points depth saw, to tell the shapes apart by.
   let walls = 0
 
   // 7. A box: each side moved to the middle of its edge crossings, turned by their slant.
@@ -1044,21 +1140,25 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
       const tz = s < 2 ? ca : sa
       const off = s < 2 ? bu : bv
       const len = s < 2 ? bv : bu
-      const farSide = away(nx, nz, bx, bz)
+      const c = toward(nx, nz, bx, bz)
       const inset = Math.min(0.02, len * 0.5)
       let got = 0
       let seenGot = 0
+      // Every wall seen on this side shows how straight it is, slanted or not: kept to tell a box from a round.
+      const wallFrom = walls
+      let wallsHere = 0
       for (let t = -len + inset; t <= len - inset + 1e-9 && got < sideT.length; t += 0.01) {
         const px = bx + tx * t
         const pz = bz + tz * t
-        const d = edgeAlong(px, pz, nx, nz, off - 0.035, off + 0.035, farSide)
+        const d = edgeAlong(px, pz, nx, nz, off - 0.035, off + 0.035, c)
+        if (wallAt === wallAt && pass === 1 && walls < wallX.length) {
+          wallX[walls] = px + nx * wallAt
+          wallZ[walls] = pz + nz * wallAt
+          walls++
+          sideWalls[wallsHere++] = wallAt
+        }
         if (d !== d) continue
         if (sawWall) seenGot++
-        if (sawWall && pass === 1 && walls < wallX.length) {
-          wallX[walls] = px + nx * d
-          wallZ[walls] = pz + nz * d
-          walls++
-        }
         sideT[got] = t
         sideD[got] = d
         got++
@@ -1067,6 +1167,15 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
       if (got >= 3) {
         for (let i = 0; i < got; i++) pick[i] = sideD[i]
         offs[s] = middle(got)
+      }
+      if (wallsHere > 0) {
+        // Out to where the side was placed: the field puts a slanted wall a little inside it.
+        for (let i = 0; i < wallsHere; i++) pick[i] = sideWalls[i]
+        const shift = offs[s] - middle(wallsHere)
+        for (let i = wallFrom; i < walls; i++) {
+          wallX[i] += nx * shift
+          wallZ[i] += nz * shift
+        }
       }
       // The side's own slant (Theil-Sen: the middle of the slopes between its crossings) turns the box.
       if (got >= 5) {
@@ -1124,14 +1233,15 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
       const theta = (k / 32) * 2 * Math.PI
       const dx = Math.cos(theta)
       const dz = Math.sin(theta)
-      const farSide = away(dx, dz, rx, rz)
-      let d = edgeAlong(rx, rz, dx, dz, r - 0.035, r + 0.035, farSide, ROUND_PULL)
-      if (d !== d) d = r - (farSide ? ROUND_PULL * farBias : 0)
-      else if (sawWall && pass === 1 && walls < wallX.length) {
-        wallX[walls] = rx + dx * d
-        wallZ[walls] = rz + dz * d
+      // A round's far rim curves away from the eye, and its edge, seen against the table past it,
+      // needs no pull: fused views put it within a few millimetres.
+      let d = edgeAlong(rx, rz, dx, dz, r - 0.035, r + 0.035, toward(dx, dz, rx, rz), 0)
+      if (sawWall && pass === 1 && walls < wallX.length) {
+        wallX[walls] = rx + dx * wallAt
+        wallZ[walls] = rz + dz * wallAt
         walls++
       }
+      if (d !== d) d = r
       ray[k] = d
       pick[k] = d
     }
@@ -1166,7 +1276,9 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
     for (let i = 0; i < walls; i++) pick[i] = Math.abs(Math.hypot(wallX[i] - seenRound.x, wallZ[i] - seenRound.z) - seenRound.r)
     const roundRes = middle(walls)
     const roundWide = pick[Math.floor(walls * 0.75)]
-    if (roundWide < WALL_ROUND * boxWide && roundRes < WALL_FIT * v) {
+    // A round through the walls of one straight side would be huge: a round must be about the thing's size.
+    const sized = Math.abs(seenRound.r - cr0) < ROUND_SIZE * cr0
+    if (sized && roundWide < WALL_ROUND * boxWide && roundRes < WALL_FIT * v) {
       shape = 'round'
       residual = roundRes
     } else if (boxRes < WALL_FIT * v && loopArea / (4 * bu * bv) > 0.8) {
@@ -1200,9 +1312,9 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
       const dx = Math.cos(theta)
       const dz = Math.sin(theta)
       const out = outlineAlong(cx, cz, dx, dz)
-      const farSide = away(dx, dz, cx, cz)
-      const d = edgeAlong(cx, cz, dx, dz, out - 0.035, out + 0.035, farSide)
-      ray[k] = Math.max(0.005, d === d ? d : out - (farSide ? farBias : 0))
+      const c = toward(dx, dz, cx, cz)
+      const d = edgeAlong(cx, cz, dx, dz, out - 0.035, out + 0.035, c)
+      ray[k] = Math.max(0.005, d === d ? d : out - (c < -0.2 ? farBias : 0))
     }
     // A circular [1 4 6 4 1] / 16 blur.
     let strays = 0
@@ -1238,7 +1350,11 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
     if (h === h && Math.abs(h) < H_MIN) seen++
   }
   const seenOut = seen / Math.max(1, tried)
-  if (seenOut < SEEN_MIN) return fail('seen')
+  if (seenOut < SEEN_MIN) {
+    // Nor is the level round it known to be what it stands on: the lift keeps to its own.
+    if (probe) probe.plane = NaN
+    return fail('seen')
+  }
   // Straight walls stand as far out low down as half way up. A ball or a vase draws in toward
   // its foot, or hides it under its widest part. Nor do they draw in high up, as a vase that
   // stands sunk in its holder does, or a bottle. Only the walls facing the eye were seen.
@@ -1247,14 +1363,18 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   let both = 0
   let highs = 0
   let midOnly = 0
+  let looked = 0
+  let walled = 0
   for (let i = 0; i < m && both < sideD.length; i += 3) {
     const theta = Math.atan2(loop[i * 2 + 1] - cz, loop[i * 2] - cx)
     const dx = Math.cos(theta)
     const dz = Math.sin(theta)
     if (away(dx, dz, cx, cz)) continue
+    looked++
     const edge = reachAlong(model, theta)
     const mid = insetAt(win, cx + dx * edge, cz + dz * edge, dx, dz, midY)
     if (mid !== mid) continue
+    walled++
     const high = insetAt(win, cx + dx * edge, cz + dz * edge, dx, dz, highY)
     if (high === high && highs < highD.length) highD[highs++] = high - mid
     const low = insetAt(win, cx + dx * edge, cz + dz * edge, dx, dz, lowY)
@@ -1266,6 +1386,9 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   for (let i = 0; i < highs; i++) pick[i] = highD[i]
   const narrows = highs >= 4 ? middle(highs) : 0
   if (taper > TAPER_MAX || narrows > NARROW_MAX || (midOnly >= 4 && midOnly > both)) return fail('taper')
+  // Walls must be seen half way up on most of the sides facing the eye. A stool or a small
+  // table has air under its top there: it is not a solid block down to the floor.
+  if (walled < Math.max(WALLS_MIN, WALLS_SHARE * looked)) return fail('no-walls')
   if (!shape) return fail('shape')
 
   // 11. The top: flat when the heights well inside agree, else a smoothed height map.
@@ -1308,12 +1431,19 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
     for (let at = 0; at < cells; at++) if (comp[at] && hf[at] >= half) pick[count++] = hf[at]
   }
   const med = middle(count)
+  // Well inside the fitted outline the map dropped to an inside bottom: it is open at the top.
+  if (!(med >= OPEN * hTop)) return fail('open')
   for (let i = 0; i < count; i++) pick[i] = Math.abs(pick[i] - med)
   const mad = middle(count)
   fit.top = h0 + med
   fit.mad = mad
   fit.flat = mad < FLAT_MAD
   if (!fit.flat) fit.heights = smoothTop(fw, fd)
+  if (!onSolid(fit, seed)) {
+    // The pinch is on something else, a wall above it say: neither this shape nor its level is what was pinched.
+    if (probe) probe.plane = NaN
+    return fail('off')
+  }
   return fit
 }
 
@@ -1469,10 +1599,11 @@ function topAt(fit: StandFit, x: number, z: number): number {
 /**
  * The fit as a shell, ready for the ghost and the lift: a top cap of nested
  * rings, and walls straight down to just above the surface. The walls have
- * their own rim vertices so the edge between top and walls stays crisp.
- * `eye` marks the walls the camera never saw.
+ * their own rim vertices so the edge between top and walls stays crisp. Each
+ * vertex says which way it faces, so a picture can be matched to the faces
+ * it really shows, and which way it moves when the ghost stands proud.
  */
-export function buildStanding(fit: StandFit, eye: Point): Shell {
+export function buildStanding(fit: StandFit): Shell {
   // 1. The outline, running from +x toward +z, with each point's outward direction.
   const ox: number[] = []
   const oz: number[] = []
@@ -1538,18 +1669,20 @@ export function buildStanding(fit: StandFit, eye: Point): Shell {
   for (let i = 0; i < m; i++) inradius = Math.min(inradius, Math.hypot(ox[i] - fit.cx, oz[i] - fit.cz))
   if (!(inradius < Infinity)) inradius = 0.01
   const base = fit.plane + BASE_GAP
+  // The top never comes down to the base, so the walls always run down and face out.
+  const lowest = base + H_MIN
   // The height of the top above each outline point, taken a little in from the rim, where it is not half way down.
   const rimTop = new Float32Array(m)
   const pull = Math.min(0.015, inradius * 0.5)
   for (let i = 0; i < m; i++) {
     if (fit.flat || !fit.heights) {
-      rimTop[i] = fit.top
+      rimTop[i] = Math.max(lowest, fit.top)
       continue
     }
     const dx = ox[i] - fit.cx
     const dz = oz[i] - fit.cz
     const dl = Math.hypot(dx, dz) || 1
-    rimTop[i] = fit.plane + topAt(fit, ox[i] - (dx / dl) * pull, oz[i] - (dz / dl) * pull)
+    rimTop[i] = Math.max(lowest, fit.plane + topAt(fit, ox[i] - (dx / dl) * pull, oz[i] - (dz / dl) * pull))
   }
 
   // 2. Top cap: nested rings in toward a middle vertex.
@@ -1561,7 +1694,8 @@ export function buildStanding(fit: StandFit, eye: Point): Shell {
   const count = capCount + (rows + 1) * m
   const positions = new Float32Array(count * 3)
   const edge = new Float32Array(count)
-  const unseen = new Uint8Array(count)
+  const facing = new Float32Array(count * 3)
+  const swell = new Float32Array(count * 3)
   const indices = new Uint32Array((rings - 1) * m * 6 + m * 3 + rows * m * 6)
   let tri = 0
   for (let ring = 0; ring < rings; ring++) {
@@ -1570,7 +1704,7 @@ export function buildStanding(fit: StandFit, eye: Point): Shell {
       const x = fit.cx + (ox[i] - fit.cx) * s
       const z = fit.cz + (oz[i] - fit.cz) * s
       let y = rimTop[i]
-      if (ring > 0 && !fit.flat && fit.heights) y = fit.plane + topAt(fit, x, z)
+      if (ring > 0 && !fit.flat && fit.heights) y = Math.max(lowest, fit.plane + topAt(fit, x, z))
       const at = ring * m + i
       positions[at * 3] = x
       positions[at * 3 + 1] = y
@@ -1579,7 +1713,7 @@ export function buildStanding(fit: StandFit, eye: Point): Shell {
   }
   const mid = capCount - 1
   positions[mid * 3] = fit.cx
-  positions[mid * 3 + 1] = !fit.flat && fit.heights ? fit.plane + topAt(fit, fit.cx, fit.cz) : fit.top
+  positions[mid * 3 + 1] = Math.max(lowest, !fit.flat && fit.heights ? fit.plane + topAt(fit, fit.cx, fit.cz) : fit.top)
   positions[mid * 3 + 2] = fit.cz
   for (let ring = 0; ring + 1 < rings; ring++) {
     for (let i = 0; i < m; i++) {
@@ -1603,8 +1737,11 @@ export function buildStanding(fit: StandFit, eye: Point): Shell {
     indices[tri++] = inner + j
     indices[tri++] = inner + i
   }
-  // The camera saw the top from above.
-  for (let at = 0; at < capCount; at++) unseen[at] = eye.y - positions[at * 3 + 1] < 0 ? 1 : 0
+  // The top faces up, and swells up.
+  for (let at = 0; at < capCount; at++) {
+    facing[at * 3 + 1] = 1
+    swell[at * 3 + 1] = 1
+  }
 
   // 3. Walls: rows from each outline point's top straight down to the base.
   for (let row = 0; row <= rows; row++) {
@@ -1616,9 +1753,20 @@ export function buildStanding(fit: StandFit, eye: Point): Shell {
       positions[at * 3 + 2] = oz[i]
       // 4. The base ring is the contact line.
       edge[at] = row === rows ? BASE_EDGE : 0
-      // 5. A wall facing away from the eye was never seen.
-      unseen[at] = onx[i] * (eye.x - ox[i]) + onz[i] * (eye.z - oz[i]) < 0 ? 1 : 0
+      // 5. A wall faces straight out, and swells out.
+      facing[at * 3] = onx[i]
+      facing[at * 3 + 2] = onz[i]
+      swell[at * 3] = onx[i]
+      swell[at * 3 + 2] = onz[i]
     }
+  }
+  // The top's rim and the walls' top row are two copies of one edge. They swell together, up and
+  // out, so no gap opens between them when the ghost stands proud of the real thing.
+  for (let i = 0; i < m; i++) {
+    const wall = capCount + i
+    swell[i * 3] = onx[i]
+    swell[i * 3 + 2] = onz[i]
+    swell[wall * 3 + 1] = 1
   }
   for (let row = 0; row < rows; row++) {
     for (let i = 0; i < m; i++) {
@@ -1658,7 +1806,8 @@ export function buildStanding(fit: StandFit, eye: Point): Shell {
     bottom: base,
     relief: maxTop - base,
     stand: fit,
-    unseen,
+    facing,
+    swell,
   }
 }
 
@@ -1683,10 +1832,11 @@ function sameThing(a: StandFit, b: StandFit): boolean {
 }
 
 /**
- * Holds a fitted shape steady from one fit to the next. A value moves only
- * past a small dead band, and then eases toward the new fit; a different
- * shape, or a jump, must be seen twice. When nothing moved it hands back the
- * very same Shell, so the ghost is not rebuilt.
+ * Holds a fitted shape steady from one fit to the next. A new shape is shown
+ * once two fits in a row agree on it. After that a value moves only past a
+ * small dead band, and then eases toward the new fit; a different shape, or a
+ * jump, must be seen twice. When nothing moved it hands back the very same
+ * Shell, so the ghost is not rebuilt.
  */
 export class StandTrack {
   /** Seconds the shape has been held through missed fits, for the debug panel. */
@@ -1715,13 +1865,17 @@ export class StandTrack {
     this.flatVotes = 0
   }
 
-  /** The shape to show for this fit (null when there was none) at `seed`, `now` seconds. */
-  update(fit: StandFit | null, seed: { x: number; z: number }, now: number, eye: Point): Shell | null {
+  /**
+   * The shape to show for this fit (null when there was none) at `seed`, the
+   * pinch, `now` seconds. The shape held is only handed back while the pinch
+   * is on it: a pinch on the wall above it is not on it.
+   */
+  update(fit: StandFit | null, seed: Point, now: number): Shell | null {
     const cur = this.cur
     if (fit) this.last = fit
     if (!fit) {
       // A hand in the way, or one bad look: keep the shape a moment while the pinch stays on it.
-      if (cur && this.shell && outside(cur, seed.x, seed.z) <= 0.03 && now - this.seenAt < HOLD) {
+      if (cur && this.shell && onSolid(cur, seed) && now - this.seenAt < HOLD) {
         this.held = now - this.seenAt
         return this.shell
       }
@@ -1729,7 +1883,16 @@ export class StandTrack {
       return null
     }
     this.held = 0
-    if (!cur || outside(cur, seed.x, seed.z) > 0.03) return this.accept(fit, now, eye)
+    if (!cur || !onSolid(cur, seed)) {
+      // Something new. A close look that has only begun to fill in gives a shape too small, or
+      // the wrong one, so a new shape is shown once two looks in a row agree on it.
+      if (this.pending && this.pending.shape === fit.shape && sameThing(this.pending, fit)) return this.accept(fit, now)
+      this.cur = null
+      this.shell = null
+      this.pending = fit
+      this.pendingCount = 1
+      return null
+    }
     if (sameThing(cur, fit)) {
       this.seenAt = now
       this.pending = null
@@ -1737,14 +1900,14 @@ export class StandTrack {
       const next = this.blend(cur, fit)
       if (next !== cur) {
         this.cur = next
-        this.shell = buildStanding(next, eye)
+        this.shell = buildStanding(next)
       }
       return this.shell
     }
     // Something else where the shape was: it must be seen twice, or the shape gone stale, before it takes over.
-    if (now - this.seenAt >= HOLD) return this.accept(fit, now, eye)
+    if (now - this.seenAt >= HOLD) return this.accept(fit, now)
     if (this.pending && sameThing(this.pending, fit)) {
-      if (++this.pendingCount >= 2) return this.accept(fit, now, eye)
+      if (++this.pendingCount >= 2) return this.accept(fit, now)
     } else {
       this.pending = fit
       this.pendingCount = 1
@@ -1752,7 +1915,7 @@ export class StandTrack {
     return this.shell
   }
 
-  private accept(fit: StandFit, now: number, eye: Point): Shell {
+  private accept(fit: StandFit, now: number): Shell {
     this.cur = fit
     this.seenAt = now
     this.pending = null
@@ -1760,7 +1923,7 @@ export class StandTrack {
     this.shapeVote = null
     this.shapeVotes = 0
     this.flatVotes = 0
-    this.shell = buildStanding(fit, eye)
+    this.shell = buildStanding(fit)
     return this.shell
   }
 

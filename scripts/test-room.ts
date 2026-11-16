@@ -1,5 +1,5 @@
 import { DIAL_MODES, WARP_MODES } from '../src/capture/time-mode.ts'
-import { farther, mixedPixel, onEdge, transformPoint, viewFromDepth } from '../src/room/depth-project.ts'
+import { DROP, EDGE, KEEP, between, farther, mixedPixel, onEdge, sortReadings, transformPoint, viewFromDepth } from '../src/room/depth-project.ts'
 import { MAX_CHUNKS, RoomField, surfacePoint, type DepthSample } from '../src/room/field.ts'
 import {
   PIECE_MAX,
@@ -262,6 +262,21 @@ console.log('field average ok')
   assert(dropout.every((_, col) => !onEdge(dropout, dropout.length, 1, col, 0)), 'a reading that is missing does not make an edge')
   const column = [0.6, 0.6, 0.6, 0.74, 0.74]
   assert(onEdge(column, 1, column.length, 0, 2) && onEdge(column, 1, column.length, 0, 1) && !onEdge(column, 1, column.length, 0, 0), 'edges are found up and down the grid too')
+  // A 12 cm step with its blurred reading half way across: each half is too small to be a jump, but the
+  // blur is dropped, and the reading before it is still the step's near side.
+  for (const mid of [0.62, 0.64, 0.66, 0.68, 0.7]) {
+    const step = [0.6, 0.6, 0.6, mid, 0.72, 0.72, 0.72]
+    const sorted = new Uint8Array(step.length)
+    sortReadings(step, step.length, 1, sorted)
+    assert(sorted[3] === DROP, `the blur at ${mid} across the step is dropped`)
+    assert(sorted[2] === EDGE, `the reading before the blur at ${mid} is the step's near side, got ${sorted.join('')}`)
+    assert(sorted[0] === KEEP && sorted[4] === KEEP && sorted[5] === KEEP && sorted[6] === KEEP, `the far side and the readings well clear are kept as they are, got ${sorted.join('')}`)
+  }
+  // A slope sorted the same way has neither blur nor edges.
+  const slope2 = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
+  const sortedSlope = new Uint8Array(slope2.length)
+  sortReadings(slope2, slope2.length, 1, sortedSlope)
+  assert(sortedSlope.every((s) => s === KEEP), `a slope is kept whole, got ${sortedSlope.join('')}`)
 }
 console.log('depth edges ok')
 
@@ -310,7 +325,7 @@ console.log('depth edges ok')
   const u = { x: -r.z * f.y, y: r.z * f.x - r.x * f.z, z: r.x * f.y }
   const m = new Float32Array(COLS * ROWS)
   const at = new Float32Array(COLS * ROWS * 3)
-  const between = (d: number, a: number, b: number) => a > 0 && b > 0 && d - Math.min(a, b) > 0.04 + 0.03 * d && Math.max(a, b) - d > 0.04 + 0.03 * d
+  const sorted = new Uint8Array(COLS * ROWS)
   // 40 by 30 readings over 0.84 by 0.6 m around the box, as fuseGrid turns them into samples.
   const look = (clean: boolean) => {
     const jx = rand()
@@ -344,20 +359,21 @@ console.log('depth edges ok')
       }
     }
     const samples = []
+    // Clean is the headset's own sorting; plain drops only the blur across a big step, and marks no edges.
+    if (clean) sortReadings(m, COLS, ROWS, sorted)
     for (let row = 0; row < ROWS; row++) {
       for (let col = 0; col < COLS; col++) {
         const k = col + row * COLS
         const d = m[k]
         if (!(d > 0)) continue
-        if (col > 0 && col < COLS - 1 && between(d, m[k - 1], m[k + 1])) continue
-        if (row > 0 && row < ROWS - 1 && between(d, m[k - COLS], m[k + COLS])) continue
-        if (clean && col > 1 && col < COLS - 2 && mixedPixel(d, m[k - 1], m[k + 1], m[k - 2], m[k + 2])) continue
-        if (clean && row > 1 && row < ROWS - 2 && mixedPixel(d, m[k - COLS], m[k + COLS], m[k - 2 * COLS], m[k + 2 * COLS])) continue
+        if (clean && sorted[k] === DROP) continue
+        if (!clean && col > 0 && col < COLS - 1 && between(d, m[k - 1], m[k + 1])) continue
+        if (!clean && row > 0 && row < ROWS - 1 && between(d, m[k - COLS], m[k + COLS])) continue
         const x = at[k * 3]
         const y = at[k * 3 + 1]
         const z = at[k * 3 + 2]
         const sample: DepthSample = { ox: eye.x, oy: eye.y, oz: eye.z, px: x, py: y, pz: z }
-        if (clean && onEdge(m, COLS, ROWS, col, row)) sample.edge = true
+        if (clean && sorted[k] === EDGE) sample.edge = true
         const side = col + 1 < COLS ? k + 1 : k - 1
         const up = row + 1 < ROWS ? k + COLS : k - COLS
         const gap = 0.04 + 0.06 * d

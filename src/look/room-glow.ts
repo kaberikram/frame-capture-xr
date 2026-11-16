@@ -309,9 +309,9 @@ export function shellMaterial(palette: Palette): ShaderMaterial {
       uWarm: { value: vec(palette.glow) },
     },
     vertexShader: /* glsl */ `
-      attribute vec2 aUv;
+      attribute vec3 aUv;
       attribute float aEdge;
-      varying vec2 vUv;
+      varying vec3 vUv;
       varying float vEdge;
       varying vec3 vView;
       varying vec3 vN;
@@ -328,7 +328,7 @@ export function shellMaterial(palette: Palette): ShaderMaterial {
       uniform vec4 uUvRect;
       uniform float uHasMap, uEncode, uShow, uHeat;
       uniform vec3 uFilm, uSheen, uWarm;
-      varying vec2 vUv;
+      varying vec3 vUv;
       varying float vEdge;
       varying vec3 vView;
       varying vec3 vN;
@@ -336,11 +336,12 @@ export function shellMaterial(palette: Palette): ShaderMaterial {
       void main() {
         float alpha = uShow * (1.0 - smoothstep(0.86, 1.0, vEdge));
         if (alpha < 0.02) discard;
-        vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
+        vec2 uv = (vUv.xy - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
         photo *= mix(CAMERA_GAIN, 1.0, uEncode);
-        float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
+        // In the picture, and a face the picture shows (the third part of aUv).
+        float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * step(0.5, vUv.z) * uHasMap;
         vec3 col = mix(uFilm * 0.8, photo, seen);
         col = mix(col, col * vec3(1.03, 0.99, 0.94) + uWarm * 0.02, 0.6);
         float facing = abs(dot(normalize(vN), normalize(-vView)));
@@ -471,10 +472,11 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       uJointCount: { value: 0 },
     },
     vertexShader: /* glsl */ `
-      attribute vec2 aUv;
+      attribute vec3 aUv;
       attribute float aEdge;
+      attribute vec3 aSwell;
       uniform float uNear;
-      varying vec2 vUv;
+      varying vec3 vUv;
       varying float vEdge;
       varying float vY;
       varying vec3 vView;
@@ -488,7 +490,8 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
         // Where it is on the shape before it swells, so a grid in its own frame stays put while it leans.
         vLocal = position;
         // It stands a little proud of the real thing, more as the hand nears, as if coming loose.
-        vec3 p = position + normal * (0.003 + 0.007 * uNear);
+        // A fitted solid says how each point moves, so its top and walls stay joined at the rim.
+        vec3 p = position + aSwell * (0.003 + 0.007 * uNear);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vView = mv.xyz;
         vN = normalMatrix * normal;
@@ -503,7 +506,7 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       uniform float uGrid, uCell, uFramed;
       uniform vec4 uFrame;
       uniform vec3 uOrigin, uCells;
-      varying vec2 vUv;
+      varying vec3 vUv;
       varying float vEdge;
       varying float vY;
       varying vec3 vView;
@@ -530,10 +533,10 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
           clear = min(clear, smoothstep(0.016, 0.034, length(j - ray * along)));
         }
         if (clear < 0.02) discard;
-        vec2 uv = (vUv - uUvRect.xy) / uUvRect.zw;
+        vec2 uv = (vUv.xy - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
-        float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * uHasMap;
+        float seen = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * step(0.5, vUv.z) * uHasMap;
         // A washed, lighter copy of the thing: clearly a ghost of it, not the thing.
         vec3 fill = mix(uCore * 0.92, photo * 0.75 + uCore * 0.35, seen);
         float facing = abs(dot(normalize(vN), normalize(-vView)));

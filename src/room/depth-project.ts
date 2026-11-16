@@ -46,22 +46,80 @@ export function farther(d: number, n: number): boolean {
  * behind both. The field spreads a reading about as far as the next one, so
  * either would spread past the edge into the space the thing hides. On a slope
  * the readings step evenly, so this holds only where each step is a jump.
+ *
+ * `sorted` is what `sortReadings` made of the grid. A neighbour it dropped as
+ * the blur across a step is part of the jump: with a blurred reading half way
+ * across, each half of the step can be too small to count on its own.
  */
-export function onEdge(m: ArrayLike<number>, cols: number, rows: number, col: number, row: number): boolean {
+export function onEdge(m: ArrayLike<number>, cols: number, rows: number, col: number, row: number, sorted?: Uint8Array): boolean {
   const k = col + row * cols
   const d = m[k]
   if (!(d > 0)) return false
   return (
-    (col > 0 && jumpPast(d, m[k - 1], col > 1 ? m[k - 2] : 0)) ||
-    (col < cols - 1 && jumpPast(d, m[k + 1], col < cols - 2 ? m[k + 2] : 0)) ||
-    (row > 0 && jumpPast(d, m[k - cols], row > 1 ? m[k - 2 * cols] : 0)) ||
-    (row < rows - 1 && jumpPast(d, m[k + cols], row < rows - 2 ? m[k + 2 * cols] : 0))
+    (col > 0 && jumpPast(d, m[k - 1], col > 1 ? m[k - 2] : 0, blurred(m, sorted, k - 1))) ||
+    (col < cols - 1 && jumpPast(d, m[k + 1], col < cols - 2 ? m[k + 2] : 0, blurred(m, sorted, k + 1))) ||
+    (row > 0 && jumpPast(d, m[k - cols], row > 1 ? m[k - 2 * cols] : 0, blurred(m, sorted, k - cols))) ||
+    (row < rows - 1 && jumpPast(d, m[k + cols], row < rows - 2 ? m[k + 2 * cols] : 0, blurred(m, sorted, k + cols)))
   )
 }
 
-/** One way along the grid from `d`: `n` is the next reading and `n2` the one past it, 0 off the grid. */
-function jumpPast(d: number, n: number, n2: number): boolean {
-  return farther(d, n) || (n > 0 && farther(d, n2) && farther(n, n2))
+/**
+ * One way along the grid from `d`: `n` is the next reading and `n2` the one
+ * past it, 0 off the grid. `blur` says `n` was dropped as the blur across a
+ * step, so it takes part in the jump whatever its own value.
+ */
+function jumpPast(d: number, n: number, n2: number, blur: boolean): boolean {
+  return farther(d, n) || (n > 0 && farther(d, n2) && (blur || farther(n, n2)))
+}
+
+/** Whether the reading at `k` was there but dropped as blur. */
+function blurred(m: ArrayLike<number>, sorted: Uint8Array | undefined, k: number): boolean {
+  return sorted !== undefined && sorted[k] === DROP && m[k] > 0
+}
+
+/** True when a depth reading sits well between the readings either side of it: the blur across a big step. */
+export function between(d: number, a: number, b: number): boolean {
+  if (!(a > 0) || !(b > 0)) return false
+  const gap = 0.04 + 0.03 * d
+  return d - Math.min(a, b) > gap && Math.max(a, b) - d > gap
+}
+
+/** What `sortReadings` makes of a reading: none, or the blur across a step. */
+export const DROP = 0
+/** A reading to fuse. */
+export const KEEP = 1
+/** A reading to fuse on the near side of a depth jump: the field must not spread it. */
+export const EDGE = 2
+
+/**
+ * Sort a grid of depth readings, `cols` by `rows` metres (0 or NaN where none
+ * came back), into `out`: DROP, KEEP or EDGE for each. The headset's fusion
+ * and the tests both read depth through this, so they agree on what is blur
+ * and what is an edge.
+ */
+export function sortReadings(m: ArrayLike<number>, cols: number, rows: number, out: Uint8Array): void {
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const k = col + row * cols
+      const d = m[k]
+      out[k] = DROP
+      if (!(d > 0)) continue
+      // Depth blurs across an edge. A reading well between its neighbours on either side is that blur.
+      if (col > 0 && col < cols - 1 && between(d, m[k - 1], m[k + 1])) continue
+      if (row > 0 && row < rows - 1 && between(d, m[k - cols], m[k + cols])) continue
+      // A smaller step's blur too, where the readings two out show each side is level.
+      if (col > 1 && col < cols - 2 && mixedPixel(d, m[k - 1], m[k + 1], m[k - 2], m[k + 2])) continue
+      if (row > 1 && row < rows - 2 && mixedPixel(d, m[k - cols], m[k + cols], m[k - 2 * cols], m[k + 2 * cols])) continue
+      out[k] = KEEP
+    }
+  }
+  // Then the edges of things, looking past the blur just dropped.
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const k = col + row * cols
+      if (out[k] === KEEP && onEdge(m, cols, rows, col, row, out)) out[k] = EDGE
+    }
+  }
 }
 
 /**

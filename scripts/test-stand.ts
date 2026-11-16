@@ -1,7 +1,7 @@
 import { register } from 'node:module'
-import { farther, mixedPixel } from '../src/room/depth-project.ts'
+import { DROP, EDGE, sortReadings } from '../src/room/depth-project.ts'
 import { RoomField, type DepthSample } from '../src/room/field.ts'
-import { liftShell, readWindow, OBJECT_REACH, type FieldBlock, type Shell } from '../src/room/object.ts'
+import { liftShell, pictureEye, readWindow, shows, OBJECT_REACH, type FieldBlock, type Shell } from '../src/room/object.ts'
 import type { StandFit, StandProbe } from '../src/room/stand.ts'
 
 // stand.ts imports object.ts as './object.js', as the bundler wants. Node only finds the .ts
@@ -136,6 +136,88 @@ for (const voxel of [0.02, 0.04]) {
   }
 }
 
+// A thing among other things on a desk. A book, a keyboard or a closed laptop near it has a level top
+// just above the desk, but the desk is what runs all round the thing: that is what it stands on, and
+// the lift's cut is no higher for being told so.
+for (const voxel of [0.02, 0.04]) {
+  const desk = (x: number, y: number, z: number) => (Math.abs(x) < 0.8 && Math.abs(z) < 0.5 ? y - 0.75 : 1)
+  const stack = boxAt(0, 0.75, 0, 0.14, 0.14, 0.08, 0)
+  const eye = { x: 0, y: 1.4, z: 0.5 }
+  const on = { x: 0.01, y: 0.83, z: 0.01, nx: 0, ny: 1, nz: 0 }
+  const others: [string, (x: number, y: number, z: number) => number][] = [
+    ['a book beside it', boxAt(0.25, 0.75, 0, 0.25, 0.18, 0.03, 0)],
+    ['a book behind it', boxAt(0, 0.75, -0.25, 0.25, 0.18, 0.03, 0)],
+    ['a keyboard in front', boxAt(0, 0.75, 0.3, 0.44, 0.13, 0.03, 0)],
+    ['a laptop beside it', boxAt(0.3, 0.75, 0, 0.33, 0.23, 0.02, 0)],
+  ]
+  for (const [name, other] of others) {
+    const scene = room(voxel, (x, y, z) => Math.min(desk(x, y, z), stack(x, y, z), other(x, y, z)))
+    const p = probe()
+    const fit = fitStanding(scene, on, eye, p)
+    assert(fit !== null && fit.shape === 'box', `a box with ${name} fits as a box, got ${fit?.shape ?? p.reason} (${voxel})`)
+    assert(Math.abs(p.plane - 0.75) < 0.003 && (!fit || Math.abs(fit.plane - 0.75) < 0.003), `a box with ${name} stands on the desk, not on its top, plane ${p.plane.toFixed(4)} (${voxel})`)
+    const plain = liftShell(scene, on, eye)
+    const cut = liftShell(scene, on, eye, { floor: p.plane })
+    assert(plain !== null && cut !== null && cut.bottom <= plain.bottom + 0.002, `the lift cuts no higher with the desk's height, ${plain ? mm(plain.bottom - 0.75) : '-'} then ${cut ? mm(cut.bottom - 0.75) : '-'} mm above it (${voxel}, ${name})`)
+  }
+}
+
+// Open at the top: a pot, seen at its rim or its side. Well inside its rim the map drops to its inside
+// bottom. That is no flat top level with the table: the lift's own shell is better for it.
+{
+  const R = 0.09
+  const inner = 0.065
+  const pot = (x: number, y: number, z: number) => {
+    const r = Math.hypot(x + 0.2, z)
+    const outer = Math.max(r - R, Math.abs(y - 0.8) - 0.05)
+    const hole = Math.max(r - inner, 0.76 - y)
+    return Math.max(outer, -hole)
+  }
+  const scene = room(0.02, (x, y, z) => Math.min(pot(x, y, z), table(x, y, z)))
+  for (const [name, at] of [['rim', { x: -0.2 + 0.078, y: 0.85, z: 0 }], ['side', { x: -0.2 + R, y: 0.8, z: 0 }]] as const) {
+    for (const eye of [{ x: -0.2, y: 1.5, z: 0 }, { x: -0.2, y: 1.4, z: 0.5 }]) {
+      const p = probe()
+      const fit = fitStanding(scene, at, eye, p)
+      assert(fit === null && p.reason === 'open', `an open pot seen at its ${name} is not fitted, it is open, got ${fit ? `${fit.shape} ${mm(fit.top - fit.plane)} mm tall` : p.reason}`)
+    }
+  }
+}
+
+// A stool or a small table: a top on legs, with air under it. It is no solid block down to the floor.
+for (const voxel of [0.02, 0.04]) {
+  for (const size of [0.2, 0.25, 0.28, 0.32]) {
+    const h = size / 2
+    const parts = [(_x: number, y: number) => y, slab(-h, h, 0.37, 0.4, -h, h)]
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) parts.push(slab(sx * h - (sx > 0 ? 0.03 : 0), sx * h + (sx < 0 ? 0.03 : 0), 0, 0.37, sz * h - (sz > 0 ? 0.03 : 0), sz * h + (sz < 0 ? 0.03 : 0)))
+    const scene = room(voxel, (x, y, z) => Math.min(...parts.map((part) => part(x, y, z))))
+    const p = probe()
+    const fit = fitStanding(scene, { x: 0.01, y: 0.4, z: 0.01 }, { x: 0, y: 1.5, z: 1 }, p)
+    assert(fit === null, `a stool ${cm(size)} cm across is not lifted as a block, got ${fit ? `${fit.shape} from ${mm(fit.plane)} mm` : p.reason} (${voxel})`)
+  }
+}
+
+// A pinch on the wall above a thing is not a pinch on the thing, nor does a shape held for it stay.
+for (const voxel of [0.02, 0.04]) {
+  const box = boxAt(-0.2, 0.75, -0.01, 0.12, 0.12, 0.08, 0)
+  const wall = (_x: number, _y: number, z: number) => z + 0.07
+  const scene = room(voxel, (x, y, z) => Math.min(box(x, y, z), table(x, y, z), wall(x, y, z)))
+  const eye = { x: 0, y: 1.4, z: 0.6 }
+  for (const y of [0.9, 1.0, 1.1, 1.2]) {
+    const p = probe()
+    const fit = fitStanding(scene, { x: -0.2, y, z: -0.07 }, eye, p)
+    assert(fit === null && p.reason === 'off', `a pinch on the wall ${cm(y - 0.83)} cm above the box is not on it, got ${fit?.shape ?? p.reason} (${voxel})`)
+  }
+  const top = { x: -0.2, y: 0.83, z: -0.01 }
+  const fit = fitStanding(scene, top, eye)
+  assert(fit !== null, `the box against the wall still fits from its top (${voxel})`)
+  const track = new StandTrack()
+  track.update(fit, top, 0)
+  const shell = track.update(fit, top, 0.1)
+  assert(shell !== null, `the box is shown once a second fit agrees (${voxel})`)
+  assert(track.update(null, top, 0.3) === shell, `a missed fit on the box holds it (${voxel})`)
+  assert(track.update(null, { x: -0.2, y: 1.15, z: -0.07 }, 0.4) === null, `a missed fit on the wall above it does not (${voxel})`)
+}
+
 // ---- Depth seen from one eye and fused, the way the headset's close look does it. ----
 
 /** A thing in the synthetic scene: where a ray from `eye` first meets it, or Infinity. */
@@ -222,8 +304,8 @@ const ROWS = 30
  * One close look from `eye` at `target`: a 40 x 30 grid of jittered readings
  * over `wide` x `high` metres there, with depth noise (0.6 cm + 0.6 cm per
  * metre), 2% wild readings, and readings that blur part way across an edge.
- * Then fuseGrid's filters: flying readings out, mixed readings out, and the
- * near side of a depth jump marked as an edge.
+ * Then the very sorting fuseGrid uses (`sortReadings`): the blur across a step
+ * left out, and the near side of a depth jump marked as an edge.
  */
 function look(field: RoomField, eye: { x: number; y: number; z: number }, target: { x: number; y: number; z: number }, scene: Hit[], wide = 0.84, high = 0.6): void {
   const cast = (dx: number, dy: number, dz: number) => {
@@ -275,26 +357,20 @@ function look(field: RoomField, eye: { x: number; y: number; z: number }, target
       at[k * 3 + 2] = eye.z + dz * t
     }
   }
-  const between = (d: number, a: number, b: number) => {
-    if (!(a > 0) || !(b > 0)) return false
-    const gap = 0.04 + 0.03 * d
-    return d - Math.min(a, b) > gap && Math.max(a, b) - d > gap
-  }
+  // The headset's own sorting: blur out, edges marked.
+  const sorted = new Uint8Array(COLS * ROWS)
+  sortReadings(m, COLS, ROWS, sorted)
   const samples: DepthSample[] = []
   for (let row = 0; row < ROWS; row++) {
     for (let col = 0; col < COLS; col++) {
       const k = col + row * COLS
       const d = m[k]
-      if (!(d > 0)) continue
-      if (col > 0 && col < COLS - 1 && between(d, m[k - 1], m[k + 1])) continue
-      if (row > 0 && row < ROWS - 1 && between(d, m[k - COLS], m[k + COLS])) continue
-      if (col > 1 && col < COLS - 2 && mixedPixel(d, m[k - 1], m[k + 1], m[k - 2], m[k + 2])) continue
-      if (row > 1 && row < ROWS - 2 && mixedPixel(d, m[k - COLS], m[k + COLS], m[k - 2 * COLS], m[k + 2 * COLS])) continue
+      if (sorted[k] === DROP) continue
       const x = at[k * 3]
       const y = at[k * 3 + 1]
       const z = at[k * 3 + 2]
       const sample: DepthSample = { ox: eye.x, oy: eye.y, oz: eye.z, px: x, py: y, pz: z }
-      if ((col > 0 && farther(d, m[k - 1])) || (col < COLS - 1 && farther(d, m[k + 1])) || (row > 0 && farther(d, m[k - COLS])) || (row < ROWS - 1 && farther(d, m[k + COLS]))) sample.edge = true
+      if (sorted[k] === EDGE) sample.edge = true
       const side = col + 1 < COLS ? k + 1 : k - 1
       const up = row + 1 < ROWS ? k + COLS : k - COLS
       const gap = 0.04 + 0.06 * d
@@ -348,62 +424,90 @@ function fused(scene: Hit[], target: { x: number; y: number; z: number }, passes
   return field
 }
 
-// The CD stack, fused: the fit is the box, with its far side pulled back to where it is.
+// Fused scenes are checked over several seeds, not one lucky one.
+const SEEDS = [12345, 333, 444, 555]
+const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length
+const sorted = (v: number[]) => [...v].sort((a, b) => a - b)
+
+// The CD stack, fused: the fit is the box, with its far side where it is.
 const stackScene = [deskTop, boxHit(STACK.x, TABLE_Y, STACK.z, STACK.w, STACK.w, STACK.h, STACK.yaw)]
 const stackTop = { x: STACK.x + 0.01, y: TABLE_Y + STACK.h, z: STACK.z + 0.01 }
 const stackField = fused(stackScene, stackTop, 12)
-{
+for (const start of SEEDS) {
   const p = probe()
-  const fit = fitStanding(stackField, stackTop, EYE, p)
-  assert(fit !== null && fit.shape === 'box', `the fused CD stack fits as a box, got ${fit?.shape ?? p.reason}`)
-  if (fit) {
-    const sides = sideErrors(fit, STACK.x, STACK.z, STACK.w / 2, STACK.yaw, EYE)
-    const size = [2 * fit.hu - STACK.w, 2 * fit.hv - STACK.w]
-    const centre = Math.hypot(fit.cx - STACK.x, fit.cz - STACK.z)
-    const turn = turnError(fit.angle, STACK.yaw)
-    console.log(
-      `fused box: ${cm(2 * fit.hu)} x ${cm(2 * fit.hv)} cm (true 14 x 14), sides past the box ${sides.map((s) => `${cm(s.error)}${s.near ? ' near' : ' far'}`).join(', ')} cm, ` +
-        `centre ${mm(centre)} mm, turn ${deg(turn)} deg, plane ${mm(fit.plane - TABLE_Y)} mm, top ${mm(fit.top - TABLE_Y - STACK.h)} mm, res ${mm(fit.residual)} mm, seen ${fit.seenOut.toFixed(2)}`,
-    )
-    assert(Math.abs(size[0]) < 0.015 && Math.abs(size[1]) < 0.015, `the fused box is 14 cm across both ways, got ${cm(2 * fit.hu)} x ${cm(2 * fit.hv)}`)
-    assert(centre < 0.01, `the fused box is where it stands, off by ${mm(centre)} mm`)
-    assert(turn < (3 * Math.PI) / 180, `the fused box is turned as it stands, off by ${deg(turn)} deg`)
-    assert(Math.abs(fit.plane - TABLE_Y) < 0.005, `the fused box stands on the table, off by ${mm(fit.plane - TABLE_Y)} mm`)
-    assert(Math.abs(fit.top - TABLE_Y - STACK.h) < 0.005, `the fused box is 8 cm tall, off by ${mm(fit.top - TABLE_Y - STACK.h)} mm`)
-    assert(fit.flat, 'the fused box has a flat top')
-  }
+  const fit = fitStanding(start === 12345 ? stackField : fused(stackScene, stackTop, 12, EYE, start), stackTop, EYE, p)
+  assert(fit !== null && fit.shape === 'box', `the fused CD stack fits as a box, got ${fit?.shape ?? p.reason} (seed ${start})`)
+  if (!fit) continue
+  const sides = sideErrors(fit, STACK.x, STACK.z, STACK.w / 2, STACK.yaw, EYE)
+  const size = [2 * fit.hu - STACK.w, 2 * fit.hv - STACK.w]
+  const centre = Math.hypot(fit.cx - STACK.x, fit.cz - STACK.z)
+  const turn = turnError(fit.angle, STACK.yaw)
+  console.log(
+    `fused box (seed ${start}): ${cm(2 * fit.hu)} x ${cm(2 * fit.hv)} cm (true 14 x 14), sides past the box ${sides.map((s) => `${cm(s.error)}${s.near ? ' near' : ' far'}`).join(', ')} cm, ` +
+      `centre ${mm(centre)} mm, turn ${deg(turn)} deg, plane ${mm(fit.plane - TABLE_Y)} mm, top ${mm(fit.top - TABLE_Y - STACK.h)} mm, res ${mm(fit.residual)} mm, seen ${fit.seenOut.toFixed(2)}`,
+  )
+  assert(Math.abs(size[0]) < 0.015 && Math.abs(size[1]) < 0.015, `the fused box is 14 cm across both ways, got ${cm(2 * fit.hu)} x ${cm(2 * fit.hv)} (seed ${start})`)
+  assert(sides.every((s) => Math.abs(s.error) < 0.01), `every side of the fused box within 1 cm (seed ${start})`)
+  assert(centre < 0.01, `the fused box is where it stands, off by ${mm(centre)} mm (seed ${start})`)
+  assert(turn < (3 * Math.PI) / 180, `the fused box is turned as it stands, off by ${deg(turn)} deg (seed ${start})`)
+  assert(Math.abs(fit.plane - TABLE_Y) < 0.005, `the fused box stands on the table, off by ${mm(fit.plane - TABLE_Y)} mm (seed ${start})`)
+  assert(Math.abs(fit.top - TABLE_Y - STACK.h) < 0.005, `the fused box is 8 cm tall, off by ${mm(fit.top - TABLE_Y - STACK.h)} mm (seed ${start})`)
+  assert(fit.flat, `the fused box has a flat top (seed ${start})`)
 }
 
-// The same box from other places and turns: every one a box, every side within 1.5 cm.
+// The same box from other places and turns, over three seeds: boxes with their sides where they are.
+// The far sides were never seen, so on the whole they must come out neither too big nor too small.
 {
   const eyes = [EYE, { x: -0.35, y: 1.25, z: 0.45 }, { x: 0.3, y: 1.45, z: 0.35 }]
-  const errors: number[] = []
-  let worstTurn = 0
-  for (const eye of eyes) {
-    for (const yaw of [0, 0.2, 0.785]) {
-      const scene = [deskTop, boxHit(STACK.x, TABLE_Y, STACK.z, STACK.w, STACK.w, STACK.h, yaw)]
-      const p = probe()
-      const fit = fitStanding(fused(scene, stackTop, 12, eye, 222), stackTop, eye, p)
-      assert(fit !== null && fit.shape === 'box', `the box seen from ${eye.x}, ${eye.z} turned ${deg(yaw)} deg fits as a box, got ${fit?.shape ?? p.reason}`)
-      if (!fit) continue
-      for (const side of sideErrors(fit, STACK.x, STACK.z, STACK.w / 2, yaw, eye)) errors.push(side.error)
-      worstTurn = Math.max(worstTurn, turnError(fit.angle, yaw))
+  const near: number[] = []
+  const far: number[] = []
+  const turns: number[] = []
+  let boxes = 0
+  let tries = 0
+  for (const start of [222, 333, 444]) {
+    for (const eye of eyes) {
+      for (const yaw of [0, 0.2, 0.785]) {
+        const scene = [deskTop, boxHit(STACK.x, TABLE_Y, STACK.z, STACK.w, STACK.w, STACK.h, yaw)]
+        const fit = fitStanding(fused(scene, stackTop, 12, eye, start), stackTop, eye)
+        tries++
+        if (!fit || fit.shape !== 'box') continue
+        boxes++
+        for (const side of sideErrors(fit, STACK.x, STACK.z, STACK.w / 2, yaw, eye)) (side.near ? near : far).push(side.error)
+        turns.push(turnError(fit.angle, yaw))
+      }
     }
   }
-  errors.sort((a, b) => a - b)
-  console.log(`fused box, 3 eyes x 3 turns: sides past the box from ${cm(errors[0])} to ${cm(errors[errors.length - 1])} cm (middle ${cm(errors[errors.length >> 1])}), worst turn ${deg(worstTurn)} deg`)
-  assert(Math.abs(errors[0]) < 0.015 && Math.abs(errors[errors.length - 1]) < 0.015, `every side within 1.5 cm, got ${cm(errors[0])} to ${cm(errors[errors.length - 1])} cm`)
+  const all = sorted([...near, ...far].map(Math.abs))
+  const t = sorted(turns)
+  console.log(
+    `fused box, 3 seeds x 3 eyes x 3 turns: ${boxes} of ${tries} boxes, sides past the box: seen ${cm(mean(near))} cm on average, far ${cm(mean(far))} cm, ` +
+      `9 in 10 within ${cm(all[Math.floor(all.length * 0.9)])} cm, worst ${cm(all[all.length - 1])} cm, turn middle ${deg(t[t.length >> 1])} deg, worst ${deg(t[t.length - 1])} deg`,
+  )
+  assert(boxes >= tries - 1, `all but at most one fit as a box, got ${boxes} of ${tries}`)
+  assert(Math.abs(mean(far)) < 0.004 && Math.abs(mean(near)) < 0.004, `the sides are not too big or too small on the whole, seen ${cm(mean(near))} cm, far ${cm(mean(far))} cm`)
+  assert(all[Math.floor(all.length * 0.9)] < 0.01 && all[all.length - 1] < 0.02, `9 sides in 10 within 1 cm and all within 2 cm, got ${cm(all[Math.floor(all.length * 0.9)])} and ${cm(all[all.length - 1])} cm`)
+  assert(t[t.length >> 1] < (3 * Math.PI) / 180 && t[t.length - 1] < (8 * Math.PI) / 180, `turned as it stands, middle ${deg(t[t.length >> 1])} deg, worst ${deg(t[t.length - 1])} deg`)
 }
 
-// A can and a ball, fused.
+// A can, fused, over the same seeds and places: a round its own size, not shrunk.
 const canScene = [deskTop, canHit(STACK.x, TABLE_Y, STACK.z, 0.065, 0.1)]
 const canTop = { x: STACK.x + 0.01, y: TABLE_Y + 0.1, z: STACK.z + 0.01 }
 {
-  const p = probe()
-  const fit = fitStanding(fused(canScene, canTop, 12), canTop, EYE, p)
-  console.log(`fused can: ${fit ? `${fit.shape} r ${cm(fit.r)} cm (true 6.5), centre ${mm(Math.hypot(fit.cx - STACK.x, fit.cz - STACK.z))} mm, top ${mm(fit.top - TABLE_Y - 0.1)} mm` : p.reason}`)
-  assert(fit !== null && fit.shape === 'round', `the fused can fits as a round, got ${fit?.shape ?? p.reason}`)
-  assert(fit !== null && Math.abs(fit.r - 0.065) < 0.005, `the fused can's radius is 6.5 cm, got ${fit ? cm(fit.r) : '-'}`)
+  const radii: number[] = []
+  for (const start of SEEDS) {
+    for (const eye of [EYE, { x: -0.35, y: 1.25, z: 0.45 }, { x: 0.3, y: 1.45, z: 0.35 }]) {
+      const p = probe()
+      const fit = fitStanding(fused(canScene, canTop, 12, eye, start), canTop, eye, p)
+      assert(fit !== null && fit.shape === 'round', `the fused can fits as a round, got ${fit?.shape ?? p.reason} (seed ${start}, eye ${eye.x})`)
+      if (!fit) continue
+      radii.push(fit.r)
+      assert(Math.abs(fit.r - 0.065) < 0.007, `the fused can's radius is 6.5 cm, got ${cm(fit.r)} (seed ${start}, eye ${eye.x})`)
+      assert(Math.hypot(fit.cx - STACK.x, fit.cz - STACK.z) < 0.01, `the fused can is where it stands (seed ${start}, eye ${eye.x})`)
+    }
+  }
+  const r = sorted(radii)
+  console.log(`fused can, ${SEEDS.length} seeds x 3 eyes: r ${cm(r[0])} to ${cm(r[r.length - 1])} cm (true 6.5), ${cm(mean(radii))} on average`)
+  assert(Math.abs(mean(radii) - 0.065) < 0.004, `the fused can is not shrunk on the whole, ${cm(mean(radii))} cm`)
 }
 {
   const ballScene = [deskTop, ballHit(STACK.x, TABLE_Y + 0.09, STACK.z, 0.09)]
@@ -430,15 +534,81 @@ const canTop = { x: STACK.x + 0.01, y: TABLE_Y + 0.1, z: STACK.z + 0.01 }
   }
   const vaseScene = [slabHit(-0.89, -0.55, 0, 0.62, -1.62, -1.28), egg]
   const deskEye = { x: 0, y: 1.7, z: 0 }
-  const vaseSide = { x: -0.72, y: 0.84, z: -1.33 }
+  // On the egg's front, 10 cm above its middle, where a look from the desk lands.
+  const vaseSide = { x: -0.72, y: 0.84, z: -1.45 + Math.sqrt(0.13 * 0.13 - (0.1 / 1.25) ** 2) }
   seed = 779
   const field = new RoomField(0.02, 300, 2)
   for (let pass = 0; pass < 24; pass++) look(field, deskEye, vaseSide, vaseScene)
   const p = probe()
   const fit = fitStanding(field, vaseSide, deskEye, p)
-  assert(fit === null && p.reason === 'taper', `the desk's vase is not fitted, it draws in, got ${fit ? `${fit.shape} r ${cm(fit.r)} cm` : p.reason}`)
-  assert(Math.abs(p.plane - 0.62) < 0.005, `the vase stands on its stand, ${p.plane.toFixed(4)}`)
+  // Its stand shows only a few centimetres round it, and none behind it: too little of what it stands
+  // on is seen round it, or it draws in.
+  assert(fit === null && (p.reason === 'taper' || p.reason === 'seen'), `the desk's vase is not fitted, got ${fit ? `${fit.shape} r ${cm(fit.r)} cm` : p.reason}`)
+  if (p.reason === 'taper') assert(Math.abs(p.plane - 0.62) < 0.005, `the vase stands on its stand, ${p.plane.toFixed(4)}`)
   console.log(`fused vase in a stand: no fit (${p.reason}), plane ${p.plane.toFixed(3)}`)
+}
+
+// An open pot seen from five places and fused: its inside is lower than its rim, so it is open.
+{
+  const R = 0.09
+  const inner = 0.065
+  const H = 0.1
+  const pot: Hit = (ox, oy, oz, dx, dy, dz) => {
+    let best = Infinity
+    const px = ox - STACK.x
+    const pz = oz - STACK.z
+    const a = dx * dx + dz * dz
+    const b = px * dx + pz * dz
+    // The outside wall from outside, and the inside wall from within the opening.
+    for (const [rad, y0, sign] of [[R, TABLE_Y, -1], [inner, TABLE_Y + 0.01, 1]] as const) {
+      const disc = b * b - a * (px * px + pz * pz - rad * rad)
+      if (disc < 0 || a < 1e-12) continue
+      const t = (-b + sign * Math.sqrt(disc)) / a
+      const y = oy + dy * t
+      if (t > 0 && y >= y0 && y <= TABLE_Y + H && t < best) best = t
+    }
+    for (const [y, lo, hi] of [[TABLE_Y + H, inner, R], [TABLE_Y + 0.01, 0, inner]] as const) {
+      const t = (y - oy) / dy
+      const rr = Math.hypot(px + dx * t, pz + dz * t)
+      if (t > 0 && rr >= lo && rr <= hi && t < best) best = t
+    }
+    return best
+  }
+  const scene = [deskTop, pot]
+  const rim = { x: STACK.x, y: TABLE_Y + H, z: STACK.z + (R + inner) / 2 }
+  const eyes = [EYE, { x: -0.35, y: 1.25, z: 0.45 }, { x: 0.3, y: 1.45, z: 0.35 }, { x: STACK.x, y: 1.4, z: STACK.z + 0.25 }, { x: STACK.x + 0.1, y: 1.45, z: STACK.z + 0.1 }]
+  seed = 12345
+  const field = new RoomField(0.02, 300, 2)
+  for (let pass = 0; pass < 6; pass++) for (const eye of eyes) look(field, eye, rim, scene)
+  for (const eye of eyes) {
+    const p = probe()
+    const fit = fitStanding(field, rim, eye, p)
+    assert(fit === null && p.reason === 'open', `a fused open pot is not fitted, it is open, got ${fit ? `${fit.shape} ${mm(fit.top - fit.plane)} mm tall` : p.reason} (eye ${eye.x}, ${eye.z})`)
+  }
+  console.log('fused open pot: no fit (open)')
+}
+
+// Where a picture was taken from comes back out of the matrix that takes the room into it.
+{
+  const cam = { x: 0.3, y: 1.45, z: 0.4 }
+  const at = { x: -0.03, y: 0.8, z: -0.08 }
+  const norm = (v: number[]) => v.map((x) => x / Math.hypot(...v))
+  const cross = (a: number[], b: number[]) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  // The camera's back, right and up, then the room into the camera, then the lens (off centre a little).
+  const back = norm([cam.x - at.x, cam.y - at.y, cam.z - at.z])
+  const right = norm(cross([0, 1, 0], back))
+  const up = cross(back, right)
+  const c = [cam.x, cam.y, cam.z]
+  const view = [right[0], up[0], back[0], 0, right[1], up[1], back[1], 0, right[2], up[2], back[2], 0, -dot(right, c), -dot(up, c), -dot(back, c), 1]
+  const f = 1 / Math.tan((35 * Math.PI) / 180)
+  const lens = [f / 1.33, 0, 0, 0, 0, f, 0, 0, 0.02, -0.01, -1.01, -1, 0, 0, -0.1, 0]
+  const clip = new Array(16).fill(0)
+  for (let col = 0; col < 4; col++) for (let row = 0; row < 4; row++) for (let k = 0; k < 4; k++) clip[col * 4 + row] += lens[k * 4 + row] * view[col * 4 + k]
+  const out = { x: 0, y: 0, z: 0 }
+  assert(pictureEye(clip, out) && Math.hypot(out.x - cam.x, out.y - cam.y, out.z - cam.z) < 1e-6, `a picture's eye is found, off by ${Math.hypot(out.x - cam.x, out.y - cam.y, out.z - cam.z)}`)
+  const flat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+  assert(!pictureEye(flat, out), 'a picture with no eye, straight on from afar, has none')
 }
 
 // The lift reads the block the fit read, and cuts at the plane the fit measured.
@@ -468,9 +638,12 @@ const canTop = { x: STACK.x + 0.01, y: TABLE_Y + 0.1, z: STACK.z + 0.01 }
   const zs: number[] = []
   let now = 0
   let last: Shell | null = null
+  // A new shape waits for a second fit that agrees with the first.
+  assert(track.update(fitStanding(field, stackTop, EYE), stackTop, now) === null, 'a new shape is not shown on its first fit')
+  now += 0.25
   for (let i = 0; i < 20; i++) {
     look(field, EYE, stackTop, stackScene)
-    const shell = track.update(fitStanding(field, stackTop, EYE), stackTop, now, EYE)
+    const shell = track.update(fitStanding(field, stackTop, EYE), stackTop, now)
     now += 0.25
     assert(shell !== null && shell.stand?.shape === 'box', `a still box stays a box, update ${i}`)
     if (!shell) continue
@@ -489,26 +662,28 @@ const canTop = { x: STACK.x + 0.01, y: TABLE_Y + 0.1, z: STACK.z + 0.01 }
 
   // A hand in the way: the same shape for up to a second while the pinch stays on it.
   const seenAt = now - 0.25
-  assert(track.update(null, stackTop, seenAt + 0.3, EYE) === last, 'a missed fit holds the shape')
+  assert(track.update(null, stackTop, seenAt + 0.3) === last, 'a missed fit holds the shape')
   assert(Math.abs(track.held - 0.3) < 1e-9, `the hold is counted, ${track.held.toFixed(2)} s`)
-  assert(track.update(null, stackTop, seenAt + 0.95, EYE) === last, 'a missed fit holds the shape for most of a second')
-  assert(track.update(null, stackTop, seenAt + 1.05, EYE) === null, 'after a second without a fit the shape goes')
-  assert(track.update(fitStanding(field, stackTop, EYE), stackTop, seenAt + 1.1, EYE) !== null, 'the shape comes straight back')
-  assert(track.update(null, { x: 1, z: 1 }, seenAt + 1.2, EYE) === null, 'a pinch off the shape lets it go')
+  assert(track.update(null, stackTop, seenAt + 0.95) === last, 'a missed fit holds the shape for most of a second')
+  assert(track.update(null, stackTop, seenAt + 1.05) === null, 'after a second without a fit the shape goes')
+  assert(track.update(fitStanding(field, stackTop, EYE), stackTop, seenAt + 1.1) === null, 'once gone, the shape waits for a second fit')
+  assert(track.update(fitStanding(field, stackTop, EYE), stackTop, seenAt + 1.15) !== null, 'and comes back on the second')
+  assert(track.update(null, { x: 1, y: 0.8, z: 1 }, seenAt + 1.2) === null, 'a pinch off the shape lets it go')
 
   // Moved 5 cm: followed within 3 updates.
   const moved = { x: STACK.x + 0.05, z: STACK.z }
   const movedTop = { x: moved.x + 0.01, y: stackTop.y, z: moved.z + 0.01 }
   track.reset()
   now = 10
-  track.update(fitStanding(field, stackTop, EYE), stackTop, now, EYE)
+  track.update(fitStanding(field, stackTop, EYE), stackTop, now)
+  track.update(fitStanding(field, stackTop, EYE), stackTop, now)
   const movedScene = [deskTop, boxHit(moved.x, TABLE_Y, moved.z, STACK.w, STACK.w, STACK.h, STACK.yaw)]
   const movedField = fused(movedScene, movedTop, 10, EYE, 777)
   let followed = -1
   for (let i = 0; i < 4; i++) {
     look(movedField, EYE, movedTop, movedScene)
     now += 0.25
-    const shell = track.update(fitStanding(movedField, movedTop, EYE), movedTop, now, EYE)
+    const shell = track.update(fitStanding(movedField, movedTop, EYE), movedTop, now)
     if (followed < 0 && shell && Math.hypot(shell.cx - moved.x, shell.cz - moved.z) < 0.012) followed = i + 1
   }
   assert(followed > 0 && followed <= 3, `a box moved 5 cm is followed within 3 updates, took ${followed}`)
@@ -517,7 +692,8 @@ const canTop = { x: STACK.x + 0.01, y: TABLE_Y + 0.1, z: STACK.z + 0.01 }
   // Swapped for a can in place: the shape changes on the second fit that agrees, not the first.
   track.reset()
   now = 20
-  track.update(fitStanding(field, stackTop, EYE), stackTop, now, EYE)
+  track.update(fitStanding(field, stackTop, EYE), stackTop, now)
+  track.update(fitStanding(field, stackTop, EYE), stackTop, now)
   const canField = fused(canScene, canTop, 10, EYE, 999)
   const shapes: string[] = []
   for (let i = 0; i < 3; i++) {
@@ -525,14 +701,14 @@ const canTop = { x: STACK.x + 0.01, y: TABLE_Y + 0.1, z: STACK.z + 0.01 }
     now += 0.25
     const fit = fitStanding(canField, canTop, EYE)
     assert(fit !== null && fit.shape === 'round', `the can fits as a round, got ${fit?.shape}`)
-    shapes.push(track.update(fit, canTop, now, EYE)?.stand?.shape ?? 'none')
+    shapes.push(track.update(fit, canTop, now)?.stand?.shape ?? 'none')
   }
   assert(shapes[0] === 'box' && shapes[1] === 'round' && shapes[2] === 'round', `the can takes over on the second agreeing fit, got ${shapes.join(', ')}`)
 }
 
 // ---- The shell built from a fit. ----
 function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z: number }): void {
-  const shell = buildStanding(fit, eye)
+  const shell = buildStanding(fit)
   const p = shell.positions
   const count = p.length / 3
   assert(shell.kind === 'object' && !shell.runsOn && shell.stand === fit, `${name}: a whole thing that carries its fit`)
@@ -546,7 +722,8 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
     assert(r <= shell.radius + 1e-6, `${name}: the radius bounds every point`)
   }
   assert(Math.abs(low - shell.bottom) < 1e-6 && Math.abs(shell.relief - (high - low)) < 1e-6, `${name}: bottom and relief match the points`)
-  if (fit.flat) assert(Math.abs(shell.relief - (fit.top - fit.plane - BASE_GAP)) < 1e-6, `${name}: relief is its height`)
+  // Its height, but never less than the least a thing rises (1.2 cm), so the walls always run down.
+  if (fit.flat) assert(Math.abs(shell.relief - Math.max(fit.top - fit.plane - BASE_GAP, 0.012)) < 1e-6, `${name}: relief is its height`)
   // Edges by where their ends are: every one is used twice, the top's rim by the top and the wall, except along the base.
   const key = (i: number) => `${p[i * 3].toFixed(5)},${p[i * 3 + 1].toFixed(5)},${p[i * 3 + 2].toFixed(5)}`
   const uses = new Map<string, number>()
@@ -595,7 +772,7 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
   for (let i = 0; i < count; i++) {
     assert(base(i) ? Math.abs(shell.edge[i] - BASE_EDGE) < 1e-6 : shell.edge[i] === 0, `${name}: edge marks the base ring only`)
   }
-  assert(shell.unseen !== undefined, `${name}: it says what was never seen`)
+  assert(shell.facing !== undefined && shell.swell !== undefined, `${name}: it says which way each point faces and swells`)
   let walls = 0
   for (let t = 0; t < shell.indices.length; t += 3) {
     for (let e = 0; e < 3; e++) {
@@ -605,13 +782,28 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
       const dx = p[i * 3] - fit.cx
       const dz = p[i * 3 + 2] - fit.cz
       const outward = fit.shape === 'round' ? dx * (eye.x - p[i * 3]) + dz * (eye.z - p[i * 3 + 2]) : NaN
-      if (outward === outward && Math.abs(outward) > 1e-4) assert((shell.unseen[i] === 1) === outward < 0, `${name}: the far walls are the unseen ones`)
+      if (outward === outward && Math.abs(outward) > 1e-4) assert(shows(shell, i, eye) === outward > 0, `${name}: a picture from the eye shows the walls facing it, not the far ones`)
       walls++
     }
   }
   assert(walls > 0, `${name}: it has walls`)
   // Seen from above, the top is seen.
-  for (let i = 0; i < count; i++) if (onTop[i] && eye.y > high) assert(shell.unseen[i] === 0, `${name}: the top is seen from above`)
+  for (let i = 0; i < count; i++) if (onTop[i] && eye.y > high) assert(shows(shell, i, eye), `${name}: a picture from above shows the top`)
+  // Two vertices at one point (the top's rim and the walls' top row) swell the same way, so the ghost has no gap there.
+  const swell = shell.swell!
+  const at = new Map<string, number>()
+  let pairs = 0
+  for (let i = 0; i < count; i++) {
+    const other = at.get(key(i))
+    if (other === undefined) {
+      at.set(key(i), i)
+      continue
+    }
+    pairs++
+    for (let axis = 0; axis < 3; axis++) assert(swell[i * 3 + axis] === swell[other * 3 + axis], `${name}: the rim's two copies swell together`)
+    assert(swell[i * 3 + 1] === 1 && Math.hypot(swell[i * 3], swell[i * 3 + 2]) > 0.99, `${name}: the rim swells up and out`)
+  }
+  assert(pairs >= 8, `${name}: the rim has its two copies, ${pairs}`)
 }
 
 {
@@ -620,7 +812,7 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
   if (fit) {
     checkShell('box', fit, EYE)
     // A box's far walls: those facing away from the eye, by the side they are on.
-    const shell = buildStanding(fit, EYE)
+    const shell = buildStanding(fit)
     const c = Math.cos(fit.angle)
     const s = Math.sin(fit.angle)
     let checked = 0
@@ -640,7 +832,10 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
       const nx = nu * c - nw * s
       const nz = nu * s + nw * c
       const facing = nx * (EYE.x - x) + nz * (EYE.z - z)
-      assert((shell.unseen![i] === 1) === facing < 0, 'the box walls turned from the eye are the unseen ones')
+      assert(shows(shell, i, EYE) === facing >= 0, 'a picture from the eye does not show the box walls turned from it')
+      // From the other side of the box, the other walls.
+      const back = { x: 2 * fit.cx - EYE.x, y: EYE.y, z: 2 * fit.cz - EYE.z }
+      assert(shows(shell, i, back) === facing <= 0, 'a picture from behind shows the far walls instead')
       checked++
     }
     assert(checked > 20, `the box has flat sides to check, ${checked}`)
@@ -675,6 +870,9 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
     voxel: 0.02,
   }
   checkShell('prism', prism, EYE)
+  // A top no higher than what it stands on (an open tray read at its bottom) still makes a solid
+  // whose walls run down from the top and face out, not a flat or inside-out one.
+  checkShell('top at its plane', { ...prism, shape: 'box', top: prism.plane, hu: 0.05, hv: 0.04, corner: 0.005 }, EYE)
   // A three-sided thing is neither a box nor a round: a prism round its own outline.
   const three = (x: number, y: number, z: number) => {
     let d = Math.abs(y - 0.79) - 0.04
@@ -699,7 +897,7 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
   assert(sloped !== null && !sloped.flat && sloped.heights !== null, `a sloping top is not flat, got ${sloped ? (sloped.flat ? 'flat' : 'sloped') : 'no fit'}`)
   if (sloped) {
     checkShell('sloped', sloped, { x: -0.2, y: 1.5, z: 0.5 })
-    const shell = buildStanding(sloped, { x: -0.2, y: 1.5, z: 0.5 })
+    const shell = buildStanding(sloped)
     let lowTop = Infinity
     let highTop = -Infinity
     for (let i = 0; i < shell.positions.length / 3; i++) {
@@ -734,7 +932,8 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
   for (let p = 0; p < 10; p++) look(lowField, lowEye, { x: 0, y: 0.4, z: 0.1 }, low, 0.3, 0.25)
   const pl = probe()
   const lowFit = fitStanding(lowField, { x: 0.01, y: 0.4, z: 0.03 }, lowEye, pl)
-  assert(lowFit === null && (pl.reason === 'seen' || pl.reason === 'border'), `a table edge seen through a small window is not a standing thing, got ${lowFit?.shape ?? pl.reason}`)
+  // The column under the pinch was not seen there, and the nearest that rises is well below it: 'off' too.
+  assert(lowFit === null && (pl.reason === 'seen' || pl.reason === 'border' || pl.reason === 'off'), `a table edge seen through a small window is not a standing thing, got ${lowFit?.shape ?? pl.reason}`)
   console.log(`small window: cushion edge ${p.reason}, low table edge ${pl.reason}`)
 }
 
@@ -759,7 +958,7 @@ function checkShell(name: string, fit: StandFit, eye: { x: number; y: number; z:
   const builds: number[] = []
   for (let i = 0; i < 30; i++) {
     const t0 = performance.now()
-    if (at) buildStanding(at, EYE)
+    if (at) buildStanding(at)
     builds.push(performance.now() - t0)
   }
   builds.sort((a, b) => a - b)

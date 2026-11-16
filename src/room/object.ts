@@ -42,8 +42,17 @@ export interface Shell {
   relief: number
   /** The fitted solid this shell was built from, when it is one. */
   stand?: StandFit
-  /** 1 where a vertex was never seen by the camera, such as the far walls of a fitted solid. */
-  unseen?: Uint8Array
+  /**
+   * The way the surface faces at each vertex, xyz: up on a fitted solid's top,
+   * straight out on its walls. A picture shows only the faces turned toward
+   * where it was taken from; the rest of the picture there is the thing's front.
+   */
+  facing?: Float32Array
+  /**
+   * The way each vertex moves when the ghost stands proud of the real thing,
+   * xyz. Without it, a vertex moves along its normal.
+   */
+  swell?: Float32Array
 }
 
 export interface LiftOptions {
@@ -79,6 +88,54 @@ export interface FieldWindow {
   v: number
   /** Which read this was. The next read reuses the same memory, and this one is then out of date. */
   stamp: number
+}
+
+/**
+ * Where a picture was taken from, given the matrix that takes the room to it
+ * (column-major, as three.js keeps it): the one point that matrix sends
+ * nowhere. False when there is no such point.
+ */
+export function pictureEye(e: ArrayLike<number>, out: { x: number; y: number; z: number }): boolean {
+  // The picture's x, y and w are all 0 there: three planes through it, one to each row.
+  const ax = e[0]
+  const ay = e[4]
+  const az = e[8]
+  const aw = -e[12]
+  const bx = e[1]
+  const by = e[5]
+  const bz = e[9]
+  const bw = -e[13]
+  const cx = e[3]
+  const cy = e[7]
+  const cz = e[11]
+  const cw = -e[15]
+  // Where the three planes meet, by the cross products of their directions.
+  const bcx = by * cz - bz * cy
+  const bcy = bz * cx - bx * cz
+  const bcz = bx * cy - by * cx
+  const det = ax * bcx + ay * bcy + az * bcz
+  if (!(Math.abs(det) > 1e-12)) return false
+  const cax = cy * az - cz * ay
+  const cay = cz * ax - cx * az
+  const caz = cx * ay - cy * ax
+  const abx = ay * bz - az * by
+  const aby = az * bx - ax * bz
+  const abz = ax * by - ay * bx
+  out.x = (aw * bcx + bw * cax + cw * abx) / det
+  out.y = (aw * bcy + bw * cay + cw * aby) / det
+  out.z = (aw * bcz + bw * caz + cw * abz) / det
+  return Number.isFinite(out.x + out.y + out.z)
+}
+
+/**
+ * Whether a picture taken from `eye` shows vertex `i` of a shell: true unless
+ * the shell says which way its faces turn and this one turns away.
+ */
+export function shows(shell: Shell, i: number, eye: { x: number; y: number; z: number }): boolean {
+  const f = shell.facing
+  if (!f) return true
+  const p = shell.positions
+  return f[i * 3] * (eye.x - p[i * 3]) + f[i * 3 + 1] * (eye.y - p[i * 3 + 1]) + f[i * 3 + 2] * (eye.z - p[i * 3 + 2]) >= 0
 }
 
 /**

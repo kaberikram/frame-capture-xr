@@ -4,7 +4,7 @@ import { projectPixel } from '../capture/lens.js'
 import type { Palette } from '../look/palette.js'
 import { ghostMaterial, shellMaterial } from '../look/room-glow.js'
 import type { SurfacePoint } from './field.js'
-import type { Shell } from './object.js'
+import { pictureEye, shows, type Shell } from './object.js'
 import { POP, TACK } from './patch.js'
 import type { PieceEvent, PieceState, RoomPiece } from './peel-piece.js'
 import type { Skin } from './plates.js'
@@ -36,26 +36,35 @@ export function shellGeometry(shell: Shell): BufferGeometry {
   geo.setAttribute('aEdge', new BufferAttribute(shell.edge, 1))
   geo.setIndex(new BufferAttribute(shell.indices, 1))
   geo.computeVertexNormals()
+  // Which way the ghost swells off the real thing: the shell's own say, or else along the normals.
+  geo.setAttribute('aSwell', shell.swell ? new BufferAttribute(shell.swell, 3) : geo.getAttribute('normal'))
   return geo
 }
 
 /**
- * Where each point of a shell sits in a camera picture, 0..1. Out of range
- * where the camera did not see it, and on the far walls of a fitted solid,
- * which the picture shows only the room behind.
+ * Where each point of a shell sits in a camera picture, 0..1, and whether the
+ * picture shows it: u, v, then 1 or 0. A fitted solid's walls turned away from
+ * where the picture was taken are not shown; there the picture holds the
+ * thing's front. Their place in the picture is still kept, so the faces
+ * between a shown and a hidden point blend across the thing itself, not
+ * across the rest of the picture. A point the picture could not place is out
+ * of range and not shown.
  */
 export function shellImageCoords(shell: Shell, skin: Skin | null): Float32Array {
   const count = shell.positions.length / 3
-  const uv = new Float32Array(count * 2).fill(-1)
+  const uv = new Float32Array(count * 3).fill(-1)
+  for (let i = 0; i < count; i++) uv[i * 3 + 2] = 0
   if (!skin) return uv
   const px = { x: 0, y: 0 }
   const p = shell.positions
-  const unseen = shell.unseen
+  // Where the picture was taken from, to tell the faces it shows.
+  const eye = { x: 0, y: 0, z: 0 }
+  const placed = shell.facing !== undefined && pictureEye(skin.clip.elements, eye)
   for (let i = 0; i < count; i++) {
-    if (unseen && unseen[i]) continue
     if (!projectPixel(skin.clip, p[i * 3], p[i * 3 + 1], p[i * 3 + 2], skin.width, skin.height, px)) continue
-    uv[i * 2] = px.x / skin.width
-    uv[i * 2 + 1] = skin.topDown ? px.y / skin.height : 1 - px.y / skin.height
+    uv[i * 3] = px.x / skin.width
+    uv[i * 3 + 1] = skin.topDown ? px.y / skin.height : 1 - px.y / skin.height
+    uv[i * 3 + 2] = !placed || shows(shell, i, eye) ? 1 : 0
   }
   return uv
 }
@@ -142,7 +151,7 @@ export class ObjectPiece implements RoomPiece {
     this.hand.copy(init.start)
 
     const geo = shellGeometry(shell)
-    geo.setAttribute('aUv', new BufferAttribute(shellImageCoords(shell, this.skin), 2))
+    geo.setAttribute('aUv', new BufferAttribute(shellImageCoords(shell, this.skin), 3))
     this.mat = shellMaterial(init.palette)
     if (this.skin) {
       this.mat.uniforms.uMap.value = this.skin.texture
@@ -416,10 +425,10 @@ export class ObjectPiece implements RoomPiece {
     let v0 = 1
     let u1 = 0
     let v1 = 0
-    for (let i = 0; i < uv.length; i += 2) {
+    for (let i = 0; i < uv.length; i += 3) {
       const u = uv[i]
       const v = uv[i + 1]
-      if (u < 0 || u > 1 || v < 0 || v > 1) continue
+      if (!uv[i + 2] || u < 0 || u > 1 || v < 0 || v > 1) continue
       if (u < u0) u0 = u
       if (v < v0) v0 = v
       if (u > u1) u1 = u
