@@ -25,11 +25,12 @@ import { PALETTE } from '../look/palette.js'
 import { DepthMotes } from '../look/depth-motes.js'
 import { LiveMesh } from './live-mesh.js'
 import { GHOST_JOINTS, cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
-import { focusRect, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
+import { focusRect, mixedPixel, onEdge, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
-import { liftShell, pickShell, type Shell } from './object.js'
+import { liftShell, pickShell, type LiftOptions, type Shell } from './object.js'
 import { ObjectPiece, shellGeometry, shellImageCoords } from './object-piece.js'
+import { BASE_GAP, StandTrack, fitStanding, setStandFar, standFar, type StandFit, type StandProbe } from './stand.js'
 import { PIECE_MAX, STICK_GAP, TOUCH_GAP, basisKeeping, canLand, tangentBasis, type Basis } from './patch.js'
 import { PeelPiece, type PieceState, type RoomPiece } from './peel-piece.js'
 import type { RoomPlates, Skin } from './plates.js'
@@ -56,6 +57,12 @@ const MOTES = queryFlag('motes') !== '0'
 /** `?mesh=0` hides the live mesh. `?mesh=all` shows all of it, not just where the hand points. */
 const MESH = queryFlag('mesh') !== '0'
 const MESH_ALL = queryFlag('mesh') === 'all'
+/**
+ * `?standfar=1.2` sets how far the far sides of a fitted thing are pulled in,
+ * in voxels, for tuning on the headset. Without it, or with anything that is
+ * not a number, the tuned default stays.
+ */
+setStandFar(queryFlag('standfar'))
 /** How far a hand's torch reaches, metres. */
 export const TORCH_REACH = 3
 /** The torch's circle on a surface `dist` metres from the hand: wider the further it falls, like a beam. */
@@ -195,6 +202,14 @@ export class RoomScan {
   // Written two voxels deep behind each surface, so the live mesh has no holes.
   private readonly field = new RoomField(undefined, undefined, 2)
   private readonly fine: RoomField | null = queryFlag('fine') === '0' ? null : new RoomField(FINE_VOXEL, FINE_CHUNKS, 2)
+  /** A thing standing on a level surface, fitted as a clean solid and held steady from one look to the next. */
+  private readonly stand = new StandTrack()
+  /** What the latest fit found on the way: the surface under the thing, and why there was no fit. */
+  private readonly standProbe: StandProbe = { plane: NaN, reason: '' }
+  /** The latest fit, or null when there was none, for the debug panel. */
+  private standFit: StandFit | null = null
+  /** How many times the ghost's shape has been built, for scripted checks: a steady thing is built once. */
+  private ghostBuilds = 0
   private readonly pieces: RoomPiece[] = []
   private readonly effects: Effect[] = []
   private readonly pools: Pool[] = []
@@ -409,6 +424,16 @@ export class RoomScan {
   /** The ghost of a thing a pinch would lift is showing, 0 to 1. */
   get attention(): number {
     return this.preview.ghostLevel
+  }
+
+  /** The solid fitted to the thing whose ghost is showing: box, round, prism, or none. */
+  get shape(): string {
+    return this.preview.ghostShell?.stand?.shape ?? 'none'
+  }
+
+  /** How many times a ghost's shape has been built. It stays put while a steady thing is looked at. */
+  get ghostBuildCount(): number {
+    return this.ghostBuilds
   }
 
   /** The torch's circle is lit on the mesh, 0 to 1. */
@@ -703,8 +728,26 @@ export class RoomScan {
       `depth ${this.depthMode ?? 'none'}  readings ${this.lastReadings}  passes ${this.pass}  miss ${this.depthMiss}`,
       `room ${this.field.chunkCount} chunks  fine ${this.fine ? this.fine.chunkCount : 'off'}  mesh ${this.live?.chunkCount ?? 'off'}  joints ${this.jointCount}`,
       `torch L ${t(0)} R ${t(1)}  offer ${seen.offer ?? '-'}  lit ${seen.spotLevel.toFixed(2)} r ${seen.spotR.toFixed(2)}`,
+      this.standLine(),
       ...(this.fault ? [`ERROR ${this.fault}`] : []),
     ]
+  }
+
+  /**
+   * The latest fit of a standing thing: its shape and size in centimetres, how
+   * far its outline strays in millimetres, how much of the surface around it
+   * was seen, why there was no fit, how long a shape has been held without
+   * one, and the far-side pull in use (`?standfar=`).
+   */
+  private standLine(): string {
+    const fit = this.standFit
+    const reason = this.standProbe.reason || 'ok'
+    const hold = `hold ${this.stand.held.toFixed(1)}s  far ${standFar().toFixed(2)}`
+    if (!fit) return `stand none  ${reason}  ${hold}`
+    const cm = (m: number) => Math.round(m * 100)
+    const across = fit.shape === 'round' ? `${cm(2 * fit.r)}x${cm(2 * fit.r)}` : `${cm(2 * fit.hu)}x${cm(2 * fit.hv)}`
+    const size = `${across}x${cm(fit.top - fit.plane)}cm`
+    return `stand ${fit.shape} ${size}  res ${Math.round(fit.residual * 1000)}mm  seen ${fit.seenOut.toFixed(2)}  ${reason}  ${hold}`
   }
 
   private run(dt: number, presenting: boolean, frame: DepthFrame | null, camera: PerspectiveCamera, standIn: Object3D): void {
@@ -722,6 +765,8 @@ export class RoomScan {
       this.depthNote = null
       this.preview.shell = null
       this.preview.ghostShell = null
+      this.stand.reset()
+      this.standFit = null
       this.preview.offer = null
       this.preview.offered = null
       this.preview.spotLevel = 0
@@ -814,13 +859,38 @@ export class RoomScan {
     return out
   }
 
-  /** The shell a pinch at `hit` would lift: from the fine field where it has looked closely, or else the coarse one. */
+  /**
+   * The shell a pinch at `hit` would lift: from the fine field where it has
+   * looked closely, or else the coarse one. A thing standing on a level
+   * surface comes as a clean fitted solid, the same one each time while it
+   * keeps still. Anything else is lifted from the field as it is.
+   */
   private shellAt(hit: SurfacePoint, piece?: number): Shell | null {
-    const options = piece === undefined ? undefined : { piece, square: this.squareAt(hit) }
-    const coarse = liftShell(this.field, hit, this.eye, options)
     const fine = this.fine
-    if (!fine || !fine.near(hit.x, hit.y, hit.z, 0.04, this.hitD)) return coarse
-    return pickShell(coarse, liftShell(fine, hit, this.eye, options))
+    const close = fine !== null && fine.near(hit.x, hit.y, hit.z, 0.04, this.hitD) !== null
+    const probe = this.standProbe
+    // Fitted only where the fine field has looked closely (or with no fine field at all). In the
+    // coarse field a 14 cm thing is three or four voxels across, and its fits come out the wrong
+    // size, or the wrong shape, until the fine field takes over a moment later.
+    const field = close ? fine : fine ? null : this.field
+    let fit: StandFit | null = null
+    if (field) fit = fitStanding(field, hit, this.eye, probe)
+    else {
+      probe.plane = NaN
+      probe.reason = 'coarse'
+      probe.window = undefined
+    }
+    this.standFit = fit
+    const steady = this.stand.update(fit, hit, this.time, this.eye)
+    if (steady) return steady
+    // The surface the fit found keeps the cut clear of the table, and the block it read is not read again.
+    const options: LiftOptions = piece === undefined ? {} : { piece, square: this.squareAt(hit) }
+    options.floor = probe.plane
+    options.window = probe.window
+    if (!close || !fine) return liftShell(this.field, hit, this.eye, options)
+    // The fine field first: that is the block the fit read.
+    const near = liftShell(fine, hit, this.eye, options)
+    return pickShell(liftShell(this.field, hit, this.eye, options), near)
   }
 
   /**
@@ -960,6 +1030,8 @@ export class RoomScan {
     const piece = new ObjectPiece({ shell, start: pinch, skin, palette: PALETTE, scale: PEEL_SCALE, remote })
     piece.eye.copy(this.eye)
     this.hold(piece)
+    // The thing has been taken: the next look fits it afresh rather than holding on to this shape.
+    this.stand.reset()
   }
 
   private hold(piece: RoomPiece): void {
@@ -1168,11 +1240,14 @@ export class RoomScan {
     seen.shell = shell
     seen.remote = remote
     seen.age = 0
+    // The very shape already on show, as a fitted thing held still gives: nothing to build again.
+    if (shell && shell === seen.ghostShell) return
     // Anything but a whole thing leaves the ghost as it is, fading out on the thing it was.
     if (!shell || (shell.kind !== 'object' && (FLAT || remote))) return
     const was = seen.ghostShell
     const moved = !was || Math.hypot(shell.cx - was.cx, shell.cy - was.cy, shell.cz - was.cz) > 0.08
     seen.ghostShell = shell
+    this.ghostBuilds++
     const geo = shellGeometry(shell)
     // The same thing again, as depth fills in: keep the picture taken before the hand arrived.
     let skin = moved ? null : seen.ghostSkin
@@ -1194,8 +1269,39 @@ export class RoomScan {
     g.uEncode.value = skin?.linear ? 1 : 0
     g.uLow.value = shell.bottom - shell.cy
     g.uSpan.value = Math.max(0.02, (shell.cy - shell.bottom) * 2)
+    this.frameGrid(shell)
     // The ghost does not jump from one thing to the next: it dims and comes up again.
     if (moved) seen.ghostLevel *= 0.25
+  }
+
+  /**
+   * A fitted thing's grid is laid in its own frame, from a corner of its base:
+   * squares along its sides, a whole number of them to each side and up its
+   * walls, so lines fall on its edges and on its base. Anything else keeps the
+   * grid in the room's axes.
+   */
+  private frameGrid(shell: Shell): void {
+    const g = this.preview.ghostMat.uniforms
+    const fit = shell.stand
+    if (!fit) {
+      g.uFramed.value = 0
+      return
+    }
+    // A round has no sides to line up with. A prism lines up with the box around it.
+    const a = fit.shape === 'round' ? 0 : fit.angle
+    const hu = fit.shape === 'round' ? fit.r : fit.hu
+    const hv = fit.shape === 'round' ? fit.r : fit.hv
+    const tall = Math.max(0.01, shell.relief)
+    // Small squares on small things, as for the room's grid.
+    const want = shell.radius < 0.14 ? 0.025 : 0.04
+    g.uFramed.value = 1
+    g.uFrame.value.set(Math.cos(a), Math.sin(a), fit.cx - shell.cx, fit.cz - shell.cz)
+    g.uOrigin.value.set(-hu, fit.plane + BASE_GAP - shell.cy, -hv)
+    g.uCells.value.set(
+      (2 * hu) / Math.max(2, Math.round((2 * hu) / want)),
+      tall / Math.max(1, Math.round(tall / want)),
+      (2 * hv) / Math.max(2, Math.round((2 * hv) / want)),
+    )
   }
 
   private releaseGhostSkin(): void {
@@ -1389,6 +1495,9 @@ export class RoomScan {
       toward.normalize()
       const right = this.scratch.crossVectors(toward, camera.up).normalize()
       const up = this.rim[0].crossVectors(right, toward)
+      // Every ray first, keeping how far each went, so each reading can see its neighbours.
+      const m = this.metres
+      const found: (DepthSample | null)[] = []
       for (let y = 0; y < DEPTH_ROWS; y++) {
         for (let x = 0; x < DEPTH_COLS; x++) {
           const ax = ((x + jx) / DEPTH_COLS - 0.5) * FOCUS_WIDE
@@ -1396,8 +1505,24 @@ export class RoomScan {
           this.rim[1].copy(toward).multiplyScalar(dist).addScaledVector(right, ax).addScaledVector(up, ay).normalize()
           this.raycaster.set(origin, this.rim[1])
           const hit = this.raycaster.intersectObject(standIn, true)[0]
-          if (!hit || hit.distance < 0.25 || hit.distance > 3.4) continue
-          samples.push(this.deskSample(origin, hit))
+          const k = x + y * DEPTH_COLS
+          if (!hit || hit.distance < 0.25 || hit.distance > 3.4) {
+            m[k] = 0
+            found[k] = null
+            continue
+          }
+          m[k] = hit.distance
+          found[k] = this.deskSample(origin, hit)
+        }
+      }
+      // Then the edges of things, the same way a headset's depth is read.
+      for (let y = 0; y < DEPTH_ROWS; y++) {
+        for (let x = 0; x < DEPTH_COLS; x++) {
+          const k = x + y * DEPTH_COLS
+          const sample = found[k]
+          if (!sample) continue
+          if (onEdge(m, DEPTH_COLS, DEPTH_ROWS, x, y)) sample.edge = true
+          samples.push(sample)
         }
       }
       this.enqueue(samples, this.fine ?? this.field)
@@ -1555,7 +1680,8 @@ export class RoomScan {
   /**
    * Turn the grid of readings in `us`, `vs` and `metres` into points in the
    * room and queue them for a field. Readings that are a hand, or the smear
-   * between a near thing and what is behind it, are left out.
+   * between a near thing and what is behind it, are left out. Readings on the
+   * edge of a near thing are marked, so the field does not spread them.
    */
   private fuseGrid(viewMatrix: ArrayLike<number>, projection: ArrayLike<number>, field: RoomField, snapped = false): void {
     const origin = transformPoint(viewMatrix, { x: 0, y: 0, z: 0 })
@@ -1584,11 +1710,16 @@ export class RoomScan {
         // Depth blurs across an edge. A reading part way between its neighbours on either side is that blur.
         if (col > 0 && col < DEPTH_COLS - 1 && between(d, m[k - 1], m[k + 1])) continue
         if (row > 0 && row < DEPTH_ROWS - 1 && between(d, m[k - DEPTH_COLS], m[k + DEPTH_COLS])) continue
+        // A smaller step's blur too, where the readings two out show each side is level.
+        if (col > 1 && col < DEPTH_COLS - 2 && mixedPixel(d, m[k - 1], m[k + 1], m[k - 2], m[k + 2])) continue
+        if (row > 1 && row < DEPTH_ROWS - 2 && mixedPixel(d, m[k - DEPTH_COLS], m[k + DEPTH_COLS], m[k - 2 * DEPTH_COLS], m[k + 2 * DEPTH_COLS])) continue
         const x = at[k * 3]
         const y = at[k * 3 + 1]
         const z = at[k * 3 + 2]
         if (this.isHand(x, y, z, snapped)) continue
         const sample: DepthSample = { ox: origin.x, oy: origin.y, oz: origin.z, px: x, py: y, pz: z }
+        // The edge of a thing, against what is behind it: kept where it was seen.
+        if (onEdge(m, DEPTH_COLS, DEPTH_ROWS, col, row)) sample.edge = true
         // The way the surface faces, from the readings beside and above: across an edge there is none.
         const side = col + 1 < DEPTH_COLS ? k + 1 : k - 1
         const up = row + 1 < DEPTH_ROWS ? k + DEPTH_COLS : k - DEPTH_COLS
@@ -1658,9 +1789,10 @@ export class RoomScan {
       const fz = forward.z
       samples.sort((a, b) => alignment(b, fx, fy, fz) - alignment(a, fx, fy, fz))
     }
-    // Show the depth as it is read: all of a close look, a scattering of the wide one.
+    // Show the depth as it is read: a scattering of each look. Fewer while something has your
+    // attention, and none over a ghost that is fully shown, so the motes do not snow over it.
     if (this.motes) {
-      const share = field === this.field ? 0.06 : 0.3
+      const share = field === this.field ? (this.focusOn ? 0.03 : 0.06) : 0.08 * (1 - this.preview.ghostLevel)
       for (let i = 0; i < samples.length; i++) {
         if (Math.random() > share) continue
         const p = samples[i]

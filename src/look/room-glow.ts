@@ -455,6 +455,17 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       uGrid: { value: 0 },
       /** Metres to a grid square. */
       uCell: { value: 0.04 },
+      /**
+       * 1 lays the grid in the thing's own frame, for a fitted solid: its
+       * squares run along its sides, with lines on its edges and its base.
+       */
+      uFramed: { value: 0 },
+      /** The turn of that frame about up as (cos, sin), then its middle in x and z, from the ghost's centre. */
+      uFrame: { value: new Vector4(1, 0, 0, 0) },
+      /** The corner the grid starts from, in that frame: one side, the base, the other side. */
+      uOrigin: { value: new Vector3() },
+      /** Size of a grid square along each axis of that frame, metres: a whole number of squares fits each side. */
+      uCells: { value: new Vector3(0.04, 0.04, 0.04) },
       /** Hand joints, in the room, so the ghost is hidden behind your hand like the real thing is. */
       uJoints: { value: Array.from({ length: GHOST_JOINTS }, () => new Vector3()) },
       uJointCount: { value: 0 },
@@ -469,10 +480,13 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       varying vec3 vView;
       varying vec3 vN;
       varying vec3 vWorld;
+      varying vec3 vLocal;
       void main() {
         vUv = aUv;
         vEdge = aEdge;
         vY = position.y;
+        // Where it is on the shape before it swells, so a grid in its own frame stays put while it leans.
+        vLocal = position;
         // It stands a little proud of the real thing, more as the hand nears, as if coming loose.
         vec3 p = position + normal * (0.003 + 0.007 * uNear);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
@@ -486,15 +500,22 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
       uniform vec4 uUvRect;
       uniform float uHasMap, uEncode, uLevel, uNear, uTime, uLow, uSpan;
       uniform vec3 uCore, uGlow, uRim;
-      uniform float uGrid, uCell;
+      uniform float uGrid, uCell, uFramed;
+      uniform vec4 uFrame;
+      uniform vec3 uOrigin, uCells;
       varying vec2 vUv;
       varying float vEdge;
       varying float vY;
       varying vec3 vView;
       varying vec3 vN;
       varying vec3 vWorld;
+      varying vec3 vLocal;
       uniform vec3 uJoints[${GHOST_JOINTS}];
       uniform int uJointCount;
+      // Turned about up into the thing's own frame.
+      vec3 turned(vec3 p) {
+        return vec3(uFrame.x * p.x + uFrame.y * p.z, p.y, -uFrame.y * p.x + uFrame.x * p.z);
+      }
       void main() {
         // Behind a hand joint, as seen from the eye, the ghost gives way to the hand.
         vec3 ray = vWorld - cameraPosition;
@@ -520,10 +541,13 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
         float rim = smoothstep(0.55, 0.05, facing);
         float ends = smoothstep(0.8, 0.93, vEdge);
         // A square grid on its real shape, laid across whichever of the room's axes each part faces most.
+        // A fitted solid has its own axes instead: the grid starts at a corner of its base and runs along its sides.
         vec3 wn = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
-        vec3 w = pow(abs(wn), vec3(8.0));
+        vec3 ln = turned(normalize(cross(dFdx(vLocal), dFdy(vLocal))));
+        vec3 w = pow(abs(mix(wn, ln, uFramed)), vec3(8.0));
         w /= w.x + w.y + w.z;
-        vec3 gp = vWorld / uCell;
+        vec3 q = turned(vLocal - vec3(uFrame.z, 0.0, uFrame.w));
+        vec3 gp = mix(vWorld / uCell, (q - uOrigin) / uCells, uFramed);
         vec3 gd = abs(fract(gp - 0.5) - 0.5) / max(fwidth(gp), 1e-5);
         vec3 gl = 1.0 - smoothstep(0.7, 1.7, gd);
         float grid = (w.x * max(gl.y, gl.z) + w.y * max(gl.x, gl.z) + w.z * max(gl.x, gl.y)) * uGrid;

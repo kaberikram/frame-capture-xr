@@ -29,6 +29,59 @@ export function transformPoint(matrix: ArrayLike<number>, p: { x: number; y: num
   }
 }
 
+/**
+ * Is the neighbouring reading `n` well behind the reading `d`? Then `d` is on
+ * the near side of a depth jump: the edge of a thing seen against what is
+ * behind it. The gap grows with distance, as depth gets rougher further away.
+ * A missing neighbour (0 or NaN) never counts.
+ */
+export function farther(d: number, n: number): boolean {
+  return n > 0 && n - d > 0.04 + 0.06 * d
+}
+
+/**
+ * Is the reading at `col`, `row` in a grid of readings on the near side of a
+ * depth jump? Either a neighbour is well behind it, or the jump is one reading
+ * further out: the next reading is on this side and the one past it is well
+ * behind both. The field spreads a reading about as far as the next one, so
+ * either would spread past the edge into the space the thing hides. On a slope
+ * the readings step evenly, so this holds only where each step is a jump.
+ */
+export function onEdge(m: ArrayLike<number>, cols: number, rows: number, col: number, row: number): boolean {
+  const k = col + row * cols
+  const d = m[k]
+  if (!(d > 0)) return false
+  return (
+    (col > 0 && jumpPast(d, m[k - 1], col > 1 ? m[k - 2] : 0)) ||
+    (col < cols - 1 && jumpPast(d, m[k + 1], col < cols - 2 ? m[k + 2] : 0)) ||
+    (row > 0 && jumpPast(d, m[k - cols], row > 1 ? m[k - 2 * cols] : 0)) ||
+    (row < rows - 1 && jumpPast(d, m[k + cols], row < rows - 2 ? m[k + 2 * cols] : 0))
+  )
+}
+
+/** One way along the grid from `d`: `n` is the next reading and `n2` the one past it, 0 off the grid. */
+function jumpPast(d: number, n: number, n2: number): boolean {
+  return farther(d, n) || (n > 0 && farther(d, n2) && farther(n, n2))
+}
+
+/**
+ * Is the reading `d` the blur across a step, part way between a near side and
+ * a far side? `a` and `b` are its neighbours either side, `a2` and `b2` the
+ * next ones out. A step drops the in-between reading: each side is level with
+ * the reading beyond it. A slope keeps stepping, so it stays. All four
+ * neighbours must be there to tell.
+ */
+export function mixedPixel(d: number, a: number, b: number, a2: number, b2: number): boolean {
+  if (!(a > 0) || !(b > 0) || !(a2 > 0) || !(b2 > 0)) return false
+  const lo = Math.min(a, b)
+  const hi = Math.max(a, b)
+  const jump = hi - lo
+  if (jump <= 0.03 + 0.02 * d) return false
+  const f = (d - lo) / jump
+  if (!(f >= 0.15 && f <= 0.85)) return false
+  return Math.abs(a - a2) < 0.35 * jump && Math.abs(b - b2) < 0.35 * jump
+}
+
 /** Part of a view, in the same 0..1 places `getDepthInMeters` takes: left, top, width, height. */
 export interface ViewRect {
   u: number

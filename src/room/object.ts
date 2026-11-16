@@ -8,6 +8,8 @@
  * three.js.
  */
 
+import type { StandFit } from './stand.js'
+
 /** What the lift reads. `RoomField` is one; a test can be another. */
 export interface FieldBlock {
   /** Metres to a voxel's side. */
@@ -38,6 +40,10 @@ export interface Shell {
   bottom: number
   /** How deep the shell is along the way the whole of it faces: near nothing for a wall. */
   relief: number
+  /** The fitted solid this shell was built from, when it is one. */
+  stand?: StandFit
+  /** 1 where a vertex was never seen by the camera, such as the far walls of a fitted solid. */
+  unseen?: Uint8Array
 }
 
 export interface LiftOptions {
@@ -50,6 +56,29 @@ export interface LiftOptions {
    * with these two unit directions across the surface as its sides.
    */
   square?: { tx: number; ty: number; tz: number; bx: number; by: number; bz: number }
+  /**
+   * Height of the surface the thing stands on, as the fit measured it. Used
+   * when it agrees with the level found here, so the cut leaves the whole
+   * table behind and none of the thing.
+   */
+  floor?: number
+  /** A block already read around the same point, to save reading it again. */
+  window?: FieldWindow
+}
+
+/** A cube of the field around a point, read once for both the fit and the lift. */
+export interface FieldWindow {
+  /** The field it was read from. */
+  field: FieldBlock
+  /** `n` voxels to a side, x fastest. Voxel `i` along x is centred at `(x0 + i + 0.5) * v`. */
+  values: Float32Array
+  x0: number
+  y0: number
+  z0: number
+  n: number
+  v: number
+  /** Which read this was. The next read reuses the same memory, and this one is then out of date. */
+  stamp: number
 }
 
 /**
@@ -72,14 +101,41 @@ export const OBJECT_REACH = 0.42
 /** Radius of a piece cut from something that runs on. */
 export const PIECE_REACH = 0.19
 /** A level surface with at least this much area in view is somewhere things stand, m². */
-const STAND_AREA = 0.02
+export const STAND_AREA = 0.02
 /** A level surface this big under the pinch is the table itself and not the top of a box, m². */
-const TABLE_AREA = 0.12
-/** A surface seen this edge-on is the smear between a thing and what is behind it. */
+export const TABLE_AREA = 0.12
+/**
+ * A surface seen this edge-on, or from behind, is not one depth really saw:
+ * the smear between a thing and what is behind it, or the back of a thing
+ * leaking out past its edge.
+ */
 const GRAZE = 0.2
+/** The cut sits this far above a floor the fit measured, so none of the surface comes away. */
+const ABOVE_FLOOR = 0.012
 const MIN_CELLS = 10
 
 let block = new Float32Array(0)
+let reads = 0
+
+/**
+ * The block of `field` around `seed`: everything within `reach`, and two
+ * voxels more. It is written into memory kept between calls, so it holds only
+ * until the next read. `reuse` is a window read just before: it is handed back
+ * unread when nothing has been read since and it covers the same block.
+ */
+export function readWindow(field: FieldBlock, seed: { x: number; y: number; z: number }, reach: number, reuse?: FieldWindow): FieldWindow {
+  const v = field.voxel
+  const half = Math.ceil(reach / v) + 2
+  const n = half * 2 + 1
+  const x0 = Math.floor(seed.x / v) - half
+  const y0 = Math.floor(seed.y / v) - half
+  const z0 = Math.floor(seed.z / v) - half
+  if (reuse && reuse.stamp === reads && reuse.field === field && reuse.n === n && reuse.v === v && reuse.x0 === x0 && reuse.y0 === y0 && reuse.z0 === z0) return reuse
+  if (block.length < n * n * n) block = new Float32Array(n * n * n)
+  reads++
+  return { field, values: field.grid(x0, y0, z0, n, n, n, block), x0, y0, z0, n, v, stamp: reads }
+}
+
 let work = {
   px: new Float32Array(0),
   py: new Float32Array(0),
@@ -101,16 +157,9 @@ export function liftShell(
   eye: { x: number; y: number; z: number },
   options: LiftOptions = {},
 ): Shell | null {
-  const v = field.voxel
   const reach = options.reach ?? OBJECT_REACH
   const pieceReach = options.piece ?? PIECE_REACH
-  const half = Math.ceil(reach / v) + 2
-  const n = half * 2 + 1
-  const x0 = Math.floor(seed.x / v) - half
-  const y0 = Math.floor(seed.y / v) - half
-  const z0 = Math.floor(seed.z / v) - half
-  if (block.length < n * n * n) block = new Float32Array(n * n * n)
-  const values = field.grid(x0, y0, z0, n, n, n, block)
+  const { values, x0, y0, z0, n, v } = readWindow(field, seed, reach, options.window)
 
   // A cell is the cube between eight voxel centres. Where the field changes
   // sign inside it, the surface passes through, and the cell gets one vertex.
@@ -220,7 +269,8 @@ export function liftShell(
         const ey = eye.y - wy
         const ez = eye.z - wz
         const el = Math.hypot(ex, ey, ez) || 1
-        facing[cell] = Math.abs((gx * ex + gy * ey + gz * ez) / el)
+        // Below 0 when the surface faces away from the eye.
+        facing[cell] = (gx * ex + gy * ey + gz * ez) / el
         surface[cell] = 1
       }
     }
@@ -267,6 +317,9 @@ export function liftShell(
       if (area(row) < STAND_AREA || levels[row] < levels[row - 1] || levels[row] < (levels[row + 1] ?? 0)) continue
       if (onLevel && area(row) < area(seedRow)) continue
       floor = (y0 + row + 0.5) * v + v * 0.8
+      // The fit measured that same surface more finely than a voxel row can: cut just above it.
+      const measured = options.floor
+      if (measured !== undefined && Number.isFinite(measured) && Math.abs((y0 + row + 0.5) * v - measured) <= 1.5 * v) floor = measured + ABOVE_FLOOR
       break
     }
   }

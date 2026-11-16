@@ -4,7 +4,7 @@ import type { Palette } from './palette.js'
 /** Motes kept. The oldest are written over. */
 const COUNT = 4096
 /** Seconds a mote lives. */
-const LIFE = 1.7
+const LIFE = 1.1
 
 /**
  * The room's depth, seen as it is read: each reading is a mote of light that

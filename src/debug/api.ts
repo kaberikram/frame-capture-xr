@@ -38,6 +38,10 @@ export interface CaptureApi {
   roomMesh: number
   /** How lit the torch's circle on the mesh is, 0..1. */
   roomSpot: number
+  /** The solid fitted to the thing whose ghost is showing: box, round, prism, or none. */
+  roomShape: string
+  /** How many times a ghost's shape has been built: it stays put while a still thing is looked at. */
+  roomGhostBuilds: number
 }
 
 export interface PhaseInputs {
@@ -72,12 +76,29 @@ export function publishApi(): void {
     roomOutline: 0,
     roomMesh: 0,
     roomSpot: 0,
+    roomShape: 'none',
+    roomGhostBuilds: 0,
   }
   ;(window as unknown as { __capture: CaptureApi }).__capture = api
 }
 
 /** Point the debug hook at the live time window. */
-export function publishRoom(room: { active: boolean; chunks: number; pieces: number; piece: string; radius: number; lights: number; pool: number; kind: string; attention: number; outline: number; mesh: number; spot: number }): void {
+export function publishRoom(room: {
+  active: boolean
+  chunks: number
+  pieces: number
+  piece: string
+  radius: number
+  lights: number
+  pool: number
+  kind: string
+  attention: number
+  outline: number
+  mesh: number
+  spot: number
+  shape: string
+  ghostBuilds: number
+}): void {
   const api = (window as unknown as { __capture?: CaptureApi }).__capture
   if (!api) return
   api.room = room.active
@@ -92,6 +113,8 @@ export function publishRoom(room: { active: boolean; chunks: number; pieces: num
   api.roomOutline = room.outline
   api.roomMesh = room.mesh
   api.roomSpot = room.spot
+  api.roomShape = room.shape
+  api.roomGhostBuilds = room.ghostBuilds
 }
 
 export function bindWarpApi(cycle: () => string): void {

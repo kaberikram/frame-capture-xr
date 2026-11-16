@@ -41,7 +41,8 @@ export function shellGeometry(shell: Shell): BufferGeometry {
 
 /**
  * Where each point of a shell sits in a camera picture, 0..1. Out of range
- * where the camera did not see it.
+ * where the camera did not see it, and on the far walls of a fitted solid,
+ * which the picture shows only the room behind.
  */
 export function shellImageCoords(shell: Shell, skin: Skin | null): Float32Array {
   const count = shell.positions.length / 3
@@ -49,7 +50,9 @@ export function shellImageCoords(shell: Shell, skin: Skin | null): Float32Array 
   if (!skin) return uv
   const px = { x: 0, y: 0 }
   const p = shell.positions
+  const unseen = shell.unseen
   for (let i = 0; i < count; i++) {
+    if (unseen && unseen[i]) continue
     if (!projectPixel(skin.clip, p[i * 3], p[i * 3 + 1], p[i * 3 + 2], skin.width, skin.height, px)) continue
     uv[i * 2] = px.x / skin.width
     uv[i * 2 + 1] = skin.topDown ? px.y / skin.height : 1 - px.y / skin.height

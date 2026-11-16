@@ -65,6 +65,15 @@ export function buildStandIn(): Group {
   cup.position.set(0.16, 1.22, -1.25)
   room.add(cup)
 
+  // The cup stands on a tall stand, as a thing in a room does, so the peel page can fit it as a round solid.
+  const stand = new Mesh(new BoxGeometry(0.3, 0.03, 0.3), wood)
+  stand.position.set(0.16, 1.125, -1.25)
+  room.add(stand)
+
+  const pole = new Mesh(new BoxGeometry(0.04, 1.11, 0.04), wood)
+  pole.position.set(0.16, 0.555, -1.25)
+  room.add(pole)
+
   const hemi = new HemisphereLight('#f4f0e8', '#6a6258', 0.85)
   room.add(hemi)
   const sun = new DirectionalLight('#fff5e8', 1.35)
