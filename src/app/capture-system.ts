@@ -545,6 +545,8 @@ export class CaptureSystem extends createSystem({
       outline: this.room.outline,
       mesh: this.room.meshChunks,
       spot: this.room.spot,
+      shape: this.room.shape,
+      ghostBuilds: this.room.ghostBuildCount,
     })
   }
 

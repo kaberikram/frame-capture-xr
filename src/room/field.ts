@@ -24,6 +24,12 @@ export interface DepthSample {
   nx?: number
   ny?: number
   nz?: number
+  /**
+   * On the near side of a depth jump: the edge of a thing seen against what is
+   * behind it. The reading is not spread sideways and writes only half a voxel
+   * behind itself, so the thing does not grow into the space it hides.
+   */
+  edge?: boolean
 }
 
 export interface RoomHit {
@@ -752,10 +758,14 @@ export class RoomField {
     // Spread along the surface where its facing is known, so a table seen at a shallow angle stays
     // flat. Otherwise across the line of sight.
     const basis = sample.nx !== undefined && sample.ny !== undefined && sample.nz !== undefined ? tangentOf(sample.nx, sample.ny, sample.nz) : tangentOf(ix, iy, iz)
+    // An edge reading stays where it was seen. Spread sideways or deep, it would fill the hidden
+    // space beyond the edge and the thing would come out too big.
+    const edge = sample.edge === true
     // Far readings are further apart. Each is spread to meet its neighbours, so the sheet has no gaps.
-    const wide = angle > 0 && (depth * angle * 0.5) / this.voxel > 1.15 ? 2 : 1
+    const wide = edge ? 0 : angle > 0 && (depth * angle * 0.5) / this.voxel > 1.15 ? 2 : 1
+    const behind = edge ? this.voxel * 0.5 : this.behind
     const step = this.voxel * 0.5
-    for (let t = depth - this.trunc; t <= depth + this.behind; t += step) {
+    for (let t = depth - this.trunc; t <= depth + behind; t += step) {
       if (t < 0.2) continue
       const sdf = (depth - t) / this.trunc
       const clamped = sdf > 1 ? 1 : sdf < -1 ? -1 : sdf
@@ -787,8 +797,10 @@ export class RoomField {
     if (chunk.weight[index] >= 32 && chunk.tsdf[index] > 100) return
     const w = chunk.weight[index]
     const old = w === 0 ? 0 : chunk.tsdf[index] / 127
+    // A running average of the last couple of dozen readings. Once the weight is full, each new
+    // reading still counts for one share in 24, so the value settles instead of drifting to ±1.
     const nw = Math.min(24, w + 1)
-    const mixed = w === 0 ? sdf : (old * w + sdf) / nw
+    const mixed = w === 0 ? sdf : (old * (nw - 1) + sdf) / nw
     const stored = Math.round((mixed > 1 ? 1 : mixed < -1 ? -1 : mixed) * 127)
     const moved = w < 3 || Math.abs(stored - chunk.tsdf[index]) >= 4
     chunk.tsdf[index] = stored

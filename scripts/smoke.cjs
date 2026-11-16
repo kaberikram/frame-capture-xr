@@ -136,6 +136,51 @@ async function mesh(browser, failures) {
   await context.close()
 }
 
+// A thing standing on a level surface is fitted as a clean solid: the desk's cup on its stand is a round.
+async function cup(browser, failures) {
+  const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0')
+  const api = () => page.evaluate(() => ({ ...window.__capture }))
+  const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
+  await until((s) => s.roomChunks > 150, 20000)
+  const box = await page.locator('#scene-container').boundingBox()
+  const cx = (box?.x ?? 0) + (box?.width ?? 960) * 0.571
+  const cy = (box?.y ?? 0) + (box?.height ?? 640) * 0.6
+  await page.mouse.move(cx + 10, cy)
+  await page.mouse.move(cx, cy)
+  let state = await until((s) => s.roomShape === 'round' && s.roomAttention > 0.5, 12000)
+  check(state.roomShape === 'round' && state.roomAttention > 0.5, `cup: its ghost is a fitted round (shape ${state.roomShape}, ghost ${state.roomAttention.toFixed(2)})`, failures)
+  // The close look fills in for some seconds, and the fit grows with it. Once it has, the cursor
+  // still, the look again every 0.8 s finds the same shape and does not build it again: five
+  // looks in a row with no new build. A shape that is not fitted is built on every look.
+  const started = Date.now()
+  let quiet = started
+  let builds = state.roomGhostBuilds
+  while (Date.now() - quiet < 4300 && Date.now() - started < 30000) {
+    await page.waitForTimeout(200)
+    const now = (await api()).roomGhostBuilds
+    if (now !== builds) {
+      builds = now
+      quiet = Date.now()
+    }
+  }
+  state = await api()
+  const still = Date.now() - quiet >= 4300
+  check(still && state.roomShape === 'round', `cup: with the cursor still, five looks in a row find the same shape and build nothing (settled after ${((quiet - started) / 1000).toFixed(1)} s, ${state.roomGhostBuilds} builds in all, still ${state.roomShape})`, failures)
+  // A pinch takes the very round that was shown.
+  await page.mouse.down()
+  await page.mouse.move(cx, cy - 30, { steps: 6 })
+  await page.waitForTimeout(300)
+  state = await api()
+  // The cup is 14 cm across at its top and 16 cm tall: 0.106 m from its middle to its rim.
+  check(state.roomPiece === 'lifting' && state.roomKind === 'object' && Math.abs(state.roomRadius - 0.106) < 0.02, `cup: a pinch on its ghost lifts the cup (got ${state.roomPiece}, ${state.roomKind}, ${state.roomRadius.toFixed(3)} m)`, failures)
+  await page.mouse.move(cx, cy - 110, { steps: 10 })
+  state = await until((s) => s.roomPiece === 'carried', 4000)
+  check(state.roomPiece === 'carried' && state.roomKind === 'object', `cup: a full pull brings it away (got ${state.roomPiece}, ${state.roomKind})`, failures)
+  await page.mouse.up()
+  check(errors.length === 0, `cup: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  await context.close()
+}
+
 async function room(browser, failures) {
   // `flat=1` keeps the flat peel for bare surfaces, which these checks are about.
   const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0&flat=1')
@@ -502,6 +547,7 @@ async function headset(browser, failures, leaveHandInFrame) {
       await headset(browser, failures, true)
     }
     await mesh(browser, failures)
+    await cup(browser, failures)
     await peelHeadset(browser, failures, 'cpu')
     await peelHeadset(browser, failures, 'gpu')
     if (shotsDir) await holds(browser, failures)

@@ -60,10 +60,25 @@ export function buildStandIn(): Group {
   leg.position.set(0.78, 0.23, -1.35)
   room.add(leg)
 
+  // A stack of CD cases on the low table, turned a little: a box for the peel page to fit.
+  const cds = new Mesh(new BoxGeometry(0.14, 0.08, 0.14), new MeshStandardMaterial({ color: new Color('#b7a9c9'), roughness: 0.35 }))
+  cds.position.set(1.0, 0.55, -1.46)
+  cds.rotation.y = 0.45
+  room.add(cds)
+
   // Sits in the preview frame's view, nearer than the painting, so the relief has a foreground.
   const cup = new Mesh(new CylinderGeometry(0.07, 0.06, 0.16, 20), lamp)
   cup.position.set(0.16, 1.22, -1.25)
   room.add(cup)
+
+  // The cup stands on a tall stand, as a thing in a room does, so the peel page can fit it as a round solid.
+  const stand = new Mesh(new BoxGeometry(0.3, 0.03, 0.3), wood)
+  stand.position.set(0.16, 1.125, -1.25)
+  room.add(stand)
+
+  const pole = new Mesh(new BoxGeometry(0.04, 1.11, 0.04), wood)
+  pole.position.set(0.16, 0.555, -1.25)
+  room.add(pole)
 
   const hemi = new HemisphereLight('#f4f0e8', '#6a6258', 0.85)
   room.add(hemi)

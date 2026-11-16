@@ -92,6 +92,34 @@ for (const voxel of [0.04, 0.02]) {
 
   // Open air.
   assert(liftShell(scene, { x: 0, y: 1.4, z: 0.3, nx: 0, ny: 0, nz: 1 }, eye) === null, `nothing lifts out of open air (${voxel})`)
+
+  // The same box seen from behind it: only what faces that eye comes away, as depth could only see that.
+  const behind = { x: -0.2, y: 1.5, z: -1.2 }
+  const back = liftShell(room(voxel, (x, y, z) => Math.min(box(x, y, z), table(x, y, z))), { x: -0.2, y: 0.87, z: 0, nx: 0, ny: 1, nz: 0 }, behind)
+  assert(back !== null && back.kind === 'object', `a box seen from behind is one thing, got ${back?.kind} (${voxel})`)
+  if (back) {
+    let turned = 0
+    const p = back.positions
+    for (let t = 0; t < back.indices.length; t += 3) {
+      const a = back.indices[t] * 3
+      const b = back.indices[t + 1] * 3
+      const c = back.indices[t + 2] * 3
+      const ux = p[b] - p[a]
+      const uy = p[b + 1] - p[a + 1]
+      const uz = p[b + 2] - p[a + 2]
+      const vx = p[c] - p[a]
+      const vy = p[c + 1] - p[a + 1]
+      const vz = p[c + 2] - p[a + 2]
+      const nx = uy * vz - uz * vy
+      const ny = uz * vx - ux * vz
+      const nz = ux * vy - uy * vx
+      const ex = behind.x - (p[a] + p[b] + p[c]) / 3
+      const ey = behind.y - (p[a + 1] + p[b + 1] + p[c + 1]) / 3
+      const ez = behind.z - (p[a + 2] + p[b + 2] + p[c + 2]) / 3
+      if (nx * ex + ny * ey + nz * ez < 0) turned++
+    }
+    assert(back.indices.length > 0 && turned === 0, `no part of it faces away from the eye, got ${turned} of ${back.indices.length / 3} (${voxel})`)
+  }
 }
 
 // The real field hands out the same block its own lookups read.
