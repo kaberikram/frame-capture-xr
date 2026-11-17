@@ -316,6 +316,16 @@ async function peelHeadset(browser, failures, usage) {
   }
   check(touch !== null, `${name}: light gathers on a surface as a hand nears it`, failures)
   if (touch) {
+    // Light gathers from further off than a piece of a wall shows: keep reaching until it does.
+    let shown = false
+    for (let i = 0; i < 10 && !shown; i++) {
+      shown = await until(async () => (await api()).roomAttention > 0.5, 700)
+      if (!shown) {
+        touch = [touch[0], touch[1], touch[2] - 0.05]
+        await hand(touch)
+      }
+    }
+    check(shown, `${name}: the piece a pinch would take shows as the hand comes close (ghost ${(await api()).roomAttention.toFixed(2)})`, failures)
     // The light shows from a few centimetres away. Close the last of the gap, a little at a time, and pinch.
     let took = false
     for (const closer of [0.04, 0.08, 0, 0.12]) {
@@ -363,18 +373,8 @@ async function peelHeadset(browser, failures, usage) {
     d.hands.right.position.set(p.x + rx, p.y + ry, p.z + rz)
     return [rx, ry, rz]
   }, [yaw, pitch])
-  // The hand is a torch. Held up in the air, its circle lights the mesh across the room, and a pinch takes what is lit.
-  await look(0, 0)
-  const lit = await until(async () => (await api()).roomAttention > 0.6, 6000)
-  check(lit, `${name}: a hand held up shows the piece of mesh it points at (ghost ${(await api()).roomAttention.toFixed(2)})`, failures)
-  if (lit) {
-    const before = (await api()).roomPatches
-    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(1))
-    const took = await until(async () => { const a = await api(); return a.roomPatches === before + 1 && a.roomKind === 'object' }, 3000)
-    check(took, `${name}: a pinch in the air takes the lit piece of mesh (pieces ${before} then ${(await api()).roomPatches}, ${(await api()).roomKind})`, failures)
-    await page.evaluate(() => window.IWER_DEVICE.hands.right.updatePinchValue(0))
-    await page.waitForTimeout(1200)
-  }
+  // A piece of a wall or a table shows only to a fingertip near it (checked above). From across the room
+  // the torch lights whole things only, which the looks below find.
   let aim = null
   // The emulated room is a rough scan, mostly big furniture, which is rightly not a thing. Whether one of the
   // smaller things on its shelves reads as whole from 2-3 m varies with depth noise, so look twice around.

@@ -1,5 +1,5 @@
 import { register } from 'node:module'
-import { DROP, EDGE, sortReadings } from '../src/room/depth-project.ts'
+import { DROP, EDGE, seesPast, sortReadings } from '../src/room/depth-project.ts'
 import { RoomField, type DepthSample } from '../src/room/field.ts'
 import { liftShell, pictureEye, readWindow, shows, OBJECT_REACH, type FieldBlock, type Shell } from '../src/room/object.ts'
 import type { StandFit, StandProbe } from '../src/room/stand.ts'
@@ -371,6 +371,7 @@ function look(field: RoomField, eye: { x: number; y: number; z: number }, target
       const z = at[k * 3 + 2]
       const sample: DepthSample = { ox: eye.x, oy: eye.y, oz: eye.z, px: x, py: y, pz: z }
       if (sorted[k] === EDGE) sample.edge = true
+      if (seesPast(m, COLS, ROWS, col, row)) sample.past = true
       const side = col + 1 < COLS ? k + 1 : k - 1
       const up = row + 1 < ROWS ? k + COLS : k - COLS
       const gap = 0.04 + 0.06 * d

@@ -38,8 +38,14 @@ const PLANE_BIN = 0.005
 const PLANE_BAND = 0.012
 /** The biggest footprint fitted, m². A whole side table is not lifted as a box. */
 const FOOT_MAX = 0.12
-/** At least this share of the outline must have the surface seen just outside it. */
-const SEEN_MIN = 0.45
+/**
+ * At least this share of the outline must have the surface seen just outside
+ * it. Seen from in front, the far side of a thing hides the table behind it,
+ * and a stack of CDs on a real desk came out at 0.46 to 0.47: a cut-off of
+ * 0.45 had it fit one look and not the next. A cushion seen through the fine
+ * window's edge comes out at 0.25.
+ */
+const SEEN_MIN = 0.3
 /** Walls that stand this much further in low down than half way up belong to a ball or a vase, metres. */
 const TAPER_MAX = 0.018
 /**

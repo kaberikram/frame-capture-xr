@@ -12,6 +12,20 @@ const MIN_WEIGHT = 2
 /** A few metres of nearby surface. Older chunks leave once the view moves on. */
 export const MAX_CHUNKS = 420
 const MAX_SAMPLES = 700
+/** A reading clears what the field holds in front of it from this far out, metres: nearer is the headset itself. */
+const CLEAR_FROM = 0.25
+/**
+ * And only this far out, metres: past arm's reach, a hand that was in the way
+ * is gone and a thing moved is rarely what the hand is after. The rest of the
+ * way to a far wall would cost more than it gives.
+ */
+const CLEAR_REACH = 1.5
+/**
+ * The field must say a point is behind a surface (below this) before a
+ * reading that passed through it counts against it. A ray that only grazes a
+ * thing, or skims along a table, passes outside it and leaves it be.
+ */
+const CLEAR_INSIDE = 0
 
 export interface DepthSample {
   ox: number
@@ -30,6 +44,12 @@ export interface DepthSample {
    * behind itself, so the thing does not grow into the space it hides.
    */
   edge?: boolean
+  /**
+   * Well behind a reading next to it: the ray passed close by the edge of a
+   * nearer thing, or read too far. It does not clear the space it crossed, so
+   * the corners of a thing are not worn away by rays that only skim them.
+   */
+  past?: boolean
 }
 
 export interface RoomHit {
@@ -138,6 +158,10 @@ export class RoomField {
   private readonly maxChunks: number
 
   private readonly behind: number
+  /** Counts readings, so every other one clears the space it crossed. */
+  private clearTurn = 0
+  /** Chunks this near a point are not let go of: see `keep`. */
+  private readonly kept = { x: 0, y: 0, z: 0, r2: 0 }
 
   /**
    * A finer `voxel` keeps small things; `maxChunks` then bounds how much of
@@ -162,6 +186,19 @@ export class RoomField {
     this.tris.length = 0
     this.retired = []
     this.soupStale = false
+  }
+
+  /**
+   * Hold on to everything within `radius` of a point when room runs out, for
+   * what has your attention. A hand reaching for a thing hides it from depth,
+   * so its chunks are the ones written least lately, and would be the first
+   * to go just when they are wanted. A radius of 0 holds on to nothing.
+   */
+  keep(x: number, y: number, z: number, radius: number): void {
+    this.kept.x = x
+    this.kept.y = y
+    this.kept.z = z
+    this.kept.r2 = radius * radius
   }
 
   /** Fuse surface samples. Each sample is a camera origin and a point on the surface. */
@@ -765,6 +802,8 @@ export class RoomField {
     const wide = edge ? 0 : angle > 0 && (depth * angle * 0.5) / this.voxel > 1.15 ? 2 : 1
     const behind = edge ? this.voxel * 0.5 : this.behind
     const step = this.voxel * 0.5
+    // Every other reading is enough to clear by, at half the cost: readings lie a voxel or two apart.
+    if (sample.past !== true && (this.clearTurn++ & 1) === 0) this.clearAlong(sample.ox, sample.oy, sample.oz, ix, iy, iz, depth - this.trunc - this.voxel)
     for (let t = depth - this.trunc; t <= depth + behind; t += step) {
       if (t < 0.2) continue
       const sdf = (depth - t) / this.trunc
@@ -785,6 +824,73 @@ export class RoomField {
       }
     }
     return true
+  }
+
+  /**
+   * The reading saw open air from the eye to `end` metres along its ray. Where
+   * the field holds something solid there, it is not there now: a hand or an
+   * arm that was in the way, a thing since moved, a stray reading. Each look
+   * through such a place counts against it as a reading of open air, so it is
+   * gone in a second or so, while one stray look through a real thing changes
+   * little. Only places the field already holds are touched.
+   */
+  private clearAlong(ox: number, oy: number, oz: number, ix: number, iy: number, iz: number, end: number): void {
+    const v = this.voxel
+    const step = v * 0.5
+    let lastId = -1
+    let chunk: Chunk | undefined
+    const stop = Math.min(end, CLEAR_REACH)
+    for (let t = CLEAR_FROM; t < stop; t += step) {
+      const x = ox + ix * t
+      const y = oy + iy * t
+      const z = oz + iz * t
+      const gx = Math.floor(x / v)
+      const gy = Math.floor(y / v)
+      const gz = Math.floor(z / v)
+      const id = chunkId(Math.floor(gx / CHUNK), Math.floor(gy / CHUNK), Math.floor(gz / CHUNK))
+      if (id !== lastId) {
+        lastId = id
+        chunk = this.byId.get(id)
+      }
+      if (!chunk) {
+        // Nothing held here: on a little faster, as most of the way to a wall is.
+        t += step
+        continue
+      }
+      // Cheap first: the voxel the point is in holds nothing, or open air.
+      const index = mod(gx, CHUNK) + mod(gy, CHUNK) * CHUNK + mod(gz, CHUNK) * CHUNK * CHUNK
+      const w = chunk.weight[index]
+      if (w === 0 || w >= 32 || chunk.tsdf[index] > 0) continue
+      // Then exactly: is this very point behind a surface, as the field has it? A ray that only
+      // grazes a thing passes outside it, and leaves it be.
+      const s = this.sdf(x, y, z)
+      if (s === null || s > CLEAR_INSIDE) continue
+      this.open(chunk, index)
+    }
+  }
+
+  /** Count one reading of open air against a voxel that holds something. */
+  private open(chunk: Chunk, index: number): void {
+    const w = chunk.weight[index]
+    const was = chunk.tsdf[index]
+    // Nothing held, a place peeled away, or open air already.
+    if (w === 0 || w >= 32 || was > 0) return
+    const nw = Math.min(24, w + 1)
+    const stored = Math.round(((was / 127) * (nw - 1) + 1) / nw * 127)
+    chunk.tsdf[index] = stored
+    chunk.weight[index] = nw
+    chunk.dirty = true
+    if (stored <= 0 && stored - was < 4) return
+    chunk.stale = true
+    const lx = index % CHUNK
+    const ly = Math.floor(index / CHUNK) % CHUNK
+    const lz = Math.floor(index / (CHUNK * CHUNK))
+    if (lx === 0) this.staleAt(chunk.ix - 1, chunk.iy, chunk.iz)
+    else if (lx === CHUNK - 1) this.staleAt(chunk.ix + 1, chunk.iy, chunk.iz)
+    if (ly === 0) this.staleAt(chunk.ix, chunk.iy - 1, chunk.iz)
+    else if (ly === CHUNK - 1) this.staleAt(chunk.ix, chunk.iy + 1, chunk.iz)
+    if (lz === 0) this.staleAt(chunk.ix, chunk.iy, chunk.iz - 1)
+    else if (lz === CHUNK - 1) this.staleAt(chunk.ix, chunk.iy, chunk.iz + 1)
   }
 
   private write(x: number, y: number, z: number, sdf: number): void {
@@ -859,11 +965,13 @@ export class RoomField {
     return { chunk, index: lx + ly * CHUNK + lz * CHUNK * CHUNK }
   }
 
-  /** Drop the chunk least recently written, never one touched in this fuse. */
+  /** Drop the chunk least recently written, never one touched in this fuse or one being held on to. */
   private evict(): boolean {
     let oldest: Chunk | null = null
+    const kept = this.kept
     for (const chunk of this.chunks.values()) {
       if (chunk.seen === this.clock) continue
+      if (kept.r2 > 0 && chunkDist(chunk, kept.x, kept.y, kept.z, this.voxel) < kept.r2) continue
       if (!oldest || chunk.seen < oldest.seen) oldest = chunk
     }
     if (!oldest) return false

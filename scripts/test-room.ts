@@ -232,6 +232,66 @@ function gauss(): number {
 }
 console.log('field average ok')
 
+// Something that was in the way and has gone (a hand, an arm) leaves no surface behind once depth
+// has looked through where it was. A table seen along its length does not wear away.
+{
+  const room = new RoomField(0.02, 300, 2)
+  const eye = { x: 0, y: 0.5, z: 0.5 }
+  const look = (handThere: boolean) => {
+    const readings: DepthSample[] = []
+    for (let i = 0; i < 24; i++) {
+      for (let j = 0; j < 18; j++) {
+        // The table top at y 0, from x -0.2 to 0.2 and z -0.3 to 0.1, seen from above and in front.
+        const tx = -0.2 + (i + 0.5) * (0.4 / 24)
+        const tz = -0.3 + (j + 0.5) * (0.4 / 18)
+        const dx = tx - eye.x
+        const dy = 0 - eye.y
+        const dz = tz - eye.z
+        // A hand 15 cm over the table, 10 cm square, in the way of the rays to the far half of it.
+        const t = (0.15 - eye.y) / dy
+        const hx = eye.x + dx * t
+        const hz = eye.z + dz * t
+        if (handThere && Math.abs(hx) < 0.05 && Math.abs(hz - 0.08) < 0.05) {
+          readings.push({ ox: eye.x, oy: eye.y, oz: eye.z, px: hx, py: 0.15, pz: hz, nx: 0, ny: 1, nz: 0 })
+        } else readings.push({ ox: eye.x, oy: eye.y, oz: eye.z, px: tx, py: 0, pz: tz, nx: 0, ny: 1, nz: 0 })
+      }
+    }
+    room.integrateRange(readings, 0, readings.length, true, 0.017)
+  }
+  for (let pass = 0; pass < 30; pass++) look(true)
+  const handAt = room.sdf(0, 0.145, 0.08)
+  assert(handAt !== null && handAt < 0, `the hand is in the field while it is there, got ${handAt}`)
+  let gone = -1
+  for (let pass = 0; pass < 30; pass++) {
+    look(false)
+    const s = room.sdf(0, 0.145, 0.08)
+    if (gone < 0 && (s === null || s > 0)) gone = pass + 1
+  }
+  assert(gone > 0 && gone <= 12, `the hand is gone a few looks after it left, got ${gone}`)
+  const table = room.surfaceAlong(0, 0.3, -0.1, 0, -1, 0, 0.6, surfacePoint())
+  assert(table !== null && Math.abs(table.y) < 0.01, `the table under where the hand was is still there, got ${table?.y}`)
+  // A table seen from low down, along its length, many times: still all there.
+  const low = new RoomField(0.02, 300, 2)
+  const lowEye = { x: 0, y: 0.12, z: 0.6 }
+  const along: DepthSample[] = []
+  for (let i = 0; i < 40; i++) {
+    for (let j = 0; j < 20; j++) along.push({ ox: lowEye.x, oy: lowEye.y, oz: lowEye.z, px: -0.2 + i * 0.01, py: 0, pz: 0.3 - j * 0.03, nx: 0, ny: 1, nz: 0 })
+  }
+  for (let pass = 0; pass < 60; pass++) {
+    for (const r of along) r.py = gauss() * 0.003
+    low.integrateRange(along, 0, along.length, true, 0.01)
+  }
+  let holes = 0
+  for (let i = 0; i < 9; i++) {
+    for (let j = 0; j < 9; j++) {
+      const hitAt = low.surfaceAlong(-0.16 + i * 0.04, 0.1, 0.25 - j * 0.06, 0, -1, 0, 0.2, surfacePoint())
+      if (!hitAt || Math.abs(hitAt.y) > 0.012) holes++
+    }
+  }
+  assert(holes === 0, `a table seen along its length keeps every part, ${holes} of 81 worn away`)
+}
+console.log('field clears what has gone')
+
 // Reading a grid of depth: the blur across a step, and the edges of things.
 {
   assert(mixedPixel(0.65, 0.6, 0.7, 0.6, 0.7), 'a reading half way across a 10 cm step is blur')
