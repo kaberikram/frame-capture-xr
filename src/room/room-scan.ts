@@ -71,8 +71,15 @@ export function torchRadius(dist: number): number {
 }
 /** A pinch this close to the fingertip a preview follows is that hand's pinch, metres. */
 const OFFER_HAND = 0.12
-/** Seconds an offer stays good after the hand stops showing it. */
-const OFFER_GRACE = 0.35
+/** Seconds an offer stays good after the hand stops showing it. Closing the fingers to pinch takes a moment. */
+const OFFER_GRACE = 0.6
+/**
+ * A whole thing whose ghost is showing stays on offer while a fingertip is
+ * within this of it, metres, whatever the fingertip is nearest to. Reaching in
+ * puts the hand over the thing and the finger beside the table, and neither
+ * should take the thing away from the hand that is about to pinch it.
+ */
+const LOCK_REACH = 0.12
 /** How far away a thing can be and still be lifted by looking at it, metres. */
 const GAZE_REACH = 3.2
 /** Seconds a look stays live after the hand that was raised closes to pinch. */
@@ -129,6 +136,8 @@ interface Touch {
   near: number
   /** When it last had a surface. */
   at: number
+  /** A fingertip is up this frame, at `from`, whether or not its torch found a surface. */
+  up: boolean
 }
 
 /**
@@ -214,8 +223,8 @@ export class RoomScan {
   private readonly effects: Effect[] = []
   private readonly pools: Pool[] = []
   private readonly touch: Touch[] = [
-    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0, at: -1 },
-    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0, at: -1 },
+    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0, at: -1, up: false },
+    { on: false, hit: surfacePoint(), from: new Vector3(), near: 0, at: -1, up: false },
   ]
   /** Where the hands are, joint by joint, so depth does not mistake them for the room. */
   private readonly joints = Array.from({ length: MAX_JOINTS }, () => new Vector3())
@@ -521,7 +530,7 @@ export class RoomScan {
     const mine = !seen.fromHand || point.distanceTo(seen.hand) <= OFFER_HAND
     const offer = seen.offer ?? (this.time - seen.offeredAt < OFFER_GRACE ? seen.offered : null)
     const ghost = seen.ghostShell
-    if (offer === 'ghost' && ghost && seen.ghostLevel > 0.15 && mine) {
+    if (offer === 'ghost' && ghost && mine) {
       // A ghost shows only for what the finger is reaching toward or the eye is
       // on. Pinched short of it, it comes to the hand.
       const away = Math.hypot(point.x - ghost.cx, point.y - ghost.cy, point.z - ghost.cz)
@@ -677,10 +686,13 @@ export class RoomScan {
     const pool = this.pools[index]
     const touch = this.touch[index]
     touch.on = false
+    touch.up = false
     if (!origin || !this.active || this.held) {
       pool.goal = 0
       return
     }
+    touch.up = true
+    touch.from.copy(origin)
     let hit = this.field.near(origin.x, origin.y, origin.z, 0.07, this.hitB)
     if (!hit && dir && dir.lengthSq() > 1e-6) {
       hit = this.surfaceOnRay(origin, this.local.copy(dir).normalize(), reach, this.hitB)
@@ -697,7 +709,6 @@ export class RoomScan {
     touch.on = true
     Object.assign(touch.hit, hit)
     const close = 1 - Math.min(1, hit.dist / reach)
-    touch.from.copy(origin)
     touch.at = this.time
     touch.near = level >= 0 ? level : close
     pool.goal = level >= 0 ? level : Math.pow(close, 0.7)
@@ -1093,7 +1104,19 @@ export class RoomScan {
     let wantSpot = 0
     let wantGhost = 0
     let wantCut = 0
-    if (target) {
+    const locked = this.lockedHand()
+    if (locked) {
+      // The hand is closing in on the thing on show. It stays as it is until the hand has it or
+      // leaves: no new look, which the hand itself would spoil by being in the way.
+      const ghost = seen.ghostShell!
+      this.focus.set(ghost.cx, ghost.cy, ghost.cz)
+      this.focusOn = true
+      wantGhost = 1
+      hand = locked
+      near = Math.max(near, 0.9)
+      remote = false
+      seen.remote = false
+    } else if (target) {
       const at = target
       this.focus.set(at.x, at.y, at.z)
       // A whole thing is offered while the finger is on it. A piece of something bigger is cut
@@ -1190,6 +1213,30 @@ export class RoomScan {
         if (this.cutHand.x * this.cutHand.x + this.cutHand.y * this.cutHand.y > 1e-6) c.uHand.value.set(this.cutHand.x, this.cutHand.y)
       }
     }
+  }
+
+  /**
+   * The fingertip that holds the ghost on offer, or null: a whole thing was on
+   * offer a moment ago and a fingertip is still within reach of it. A finger
+   * on a loose piece is taking that piece instead.
+   */
+  private lockedHand(): Vector3 | null {
+    const seen = this.preview
+    const ghost = seen.ghostShell
+    if (this.held || !ghost || ghost.kind !== 'object') return null
+    if (seen.offered !== 'ghost' || this.time - seen.offeredAt > OFFER_GRACE) return null
+    let best: Vector3 | null = null
+    let bestD = ghost.radius + LOCK_REACH
+    for (let i = 0; i < this.touch.length; i++) {
+      const touch = this.touch[i]
+      if (!touch.up || this.pieceAt(touch.from)) continue
+      const d = Math.hypot(touch.from.x - ghost.cx, touch.from.y - ghost.cy, touch.from.z - ghost.cz)
+      if (d < bestD) {
+        best = touch.from
+        bestD = d
+      }
+    }
+    return best
   }
 
   /**

@@ -126,7 +126,7 @@ An echo photo can include a hand that was in the pane a moment ago, even after t
 - **Any other whole thing** (a ball, a vase, a bag): the grid wraps the depth mesh of the thing itself, without the table it stands on.
 - **Part of something bigger** (a wall, a table, a sofa): a rounded square of it, small when your hand is close (about 24 cm across) and wide when the torch falls far away (up to 56 cm), up to three metres. It sits level as you see it.
 
-The ghost is worked out a few times a second from what depth has built, and holds still in between. It is hidden behind your hand, the way the real thing is, and is always bigger than your hand so it shows round it. Either hand works; it follows the hand whose torch falls nearer. `?mesh=all` also shows the whole room's live mesh, and `?motes=0` hides the motes of light that settle where depth is read.
+The ghost is worked out a few times a second from what depth has built, and holds still in between. It dims behind your hand but still shows through, so the thing you are reaching for stays marked. Once a whole thing shows its ghost, it stays on offer while your fingertip is within about 12 cm of it, wherever the finger points, and for a little over half a second after the fingers start to close: reach in and pinch, and that thing is what you get. Either hand works; it follows the hand whose torch falls nearer. `?mesh=all` also shows the whole room's live mesh, and `?motes=0` hides the motes of light that settle where depth is read.
 
 **What is shown is what a pinch takes:** exactly that piece of mesh.
 
