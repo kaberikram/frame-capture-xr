@@ -520,7 +520,7 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
         return vec3(uFrame.x * p.x + uFrame.y * p.z, p.y, -uFrame.y * p.x + uFrame.x * p.z);
       }
       void main() {
-        // Behind a hand joint, as seen from the eye, the ghost gives way to the hand.
+        // Behind a hand joint, as seen from the eye, the ghost gives way to the hand, mostly.
         vec3 ray = vWorld - cameraPosition;
         float far = length(ray);
         ray /= max(far, 1e-4);
@@ -532,7 +532,8 @@ export function ghostMaterial(palette: Palette): ShaderMaterial {
           if (along > far + 0.01) continue;
           clear = min(clear, smoothstep(0.016, 0.034, length(j - ray * along)));
         }
-        if (clear < 0.02) discard;
+        // It dims there but still shows through, so the thing you are reaching for stays marked.
+        clear = mix(0.4, 1.0, clear);
         vec2 uv = (vUv.xy - uUvRect.xy) / uUvRect.zw;
         vec3 photo = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
         photo = mix(photo, pow(photo, vec3(1.0 / 2.2)), uEncode);
