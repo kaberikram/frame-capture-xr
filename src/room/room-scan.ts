@@ -25,7 +25,7 @@ import { PALETTE } from '../look/palette.js'
 import { DepthMotes } from '../look/depth-motes.js'
 import { LiveMesh } from './live-mesh.js'
 import { GHOST_JOINTS, cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
-import { DROP, EDGE, focusRect, onEdge, sortReadings, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
+import { DROP, EDGE, focusRect, onEdge, seesPast, sortReadings, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
 import { liftShell, pickShell, type LiftOptions, type Shell } from './object.js'
@@ -71,6 +71,15 @@ export function torchRadius(dist: number): number {
 }
 /** A pinch this close to the fingertip a preview follows is that hand's pinch, metres. */
 const OFFER_HAND = 0.12
+/**
+ * A piece of something big (a wall, a table, a sofa) shows itself only when
+ * the fingertip is this close to it, metres. From further off the torch lights
+ * whole things only: a square of wall seen across the room, with the lamp and
+ * the shelf in it, is clutter, and pointing at a thing past it lit the wall.
+ */
+const PIECE_NEAR = 0.3
+/** How far round what has your attention the fine field holds on to what it has, metres. */
+const KEEP_FINE = 0.35
 /** Seconds an offer stays good after the hand stops showing it. Closing the fingers to pinch takes a moment. */
 const OFFER_GRACE = 0.6
 /**
@@ -289,6 +298,7 @@ export class RoomScan {
   private readonly hitB = surfacePoint()
   private readonly hitC = surfacePoint()
   private readonly hitD = surfacePoint()
+  private readonly hitE = surfacePoint()
   private readonly rim = [new Vector3(), new Vector3(), new Vector3(), new Vector3()]
   private readonly metres = new Float32Array(DEPTH_COLS * DEPTH_ROWS)
   /** What each reading of the grid is: dropped, kept, or kept on an edge. */
@@ -880,31 +890,60 @@ export class RoomScan {
    */
   private shellAt(hit: SurfacePoint, piece?: number): Shell | null {
     const fine = this.fine
-    const close = fine !== null && fine.near(hit.x, hit.y, hit.z, 0.04, this.hitD) !== null
+    // The same place on the fine field's surface. The coarse one sits a voxel or two off a small
+    // thing, so a hit found there is moved onto the fine surface first.
+    const at = fine ? this.onFine(hit) : null
+    const close = at !== null
+    const seed = at ?? hit
     const probe = this.standProbe
     // Fitted only where the fine field has looked closely (or with no fine field at all). In the
     // coarse field a 14 cm thing is three or four voxels across, and its fits come out the wrong
     // size, or the wrong shape, until the fine field takes over a moment later.
     const field = close ? fine : fine ? null : this.field
     let fit: StandFit | null = null
-    if (field) fit = fitStanding(field, hit, this.eye, probe)
+    if (field) fit = fitStanding(field, seed, this.eye, probe)
     else {
       probe.plane = NaN
       probe.reason = 'coarse'
       probe.window = undefined
     }
     this.standFit = fit
-    const steady = this.stand.update(fit, hit, this.time)
+    const steady = this.stand.update(fit, seed, this.time)
     if (steady) return steady
     // The surface the fit found all round the thing keeps the cut clear of the table, and the block it
     // read is not read again. A fit that failed before it knew the surface leaves the plane unset.
-    const options: LiftOptions = piece === undefined ? {} : { piece, square: this.squareAt(hit) }
+    const options: LiftOptions = piece === undefined ? {} : { piece, square: this.squareAt(seed) }
     options.floor = probe.plane
     options.window = probe.window
     if (!close || !fine) return liftShell(this.field, hit, this.eye, options)
     // The fine field first: that is the block the fit read.
-    const near = liftShell(fine, hit, this.eye, options)
-    return pickShell(liftShell(this.field, hit, this.eye, options), near)
+    const near = liftShell(fine, seed, this.eye, options)
+    return pickShell(liftShell(this.field, hit, this.eye, { ...options, window: undefined }), near)
+  }
+
+  /**
+   * The point on the fine field's surface for `hit`, a point on the coarse
+   * field's, or null when the fine field has not looked closely there. Its
+   * surface is looked for along the way the coarse one faces, then along the
+   * line of sight, a few centimetres either side.
+   */
+  private onFine(hit: SurfacePoint): SurfacePoint | null {
+    const fine = this.fine
+    if (!fine) return null
+    const out = this.hitE
+    if (fine.near(hit.x, hit.y, hit.z, 0.04, out)) return out
+    const reach = 0.07
+    let found = fine.surfaceAlong(hit.x + hit.nx * reach, hit.y + hit.ny * reach, hit.z + hit.nz * reach, -hit.nx, -hit.ny, -hit.nz, 2 * reach, out)
+    if (!found) {
+      this.scratch.set(hit.x - this.eye.x, hit.y - this.eye.y, hit.z - this.eye.z)
+      const length = this.scratch.length()
+      if (length < 1e-6) return null
+      this.scratch.multiplyScalar(1 / length)
+      found = fine.surfaceAlong(hit.x - this.scratch.x * reach, hit.y - this.scratch.y * reach, hit.z - this.scratch.z * reach, this.scratch.x, this.scratch.y, this.scratch.z, 2 * reach, out)
+    }
+    if (!found) return null
+    found.dist = hit.dist
+    return found
   }
 
   /**
@@ -1105,6 +1144,8 @@ export class RoomScan {
     let wantGhost = 0
     let wantCut = 0
     const locked = this.lockedHand()
+    // What has your attention is what a hand will reach for and hide from depth: the fine field holds on to it.
+    if (this.fine) this.fine.keep(this.focus.x, this.focus.y, this.focus.z, this.focusOn || locked ? KEEP_FINE : 0)
     if (locked) {
       // The hand is closing in on the thing on show. It stays as it is until the hand has it or
       // leaves: no new look, which the hand itself would spoil by being in the way.
@@ -1133,8 +1174,10 @@ export class RoomScan {
       if (seen.wait <= 0 && (seen.age > 0.8 || (moved && !on(seen.shell)))) {
         seen.wait = 0.22
         this.lookedAt.set(at.x, at.y, at.z)
-        // From a hand, the piece is as wide as the torch's beam there.
-        this.show(this.shellAt(at, remote || FLAT ? undefined : torchRadius(at.dist)), remote)
+        // From a hand, the piece is as wide as the torch's beam there. A piece of something big shows
+        // only to a fingertip close to it. The desk's cursor is never near anything, and is the eye too.
+        const shell = this.shellAt(at, remote || FLAT ? undefined : torchRadius(at.dist))
+        this.show(shell && shell.kind !== 'object' && this.presenting && at.dist > PIECE_NEAR ? null : shell, remote)
       }
       seen.remote = remote
       // What is shown is the very piece of mesh a pinch takes: a whole thing, or the piece under the torch.
@@ -1788,6 +1831,8 @@ export class RoomScan {
         const sample: DepthSample = { ox: origin.x, oy: origin.y, oz: origin.z, px: x, py: y, pz: z }
         // The edge of a thing, against what is behind it: kept where it was seen.
         if (sorted[k] === EDGE) sample.edge = true
+        // Just past the edge of something nearer: no proof that the space it crossed is empty.
+        if (seesPast(m, DEPTH_COLS, DEPTH_ROWS, col, row)) sample.past = true
         // The way the surface faces, from the readings beside and above: across an edge there is none.
         const side = col + 1 < DEPTH_COLS ? k + 1 : k - 1
         const up = row + 1 < DEPTH_ROWS ? k + DEPTH_COLS : k - DEPTH_COLS

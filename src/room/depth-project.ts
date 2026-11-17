@@ -77,6 +77,20 @@ function blurred(m: ArrayLike<number>, sorted: Uint8Array | undefined, k: number
   return sorted !== undefined && sorted[k] === DROP && m[k] > 0
 }
 
+/**
+ * Is the reading at `col`, `row` well behind one of the four next to it? Its
+ * ray then passed close by the edge of a nearer thing, or it read too far.
+ * Either way it is no proof that the space it crossed is empty.
+ */
+export function seesPast(m: ArrayLike<number>, cols: number, rows: number, col: number, row: number): boolean {
+  const k = col + row * cols
+  const d = m[k]
+  if (!(d > 0)) return false
+  // A missing neighbour (0 or NaN) is not a nearer thing.
+  const nearer = (n: number) => n > 0 && farther(n, d)
+  return (col > 0 && nearer(m[k - 1])) || (col < cols - 1 && nearer(m[k + 1])) || (row > 0 && nearer(m[k - cols])) || (row < rows - 1 && nearer(m[k + cols]))
+}
+
 /** True when a depth reading sits well between the readings either side of it: the blur across a big step. */
 export function between(d: number, a: number, b: number): boolean {
   if (!(a > 0) || !(b > 0)) return false
