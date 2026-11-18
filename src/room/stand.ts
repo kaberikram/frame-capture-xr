@@ -58,6 +58,10 @@ const NARROW_MAX = 0.012
 const FLAT_MAD = 0.006
 /** A box's outline strays from a rectangle by at most this, in voxels (the median). */
 const BOX_RES = 0.45
+/** An outline is plainly a rectangle when a rectangle fits it this much better than a circle does. */
+const BOXY_RATIO = 0.8
+/** And only in a field this fine, metres to a voxel. */
+const BOXY_VOXEL = 0.025
 /** A round must fit the outline this much better than a rectangle does. */
 const ROUND_RATIO = 0.8
 /**
@@ -99,6 +103,16 @@ const RING = 0.02
 export const BASE_EDGE = 0.88
 /** Directions in a prism's outline. */
 const RAYS = 64
+/** Two boxes whose middles are this near each other's outline are looks at the same box, metres. */
+const GROW_NEAR = 0.03
+/** Nor do two looks at one box make one this much bigger than the bigger of them. */
+const GROW_MAX = 1.8
+/** Two looks at one box are turned alike within this, radians. */
+const GROW_TURN = (5 * Math.PI) / 180
+/** A look grows a box when the box round both is this much bigger than the box held: more than noise. */
+const GROW_STEP = 1.15
+/** And is only part of it when it is this much smaller. */
+const GROW_PART = 0.8
 /** Seconds a shape is held through missed fits while the pinch stays on it. */
 const HOLD = 1.0
 
@@ -1084,6 +1098,11 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   const resRect = middle(m)
   for (let i = 0; i < m; i++) pick[i] = Math.abs(Math.hypot(loop[i * 2] - ccx, loop[i * 2 + 1] - ccz) - cr0)
   const resCirc = middle(m)
+  // An outline that is plainly a rectangle, from above: a box, whatever depth makes of its walls.
+  // Clear plastic (a stack of CD cases) reads badly side on, and a ball or a vase is round.
+  // A square's corners stray from any circle by a tenth of its size, far more than they stray from
+  // the square. Only in the fine field: through 4 cm voxels a ball's outline is a square too.
+  const boxy = v <= BOXY_VOXEL && resRect < BOX_RES * v && resRect < BOXY_RATIO * resCirc && loopArea / (4 * rect.hu * rect.hv) > 0.8
 
   // A far side's outline runs past the thing: its top's edge was only seen against what is
   // behind, and smears into the hidden space. Where the height map drops onto seen surface
@@ -1295,6 +1314,10 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
     shape = 'round'
     residual = resCirc
   } else if (resRect < BOX_RES * v && loopArea / (4 * rect.hu * rect.hv) > 0.8) shape = 'box'
+  if (!shape && boxy) {
+    shape = 'box'
+    residual = resRect
+  }
   if (!shape && starShaped(mx, mz)) shape = 'prism'
 
   let cx = bx
@@ -1391,7 +1414,7 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   const taper = both >= 4 ? middle(both) : 0
   for (let i = 0; i < highs; i++) pick[i] = highD[i]
   const narrows = highs >= 4 ? middle(highs) : 0
-  if (taper > TAPER_MAX || narrows > NARROW_MAX || (midOnly >= 4 && midOnly > both)) return fail('taper')
+  if (!boxy && (taper > TAPER_MAX || narrows > NARROW_MAX || (midOnly >= 4 && midOnly > both))) return fail('taper')
   // Walls must be seen half way up on most of the sides facing the eye. A stool or a small
   // table has air under its top there: it is not a solid block down to the floor.
   if (walled < Math.max(WALLS_MIN, WALLS_SHARE * looked)) return fail('no-walls')
@@ -1838,6 +1861,71 @@ function sameThing(a: StandFit, b: StandFit): boolean {
 }
 
 /**
+ * A box round both `a` and `b`, two looks at the same box on the same level
+ * that each saw part of it: the hand hid one side, or the angle. Null when
+ * they are not the same box: on another level, apart, or together far bigger
+ * than either, as two things side by side would be.
+ */
+export function growBox(a: StandFit, b: StandFit): StandFit | null {
+  if (a.shape !== 'box' || b.shape !== 'box') return null
+  if (Math.abs(a.plane - b.plane) >= 0.015) return null
+  if (outside(a, b.cx, b.cz) > GROW_NEAR && outside(b, a.cx, a.cz) > GROW_NEAR) return null
+  // Turned alike, give or take a quarter: the box round two that are turned apart is bigger than either for that alone.
+  let turn = b.angle - a.angle
+  turn -= Math.round(turn / (Math.PI / 2)) * (Math.PI / 2)
+  if (Math.abs(turn) > GROW_TURN) return null
+  const corners = (f: StandFit, out: number[]) => {
+    const ca = Math.cos(f.angle)
+    const sa = Math.sin(f.angle)
+    for (const [u, w] of [[1, 1], [-1, 1], [-1, -1], [1, -1]]) out.push(f.cx + u * f.hu * ca - w * f.hv * sa, f.cz + u * f.hu * sa + w * f.hv * ca)
+  }
+  const points: number[] = []
+  corners(a, points)
+  corners(b, points)
+  // At the first box's own turn: it is the one held.
+  const angle = a.angle
+  const ca = Math.cos(angle)
+  const sa = Math.sin(angle)
+  let u0 = Infinity
+  let u1 = -Infinity
+  let w0 = Infinity
+  let w1 = -Infinity
+  for (let i = 0; i < points.length; i += 2) {
+    const u = points[i] * ca + points[i + 1] * sa
+    const w = -points[i] * sa + points[i + 1] * ca
+    u0 = Math.min(u0, u)
+    u1 = Math.max(u1, u)
+    w0 = Math.min(w0, w)
+    w1 = Math.max(w1, w)
+  }
+  const uc = (u0 + u1) / 2
+  const wc = (w0 + w1) / 2
+  const best = { area: (u1 - u0) * (w1 - w0), angle, cx: uc * ca - wc * sa, cz: uc * sa + wc * ca, hu: (u1 - u0) / 2, hv: (w1 - w0) / 2 }
+  const bigger = Math.max(4 * a.hu * a.hv, 4 * b.hu * b.hv)
+  if (best.area > GROW_MAX * bigger || best.area > FOOT_MAX) return null
+  const grew = best.area > 1.05 * bigger
+  const base = 4 * a.hu * a.hv >= 4 * b.hu * b.hv ? a : b
+  const out: StandFit = {
+    ...base,
+    cx: best.cx,
+    cz: best.cz,
+    angle: best.angle,
+    hu: best.hu,
+    hv: best.hv,
+    corner: Math.min(CORNER, 0.25 * Math.min(best.hu, best.hv)),
+    plane: (a.plane + b.plane) / 2,
+    // A look that saw less of the top saw it lower, if anything.
+    top: Math.max(a.top, b.top),
+    // A top's height map covers the look it came from: a box grown past it is given a flat top.
+    flat: grew ? true : base.flat,
+    heights: grew ? null : base.heights,
+    radii: new Float32Array(RAYS),
+  }
+  for (let k = 0; k < RAYS; k++) out.radii[k] = reachAlong(out, out.angle + (k / RAYS) * 2 * Math.PI)
+  return out
+}
+
+/**
  * Holds a fitted shape steady from one fit to the next. A new shape is shown
  * once two fits in a row agree on it. After that a value moves only past a
  * small dead band, and then eases toward the new fit; a different shape, or a
@@ -1889,10 +1977,32 @@ export class StandTrack {
       return null
     }
     this.held = 0
+    // A box seen more fully than before (the hand hid part of it, or the angle did) grows to take in
+    // both looks. A look that saw clearly less of it changes nothing. Anything between is the same
+    // box seen again, and eases as any shape does.
+    const grown = cur ? growBox(cur, fit) : null
+    if (cur && grown) {
+      const area = 4 * cur.hu * cur.hv
+      const more = 4 * grown.hu * grown.hv > GROW_STEP * area
+      if (more || 4 * fit.hu * fit.hv < GROW_PART * area) {
+        this.seenAt = now
+        this.pending = null
+        this.pendingCount = 0
+        const next = more ? this.blend(cur, grown) : cur
+        if (next !== cur) {
+          this.cur = next
+          this.shell = buildStanding(next)
+        }
+        return this.shell
+      }
+    }
     if (!cur || !onSolid(cur, seed)) {
       // Something new. A close look that has only begun to fill in gives a shape too small, or
       // the wrong one, so a new shape is shown once two looks in a row agree on it.
       if (this.pending && this.pending.shape === fit.shape && sameThing(this.pending, fit)) return this.accept(fit, now)
+      // Two looks at one box that each saw part of it agree on the box round both.
+      const both = !cur && this.pending ? growBox(this.pending, fit) : null
+      if (both) return this.accept(both, now)
       this.cur = null
       this.shell = null
       this.pending = fit
