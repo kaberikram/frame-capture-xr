@@ -316,9 +316,10 @@ async function peelHeadset(browser, failures, usage) {
   }
   check(touch !== null, `${name}: light gathers on a surface as a hand nears it`, failures)
   if (touch) {
-    // Light gathers from further off than a piece of a wall shows: keep reaching until it does.
+    // Light gathers from about a metre off, and a piece of a wall shows only within 30 cm of it:
+    // keep reaching, 5 cm at a time, until it does.
     let shown = false
-    for (let i = 0; i < 10 && !shown; i++) {
+    for (let i = 0; i < 24 && !shown; i++) {
       shown = await until(async () => (await api()).roomAttention > 0.5, 700)
       if (!shown) {
         touch = [touch[0], touch[1], touch[2] - 0.05]

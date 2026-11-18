@@ -78,6 +78,8 @@ const OFFER_HAND = 0.12
  * the shelf in it, is clutter, and pointing at a thing past it lit the wall.
  */
 const PIECE_NEAR = 0.3
+/** A fingertip this far past a showing ghost's reach is still at it, for telling it from a loose piece, metres. */
+const GHOST_REACH = 0.04
 /** How far round what has your attention the fine field holds on to what it has, metres. */
 const KEEP_FINE = 0.35
 /** Seconds an offer stays good after the hand stops showing it. Closing the fingers to pinch takes a moment. */
@@ -527,7 +529,7 @@ export class RoomScan {
    */
   press(point: Vector3, view: Vector3 | null): boolean {
     if (!this.active || this.held) return false
-    const piece = this.pieceAt(point)
+    const piece = this.looseAt(point)
     if (piece) {
       piece.grab(point)
       this.held = piece
@@ -896,17 +898,10 @@ export class RoomScan {
     const close = at !== null
     const seed = at ?? hit
     const probe = this.standProbe
-    // Fitted only where the fine field has looked closely (or with no fine field at all). In the
-    // coarse field a 14 cm thing is three or four voxels across, and its fits come out the wrong
-    // size, or the wrong shape, until the fine field takes over a moment later.
-    const field = close ? fine : fine ? null : this.field
-    let fit: StandFit | null = null
-    if (field) fit = fitStanding(field, seed, this.eye, probe)
-    else {
-      probe.plane = NaN
-      probe.reason = 'coarse'
-      probe.window = undefined
-    }
+    // Fitted in the fine field whenever there is one, even where the hit was not matched to its
+    // surface: the thing may be there a few centimetres off. In the coarse field a 14 cm thing is
+    // three or four voxels across, and its fits come out the wrong size, or the wrong shape.
+    const fit = fitStanding(fine ?? this.field, seed, this.eye, probe)
     this.standFit = fit
     const steady = this.stand.update(fit, seed, this.time)
     if (steady) return steady
@@ -1119,7 +1114,7 @@ export class RoomScan {
       const b = this.touch[1]
       const touch = a.on && (!b.on || a.hit.dist <= b.hit.dist) ? a : b.on ? b : null
       // A finger on a piece already lifted takes that piece: nothing else is offered.
-      if (touch && this.pieceAt(touch.from)) {
+      if (touch && this.looseAt(touch.from)) {
         target = null
       } else if (touch) {
         target = touch.hit
@@ -1160,15 +1155,16 @@ export class RoomScan {
     } else if (target) {
       const at = target
       this.focus.set(at.x, at.y, at.z)
-      // A whole thing is offered while the finger is on it. A piece of something bigger is cut
-      // where the finger is, so it is offered only while the finger stays near its middle.
       // A whole thing is offered while the torch is on it. A piece of something bigger is cut where
-      // the torch falls, so it is offered while the torch stays near the piece's middle.
+      // the torch fell, so it is offered while the torch stays near where it was cut. (Not the
+      // piece's middle: a cut that runs into the edge of what depth has seen is lopsided, and its
+      // middle can sit well away from where the torch is, so it was never offered.)
+      const cutAt = this.lookedAt
       const on = (shell: Shell | null) =>
         shell !== null &&
         (shell.kind === 'object'
           ? onShell(shell, at.x, at.y, at.z)
-          : !FLAT && !remote && Math.hypot(at.x - shell.cx, at.y - shell.cy, at.z - shell.cz) < 0.045)
+          : !FLAT && !remote && Math.hypot(at.x - cutAt.x, at.y - cutAt.y, at.z - cutAt.z) < 0.045)
       // Look again when the attention has moved somewhere new, and now and then as depth fills in.
       const moved = Math.hypot(at.x - this.lookedAt.x, at.y - this.lookedAt.y, at.z - this.lookedAt.z) > 0.05
       if (seen.wait <= 0 && (seen.age > 0.8 || (moved && !on(seen.shell)))) {
@@ -1272,7 +1268,7 @@ export class RoomScan {
     let bestD = ghost.radius + LOCK_REACH
     for (let i = 0; i < this.touch.length; i++) {
       const touch = this.touch[i]
-      if (!touch.up || this.pieceAt(touch.from)) continue
+      if (!touch.up || this.looseAt(touch.from)) continue
       const d = Math.hypot(touch.from.x - ghost.cx, touch.from.y - ghost.cy, touch.from.z - ghost.cz)
       if (d < bestD) {
         best = touch.from
@@ -1516,6 +1512,21 @@ export class RoomScan {
     return best
   }
 
+  /**
+   * The loose piece a fingertip at `point` is on, as `pieceAt`, unless the
+   * thing whose ghost is showing is nearer: a piece left floating beside a
+   * thing does not stand in the way of taking the thing.
+   */
+  private looseAt(point: Vector3): RoomPiece | null {
+    const piece = this.pieceAt(point)
+    if (!piece) return null
+    const ghost = this.preview.ghostShell
+    if (!ghost || ghost.kind !== 'object' || this.preview.ghostLevel < 0.15) return piece
+    const toGhost = Math.hypot(point.x - ghost.cx, point.y - ghost.cy, point.z - ghost.cz)
+    if (toGhost > ghost.radius + GHOST_REACH) return piece
+    return toGhost < piece.contains(point) ? null : piece
+  }
+
   /** The nearest loose piece a ray meets before `reach`, or null. */
   private pieceOnRay(origin: Vector3, dir: Vector3, reach: number): RoomPiece | null {
     let best: RoomPiece | null = null
@@ -1636,6 +1647,7 @@ export class RoomScan {
           const sample = found[k]
           if (!sample) continue
           if (onEdge(m, DEPTH_COLS, DEPTH_ROWS, x, y)) sample.edge = true
+          if (seesPast(m, DEPTH_COLS, DEPTH_ROWS, x, y)) sample.past = true
           samples.push(sample)
         }
       }
@@ -1644,14 +1656,30 @@ export class RoomScan {
     }
     const w = 24
     const h = 18
+    // As on the headset, a reading well behind the one beside it (past the edge of something nearer)
+    // does not clear the space it crossed.
+    const m = this.metres
+    const found: (DepthSample | null)[] = []
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         this.ndc.set(((x + jx) / w) * 2 - 1, 1 - ((y + jy) / h) * 2)
         this.raycaster.setFromCamera(this.ndc, camera)
         const hit = this.raycaster.intersectObject(standIn, true)[0]
-        if (!hit || hit.distance < 0.25 || hit.distance > 3.4) continue
-        samples.push(this.deskSample(origin, hit))
+        const k = x + y * w
+        if (!hit || hit.distance < 0.25 || hit.distance > 3.4) {
+          m[k] = 0
+          found[k] = null
+          continue
+        }
+        m[k] = hit.distance
+        found[k] = this.deskSample(origin, hit)
       }
+    }
+    for (let k = 0; k < w * h; k++) {
+      const sample = found[k]
+      if (!sample) continue
+      if (seesPast(m, w, h, k % w, Math.floor(k / w))) sample.past = true
+      samples.push(sample)
     }
     camera.getWorldDirection(this.scratch)
     this.enqueue(samples, this.field, this.scratch, (2 * Math.tan((camera.fov * Math.PI) / 360) * camera.aspect) / w)

@@ -15,7 +15,7 @@ const hook = `export async function resolve(specifier, context, next) {
   }
 }`
 register('data:text/javascript,' + encodeURIComponent(hook))
-const { fitStanding, buildStanding, StandTrack, BASE_EDGE, BASE_GAP, FAR_K, setStandFar, standFar } = await import('../src/room/stand.ts')
+const { fitStanding, buildStanding, growBox, StandTrack, BASE_EDGE, BASE_GAP, FAR_K, setStandFar, standFar } = await import('../src/room/stand.ts')
 
 function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message)
@@ -106,6 +106,18 @@ for (const voxel of [0.02, 0.04]) {
   const pb = probe()
   assert(fitStanding(ballScene, { x: 0, y: 0.86, z: 0.1 }, front, pb) === null && pb.reason === 'taper', `a ball is not fitted, it tapers, got ${pb.reason} (${voxel})`)
   assert(Math.abs(pb.plane - 0.75) < 0.005, `the ball still stands on the table, ${pb.plane.toFixed(4)} (${voxel})`)
+
+  // A square thing whose walls draw in low down (a stack of cases on a smaller base, or clear plastic
+  // that depth reads badly side on) is still a box, by its outline from above. Only in the fine field:
+  // through 4 cm voxels a ball's outline is square too.
+  if (voxel <= 0.02) {
+    const top = boxAt(-0.2, 0.775, 0, 0.14, 0.14, 0.045, 0.3)
+    const foot = boxAt(-0.2, 0.75, 0, 0.08, 0.08, 0.03, 0.3)
+    const pf = probe()
+    const footed = fitStanding(room(voxel, (x, y, z) => Math.min(top(x, y, z), foot(x, y, z), table(x, y, z))), { x: -0.2, y: 0.82, z: 0 }, { x: -0.2, y: 1.4, z: 0.6 }, pf)
+    assert(footed !== null && footed.shape === 'box', `a square thing on a smaller foot is a box, got ${footed?.shape ?? pf.reason} (${voxel})`)
+    assert(footed !== null && Math.abs(2 * footed.hu - 0.14) < 0.015 && Math.abs(2 * footed.hv - 0.14) < 0.015, `it is the size of its top, got ${footed ? `${cm(2 * footed.hu)} x ${cm(2 * footed.hv)}` : '-'} (${voxel})`)
+  }
 
   // Not things: the table itself, a wall, open air.
   const pt = probe()
@@ -705,6 +717,41 @@ const canTop = { x: STACK.x + 0.01, y: TABLE_Y + 0.1, z: STACK.z + 0.01 }
     shapes.push(track.update(fit, canTop, now)?.stand?.shape ?? 'none')
   }
   assert(shapes[0] === 'box' && shapes[1] === 'round' && shapes[2] === 'round', `the can takes over on the second agreeing fit, got ${shapes.join(', ')}`)
+}
+
+// A box first seen in part (the hand hid the rest, or the angle) grows to the whole box as later
+// looks see more of it, and a look that again sees only part of it does not shrink it back.
+{
+  const boxFit = (cx: number, cz: number, hu: number, hv: number, angle: number): StandFit => {
+    const fit: StandFit = {
+      shape: 'box', plane: 0.75, top: 0.81, flat: true, mad: 0, cx, cz, angle, hu, hv, corner: 0.005, r: Math.hypot(hu, hv),
+      radii: new Float32Array(64), heights: null, gx: 0, gz: 0, gw: 0, gd: 0, residual: 0.001, seenOut: 0.6, voxel: 0.02,
+    }
+    return fit
+  }
+  // The whole box: 14 by 13 cm, turned 0.4 rad, at (0, -0.1). Its front strip alone is 14 by 5 cm.
+  const yaw = 0.4
+  const whole = boxFit(0, -0.1, 0.07, 0.065, yaw)
+  const front = boxFit(0 - Math.sin(yaw) * 0.04, -0.1 + Math.cos(yaw) * 0.04, 0.07, 0.025, yaw + 0.02)
+  const grown = growBox(front, whole)
+  assert(grown !== null && Math.abs(2 * grown.hu - 0.14) < 0.006 && Math.abs(2 * grown.hv - 0.13) < 0.006, `two looks at one box make the whole box, got ${grown ? `${cm(2 * grown.hu)} x ${cm(2 * grown.hv)}` : 'none'}`)
+  const beside = boxFit(0.16 * Math.cos(yaw), -0.1 + 0.16 * Math.sin(yaw), 0.07, 0.065, yaw)
+  assert(growBox(whole, beside) === null, 'two boxes side by side are not one box')
+  const higher = { ...whole, plane: 0.8, top: 0.86 }
+  assert(growBox(whole, higher) === null, 'a box on another level is not the same box')
+  const track = new StandTrack()
+  const seed = { x: 0, y: 0.81, z: -0.1 }
+  let now = 0
+  const sizes: string[] = []
+  const looks = [front, front, whole, whole, front, whole, front, front]
+  let last: Shell | null = null
+  for (const fit of looks) {
+    last = track.update(fit, seed, now)
+    now += 0.25
+    sizes.push(last?.stand ? `${cm(2 * last.stand.hu)}x${cm(2 * last.stand.hv)}` : '-')
+  }
+  console.log(`tracker: a box seen in part, then whole, then in part: ${sizes.join(', ')}`)
+  assert(last?.stand && Math.abs(2 * last.stand.hv - 0.13) < 0.01 && Math.abs(2 * last.stand.hu - 0.14) < 0.01, `the box held grows to the whole box and stays, got ${sizes[sizes.length - 1]}`)
 }
 
 // ---- The shell built from a fit. ----
