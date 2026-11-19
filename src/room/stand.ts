@@ -29,6 +29,10 @@ const NEAR = 0.03
 const AROUND = 0.04
 /** Well inside its rim, an open pot or tray is lower than this share of its height. */
 const OPEN = 0.5
+/** Even a square-ish thing is open when its inside is lower than this share: a box's glossy top dips less. */
+const OPEN_DEEP = 0.25
+/** A square-ish thing whose inside is lower than this share of its height has a dipped top, read flat. */
+const DIPPED = 0.8
 /** Of the sides facing the eye, at least this share, and this many, must show a wall half way up. */
 const WALLS_SHARE = 0.5
 const WALLS_MIN = 3
@@ -58,10 +62,17 @@ const NARROW_MAX = 0.012
 const FLAT_MAD = 0.006
 /** A box's outline strays from a rectangle by at most this, in voxels (the median). */
 const BOX_RES = 0.45
-/** An outline is plainly a rectangle when a rectangle fits it this much better than a circle does. */
-const BOXY_RATIO = 0.8
-/** And only in a field this fine, metres to a voxel. */
+/**
+ * An outline is square-ish when a rectangle fits it at least this well as a
+ * circle does, and fills this much of that rectangle. A messy stack of cases
+ * strays from a clean rectangle, but its corners stray from any circle more.
+ */
+const SQUARISH_RATIO = 1
+const SQUARISH_FILL = 0.75
+/** Only in a field this fine, metres to a voxel: through 4 cm voxels a ball's outline is square too. */
 const BOXY_VOXEL = 0.025
+/** The pinch may be this far across from the thing it is on, metres: a fingertip lands beside an edge as often as on it. */
+const START_REACH = 0.08
 /** A round must fit the outline this much better than a rectangle does. */
 const ROUND_RATIO = 0.8
 /**
@@ -823,8 +834,9 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
     // 3. The columns that rise above it, joined to the pinch. This bounds the rest of the work.
     start = -1
     let startD = Infinity
-    for (let dk = -2; dk <= 2; dk++) {
-      for (let di = -2; di <= 2; di++) {
+    const across = Math.max(2, Math.round(START_REACH / v))
+    for (let dk = -across; dk <= across; dk++) {
+      for (let di = -across; di <= across; di++) {
         const i = si + di
         const k = sk + dk
         if (i < 0 || k < 0 || i >= n || k >= n || !rises(i + k * n, h)) continue
@@ -944,8 +956,9 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   const sb = Math.floor((seed.z - grid.z0) / FOOT)
   start = -1
   let startD = Infinity
-  for (let b = Math.max(0, sb - 3); b <= Math.min(fd - 1, sb + 3); b++) {
-    for (let a = Math.max(0, sa - 3); a <= Math.min(fw - 1, sa + 3); a++) {
+  const cellsAcross = Math.max(3, Math.round(START_REACH / FOOT))
+  for (let b = Math.max(0, sb - cellsAcross); b <= Math.min(fd - 1, sb + cellsAcross); b++) {
+    for (let a = Math.max(0, sa - cellsAcross); a <= Math.min(fw - 1, sa + cellsAcross); a++) {
       if (!maskA[a + b * fw]) continue
       const d = (a - sa) ** 2 + (b - sb) ** 2
       if (d < startD) {
@@ -1027,7 +1040,10 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   morph(maskB, maskA, fw, fd, false)
   count = 0
   for (let at = 0; at < cells; at++) if (maskA[at] && hf[at] === hf[at]) pick[count++] = hf[at]
-  if (count >= 3 && middle(count) < OPEN * hTop) return fail('open')
+  // Decided once the outline is known: a square-ish thing is a box even when its top reads hollow,
+  // as a glossy top does where it mirrors the room and depth reads the room in it.
+  const inside = count >= 3 ? middle(count) : NaN
+  const looksOpen = inside < OPEN * hTop
 
   // 5. The outline: where the height map crosses half the thing's height, smoothed a little.
   morph(comp, maskB, fw, fd, true)
@@ -1098,11 +1114,12 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
   const resRect = middle(m)
   for (let i = 0; i < m; i++) pick[i] = Math.abs(Math.hypot(loop[i * 2] - ccx, loop[i * 2 + 1] - ccz) - cr0)
   const resCirc = middle(m)
-  // An outline that is plainly a rectangle, from above: a box, whatever depth makes of its walls.
-  // Clear plastic (a stack of CD cases) reads badly side on, and a ball or a vase is round.
-  // A square's corners stray from any circle by a tenth of its size, far more than they stray from
-  // the square. Only in the fine field: through 4 cm voxels a ball's outline is a square too.
-  const boxy = v <= BOXY_VOXEL && resRect < BOX_RES * v && resRect < BOXY_RATIO * resCirc && loopArea / (4 * rect.hu * rect.hv) > 0.8
+  // A square-ish outline, from above, is a box whatever depth makes of its walls and its top. Clear,
+  // glossy plastic (a stack of CD cases) reads badly side on and mirrors the room on top. Balls,
+  // vases, cups and pots are round, and keep their checks.
+  const boxy = v <= BOXY_VOXEL && resRect <= SQUARISH_RATIO * resCirc && loopArea / (4 * rect.hu * rect.hv) > SQUARISH_FILL
+  // A pot's inside drops nearly to the table; a glossy top dips only part way.
+  if (looksOpen && (!boxy || inside < OPEN_DEEP * hTop)) return fail('open')
 
   // A far side's outline runs past the thing: its top's edge was only seen against what is
   // behind, and smears into the hidden space. Where the height map drops onto seen surface
@@ -1459,14 +1476,19 @@ export function fitStanding(field: FieldBlock, seed: Point, eye: Point, probe?: 
     count = 0
     for (let at = 0; at < cells; at++) if (comp[at] && hf[at] >= half) pick[count++] = hf[at]
   }
-  const med = middle(count)
-  // Well inside the fitted outline the map dropped to an inside bottom: it is open at the top.
-  if (!(med >= OPEN * hTop)) return fail('open')
+  let med = middle(count)
+  // Well inside the fitted outline the map dropped to an inside bottom: it is open at the top. A box
+  // is shut: its top is at the height most of it reaches.
+  if (!(med >= OPEN * hTop) && (!boxy || !(med >= OPEN_DEEP * hTop))) return fail('open')
+  // A box whose middle reads well below its rim has a glossy top that mirrors the room: it is shut,
+  // and flat at the height most of its rim reaches.
+  const dipped = boxy && med < DIPPED * hTop
+  if (dipped) med = hTop
   for (let i = 0; i < count; i++) pick[i] = Math.abs(pick[i] - med)
-  const mad = middle(count)
+  const mad = dipped ? 0 : middle(count)
   fit.top = h0 + med
   fit.mad = mad
-  fit.flat = mad < FLAT_MAD
+  fit.flat = dipped || mad < FLAT_MAD
   if (!fit.flat) fit.heights = smoothTop(fw, fd)
   if (!onSolid(fit, seed)) {
     // The pinch is on something else, a wall above it say: neither this shape nor its level is what was pinched.
