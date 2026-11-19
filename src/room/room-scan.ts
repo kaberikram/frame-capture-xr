@@ -30,6 +30,7 @@ import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
 import { liftShell, pickShell, type LiftOptions, type Shell } from './object.js'
 import { ObjectPiece, shellGeometry, shellImageCoords } from './object-piece.js'
+import { peelMode } from './peel-mode.js'
 import { BASE_GAP, StandTrack, fitStanding, setStandFar, standFar, type StandFit, type StandProbe } from './stand.js'
 import { PIECE_MAX, STICK_GAP, TOUCH_GAP, basisKeeping, canLand, tangentBasis, type Basis } from './patch.js'
 import { PeelPiece, type PieceState, type RoomPiece } from './peel-piece.js'
@@ -60,12 +61,13 @@ const FLAT = queryFlag('flat') === '1'
  */
 const CLEAR = queryFlag('clear') === '1'
 /**
- * `?simple=1`: the peel as it first was. Light gathers under a fingertip
- * within 30 cm of a surface, and a pinch near any surface peels a flat piece
- * of it there and then, with its relief and its picture, growing as you pull.
- * Nothing is shown before the pinch and nothing is fitted.
+ * The simple peel (chosen on the launch card, or `?simple=1`): the peel as it
+ * first was. Light gathers under a fingertip within 30 cm of a surface, and a
+ * pinch near any surface peels a flat piece of it there and then, with its
+ * relief and its picture, growing as you pull. Nothing is shown before the
+ * pinch and nothing is fitted.
  */
-const SIMPLE = queryFlag('simple') === '1'
+const simple = (): boolean => peelMode() === 'simple'
 /** `?motes=0` hides the motes of light that show depth being read. */
 const MOTES = queryFlag('motes') !== '0'
 /** `?mesh=0` hides the live mesh. `?mesh=all` shows all of it, not just where the hand points. */
@@ -552,7 +554,7 @@ export class RoomScan {
       return true
     }
     if (view) this.eye.copy(view)
-    if (SIMPLE) {
+    if (simple()) {
       const hit = this.surfaceAtPinch(point, view)
       if (!hit) return false
       this.begin(hit, point, view, Math.random() * 40)
@@ -657,7 +659,7 @@ export class RoomScan {
     if (!surface) return -1
     this.eye.copy(origin)
     const start = new Vector3(surface.x, surface.y, surface.z)
-    if (SIMPLE) {
+    if (simple()) {
       this.begin(surface, start, origin, Math.random() * 40)
       return surface.dist
     }
@@ -738,7 +740,7 @@ export class RoomScan {
     touch.up = true
     touch.from.copy(origin)
     // The simple peel's light is under the fingertip only, as it first was.
-    if (SIMPLE && level < 0) reach = Math.min(reach, POOL_REACH)
+    if (simple() && level < 0) reach = Math.min(reach, POOL_REACH)
     let hit = this.field.near(origin.x, origin.y, origin.z, 0.07, this.hitB)
     if (!hit && dir && dir.lengthSq() > 1e-6) {
       hit = this.surfaceOnRay(origin, this.local.copy(dir).normalize(), reach, this.hitB)
@@ -786,7 +788,7 @@ export class RoomScan {
     return [
       `depth ${this.depthMode ?? 'none'}  readings ${this.lastReadings}  passes ${this.pass}  miss ${this.depthMiss}`,
       `room ${this.field.chunkCount} chunks  fine ${this.fine ? this.fine.chunkCount : 'off'}  mesh ${this.live?.chunkCount ?? 'off'}  joints ${this.jointCount}`,
-      `torch L ${t(0)} R ${t(1)}  offer ${seen.offer ?? '-'}  lit ${seen.spotLevel.toFixed(2)} r ${seen.spotR.toFixed(2)}`,
+      `mode ${peelMode()}  torch L ${t(0)} R ${t(1)}  offer ${seen.offer ?? '-'}`,
       this.standLine(),
       ...(this.fault ? [`ERROR ${this.fault}`] : []),
     ]
@@ -1162,7 +1164,7 @@ export class RoomScan {
       }
     }
     // The simple peel shows nothing before the pinch: only the light under the fingertip.
-    if (SIMPLE) target = null
+    if (simple()) target = null
     this.focusOn = target !== null
     if (!target && this.presenting && !this.held) {
       // No hand is up. Depth is still read closely where you look, ready for when one is.

@@ -140,7 +140,10 @@ With `?debug=1` the `stand` line shows the fitted shape and its size, how well i
 
 `?flat=1` brings back the older flat peel for bare surfaces: a torn outline shows first, and a flat piece about 22 cm across peels off, leaving warm light that fades.
 
-`?simple=1` is the peel as it first was. Light gathers under a fingertip within 30 cm of a surface, and a pinch near any surface peels a flat piece of it there and then, with its relief and its picture, growing as you pull. Nothing is shown before the pinch and nothing is fitted: a pinch on a stack of CDs takes its top as a sheet, not the stack. It is there to compare against.
+The launch card on `/peel` has two buttons, **Box** and **Simple**, that switch how a pinch takes things. The choice holds at once and is kept on that browser for the next visit; `?simple=1` or `?simple=0` in the address picks one for that visit. The debug panel's `mode` shows which is on.
+
+- **Box** (the default) is everything described here: a thing on a table comes away whole, fitted as a box or a round, with its ghost shown first, and a bare surface gives a piece of its mesh.
+- **Simple** is the peel as it first was. Light gathers under a fingertip within 30 cm of a surface, and a pinch near any surface peels a flat piece of it there and then, with its relief and its picture, growing as you pull. Nothing is shown before the pinch and nothing is fitted: a pinch on a stack of CDs takes its top as a sheet, not the stack.
 
 Twelve pieces is the limit. The oldest then fades. The page shows no hints. It does not draw frames, has no time window or palm menu, and does not download the depth model.
 

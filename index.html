@@ -81,11 +81,38 @@
       }
       button:focus-visible { outline: 2px solid var(--glow); outline-offset: 3px; }
       button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+      #mode {
+        display: none;
+        gap: 4px;
+        width: max-content;
+        margin-top: 14px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+      }
+      html.peel #mode { display: flex; }
+      #mode button {
+        margin: 0;
+        height: 38px;
+        padding: 0 18px;
+        background: transparent;
+        box-shadow: none;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      #mode button[aria-pressed="true"] {
+        background: var(--coral);
+        color: var(--ink);
+        box-shadow: 0 0 18px rgba(232, 96, 76, 0.4);
+      }
+      #mode-note { font-size: 13px; }
+      #mode-note:empty { display: none; }
       html.clean h1,
       html.clean #hint,
       html.clean #status,
       html.clean #other,
-      html.clean #depth { display: none !important; }
+      html.clean #depth,
+      html.clean #mode-note { display: none !important; }
       html.clean #launch {
         width: auto;
         padding: 10px 12px;
@@ -107,6 +134,11 @@
       <p id="status">Drag to draw. Drag a corner to peel. Keys 1–4 change the time inside the frame. Right-drag looks around.</p>
       <p id="depth"></p>
       <p id="camera" role="status"></p>
+      <div id="mode" role="group" aria-label="How a pinch takes things">
+        <button type="button" data-mode="box" aria-pressed="true">Box</button>
+        <button type="button" data-mode="simple" aria-pressed="false">Simple</button>
+      </div>
+      <p id="mode-note"></p>
       <button id="enter" type="button">Enter passthrough</button>
       <p id="other"><a id="other-link" href="/peel">Or peel the room itself</a></p>
     </section>
