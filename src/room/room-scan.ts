@@ -24,7 +24,7 @@ import { makeDust } from '../look/motes.js'
 import { PALETTE } from '../look/palette.js'
 import { DepthMotes } from '../look/depth-motes.js'
 import { LiveMesh } from './live-mesh.js'
-import { GHOST_JOINTS, cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
+import { GHOST_JOINTS, auraMaterial, cutoutMaterial, ghostMaterial, poolMaterial, shellMaterial } from '../look/room-glow.js'
 import { DROP, EDGE, focusRect, onEdge, seesPast, sortReadings, transformPoint, viewFromDepth, type ViewRect } from './depth-project.js'
 import { RoomField, surfacePoint, type DepthSample, type SurfacePoint } from './field.js'
 import { GpuDepthReader, type GpuDepthInfo } from './gpu-depth.js'
@@ -62,12 +62,15 @@ const FLAT = queryFlag('flat') === '1'
 const CLEAR = queryFlag('clear') === '1'
 /**
  * The simple peel (chosen on the launch card, or `?simple=1`): the peel as it
- * first was. Light gathers under a fingertip within 30 cm of a surface, and a
- * pinch near any surface peels a flat piece of it there and then, with its
- * relief and its picture, growing as you pull. Nothing is shown before the
- * pinch and nothing is fitted.
+ * was on 13 November. Light gathers under a fingertip within 30 cm of a
+ * surface. A whole thing glows softly when a fingertip nears it, or when you
+ * look at it with a hand raised. A pinch lifts it out in its own shape, from
+ * the depth mesh, with nothing fitted; a pinch on a bare surface peels a flat
+ * piece of it, growing as you pull.
  */
 const simple = (): boolean => peelMode() === 'simple'
+/** In the simple peel, a piece of something big is lifted in its real shape when it has this much shape, metres. */
+const SHAPELY = 0.06
 /** `?motes=0` hides the motes of light that show depth being read. */
 const MOTES = queryFlag('motes') !== '0'
 /** `?mesh=0` hides the live mesh. `?mesh=all` shows all of it, not just where the hand points. */
@@ -288,6 +291,8 @@ export class RoomScan {
   private readonly lookedAt = new Vector3(0, -99, 0)
   private focusOn = false
   private readonly preview: Preview
+  /** The simple peel's soft glow over a whole thing a pinch would lift. */
+  private readonly aura: { mesh: Mesh; mat: ShaderMaterial; shell: Shell | null; level: number; age: number; wait: number; remote: boolean; at: Vector3 }
   private readonly cutHand = new Vector3()
   private readonly spotAt = new Vector3()
   /** The last error thrown while stepping, if any, and how many readings the last depth pass gave. */
@@ -335,6 +340,14 @@ export class RoomScan {
     parent.add(this.group)
     this.field.clears = CLEAR
     if (this.fine) this.fine.clears = CLEAR
+    const aura = auraMaterial(PALETTE)
+    const auraMesh = new Mesh(new BufferGeometry(), aura)
+    auraMesh.name = 'room-aura'
+    auraMesh.renderOrder = 3
+    auraMesh.frustumCulled = false
+    auraMesh.visible = false
+    this.group.add(auraMesh)
+    this.aura = { mesh: auraMesh, mat: aura, shell: null, level: 0, age: 0, wait: 0, remote: false, at: new Vector3(0, -99, 0) }
     const quad = new PlaneGeometry(1, 1)
     for (let i = 0; i < 3; i++) {
       const mat = poolMaterial(PALETTE)
@@ -396,7 +409,7 @@ export class RoomScan {
     // Compile the shaders now, so the first pinch does not hitch.
     const scene = new Scene()
     const shell = shellMaterial(PALETTE)
-    scene.add(new Mesh(quad, this.pools[0].mat), new Mesh(quad, ghostMat), new Mesh(quad, cutMat), new Mesh(quad, shell))
+    scene.add(new Mesh(quad, this.pools[0].mat), new Mesh(quad, ghostMat), new Mesh(quad, cutMat), new Mesh(quad, shell), new Mesh(quad, this.aura.mat))
     const cam = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
     cam.position.z = 1
     renderer.compile(scene, cam)
@@ -464,7 +477,7 @@ export class RoomScan {
 
   /** The ghost of a thing a pinch would lift is showing, 0 to 1. */
   get attention(): number {
-    return this.preview.ghostLevel
+    return Math.max(this.preview.ghostLevel, this.aura.level)
   }
 
   /** The solid fitted to the thing whose ghost is showing: box, round, prism, or none. */
@@ -554,12 +567,7 @@ export class RoomScan {
       return true
     }
     if (view) this.eye.copy(view)
-    if (simple()) {
-      const hit = this.surfaceAtPinch(point, view)
-      if (!hit) return false
-      this.begin(hit, point, view, Math.random() * 40)
-      return true
-    }
+    if (simple()) return this.pressSimple(point, view)
     // What you saw is what you get.
     const seen = this.preview
     // Only the hand the preview follows takes it (or any pinch, when it came from looking).
@@ -622,6 +630,36 @@ export class RoomScan {
     return true
   }
 
+  /**
+   * The simple peel's pinch. On a whole thing, or a piece with real shape, it
+   * lifts it in its own shape; on a bare surface it peels a flat piece. In
+   * the air, with a hand raised, it takes the whole thing you are looking at.
+   */
+  private pressSimple(point: Vector3, view: Vector3 | null): boolean {
+    const hit = this.surfaceAtPinch(point, view)
+    if (hit) {
+      const shell = this.liftAt(hit)
+      if (shell && (shell.kind === 'object' || shell.relief > SHAPELY)) this.beginObject(shell, point, false)
+      else this.begin(hit, point, view, Math.random() * 40)
+      return true
+    }
+    if (this.time > this.gazeUntil) return false
+    const far = this.surfaceOnRay(this.eye, this.gazeDir, GAZE_REACH, this.hitA)
+    const loose = this.pieceOnRay(this.eye, this.gazeDir, far ? far.dist + 0.03 : GAZE_REACH)
+    if (loose) {
+      loose.grab(point, true)
+      this.held = loose
+      return true
+    }
+    if (!far) return false
+    // The thing that was glowing a moment ago, as the hand closed to pinch; or a fresh look.
+    const a = this.aura
+    const shell = a.shell && a.remote && a.age < 0.5 && a.level > 0.3 ? a.shell : this.liftAt(far)
+    if (!shell || shell.kind !== 'object') return false
+    this.beginObject(shell, point, true)
+    return true
+  }
+
   /** The surface a pinch at `point` is on: within reach of it, or a little past fingers short of it. */
   private surfaceAtPinch(point: Vector3, view: Vector3 | null): SurfacePoint | null {
     let hit = this.field.near(point.x, point.y, point.z, TOUCH_GAP, this.hitA)
@@ -660,7 +698,10 @@ export class RoomScan {
     this.eye.copy(origin)
     const start = new Vector3(surface.x, surface.y, surface.z)
     if (simple()) {
-      this.begin(surface, start, origin, Math.random() * 40)
+      // A whole thing, or a piece with real shape, comes away in its own shape; a bare surface as a flat piece.
+      const shell = this.liftAt(surface)
+      if (shell && (shell.kind === 'object' || shell.relief > SHAPELY)) this.beginObject(shell, start, false)
+      else this.begin(surface, start, origin, Math.random() * 40)
       return surface.dist
     }
     const seen = this.preview
@@ -1130,6 +1171,8 @@ export class RoomScan {
     this.preview.cutLevel = 0
     this.preview.ghost.visible = false
     this.preview.cut.visible = false
+    this.aura.level = 0
+    this.aura.mesh.visible = false
   }
 
   /**
@@ -1163,10 +1206,16 @@ export class RoomScan {
         near = 0.35
       }
     }
-    // The simple peel shows nothing before the pinch: only the light under the fingertip.
+    // The simple peel has its own glow, and none of the ghosts or outlines below.
+    const aim = target
+    this.attendSimple(dt, simple() ? aim : null, remote)
     if (simple()) target = null
     this.focusOn = target !== null
-    if (!target && this.presenting && !this.held) {
+    if (simple() && aim) {
+      // Depth is read closely where the simple peel's attention is, as for the ghosts.
+      this.focus.set(aim.x, aim.y, aim.z)
+      this.focusOn = true
+    } else if (!target && this.presenting && !this.held) {
       // No hand is up. Depth is still read closely where you look, ready for when one is.
       const far = this.surfaceOnRay(this.eye, this.gazeDir, GAZE_REACH, this.hitC)
       if (far) {
@@ -1291,6 +1340,62 @@ export class RoomScan {
         if (this.cutHand.x * this.cutHand.x + this.cutHand.y * this.cutHand.y > 1e-6) c.uHand.value.set(this.cutHand.x, this.cutHand.y)
       }
     }
+  }
+
+  /**
+   * The simple peel's glow: over a whole thing at `at` (what a fingertip is
+   * nearing, or what you look at with a hand raised), looked for again a few
+   * times a second. Null `at` lets it fade.
+   */
+  private attendSimple(dt: number, at: SurfacePoint | null, remote: boolean): void {
+    const a = this.aura
+    a.wait -= dt
+    a.age += dt
+    let goal = 0
+    if (at) {
+      const on = (shell: Shell | null) =>
+        shell !== null && shell.kind === 'object' && Math.hypot(at.x - shell.cx, at.y - shell.cy, at.z - shell.cz) <= shell.radius * 1.15 + 0.02
+      const moved = Math.hypot(at.x - a.at.x, at.y - a.at.y, at.z - a.at.z) > 0.05
+      if (a.wait <= 0 && (a.age > 0.8 || (moved && !on(a.shell)))) {
+        a.wait = 0.22
+        a.at.set(at.x, at.y, at.z)
+        this.showAura(this.liftAt(at), remote)
+      }
+      goal = on(a.shell) ? 1 : 0
+    }
+    a.level += (goal - a.level) * (REDUCE_MOTION ? 1 : Math.min(1, dt * (goal > a.level ? 6 : 4)))
+    a.mesh.visible = a.level > 0.01
+    a.mat.uniforms.uLevel.value = a.level * 0.6
+    a.mat.uniforms.uTime.value = REDUCE_MOTION ? 0 : this.time
+  }
+
+  /** Put the simple peel's glow on `shell` when it is a whole thing. */
+  private showAura(shell: Shell | null, remote: boolean): void {
+    const a = this.aura
+    const moved = !a.shell || !shell || Math.hypot(shell.cx - a.shell.cx, shell.cy - a.shell.cy, shell.cz - a.shell.cz) > 0.08
+    a.shell = shell
+    a.remote = remote
+    a.age = 0
+    if (!shell || shell.kind !== 'object') return
+    a.mesh.geometry.dispose()
+    a.mesh.geometry = shellGeometry(shell)
+    a.mesh.position.set(shell.cx, shell.cy, shell.cz)
+    a.mat.uniforms.uLow.value = shell.bottom - shell.cy
+    a.mat.uniforms.uSpan.value = Math.max(0.02, (shell.cy - shell.bottom) * 2)
+    // The light does not jump from one thing to the next: it dims and comes up again.
+    if (moved) a.level *= 0.25
+  }
+
+  /**
+   * The simple peel's shell at `hit`, straight from the depth mesh with
+   * nothing fitted: from the fine field where it has looked closely, or else
+   * the coarse one.
+   */
+  private liftAt(hit: SurfacePoint): Shell | null {
+    const coarse = liftShell(this.field, hit, this.eye)
+    const at = this.fine ? this.onFine(hit) : null
+    if (!at || !this.fine) return coarse
+    return pickShell(coarse, liftShell(this.fine, at, this.eye))
   }
 
   /**

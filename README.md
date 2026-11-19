@@ -143,7 +143,7 @@ With `?debug=1` the `stand` line shows the fitted shape and its size, how well i
 The launch card on `/peel` has two buttons, **Box** and **Simple**, that switch how a pinch takes things. The choice holds at once and is kept on that browser for the next visit; `?simple=1` or `?simple=0` in the address picks one for that visit. The debug panel's `mode` shows which is on.
 
 - **Box** (the default) is everything described here: a thing on a table comes away whole, fitted as a box or a round, with its ghost shown first, and a bare surface gives a piece of its mesh.
-- **Simple** is the peel as it first was. Light gathers under a fingertip within 30 cm of a surface, and a pinch near any surface peels a flat piece of it there and then, with its relief and its picture, growing as you pull. Nothing is shown before the pinch and nothing is fitted: a pinch on a stack of CDs takes its top as a sheet, not the stack.
+- **Simple** is the peel as it was on 13 November (`98ebbff`), on today's depth. Light gathers under a fingertip within 30 cm of a surface. A whole thing glows softly when a fingertip nears it, or when you look at it with a hand raised. A pinch lifts it out in its own shape, straight from the depth mesh with nothing fitted, or, in the air with a hand raised, takes the thing you are looking at from where you stand. A pinch on a bare surface peels a flat piece of it, growing as you pull; a piece with real shape (6 cm or more of relief) comes away in its shape instead. There is no torch, no grid and no box.
 
 Twelve pieces is the limit. The oldest then fades. The page shows no hints. It does not draw frames, has no time window or palm menu, and does not download the depth model.
 

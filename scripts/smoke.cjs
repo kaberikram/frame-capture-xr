@@ -136,13 +136,14 @@ async function mesh(browser, failures) {
   await context.close()
 }
 
-// The Simple button on the card is the peel as it first was: nothing shows before the pinch, and a pinch on a
-// surface peels a flat piece. The choice is kept for the next visit.
+// The Simple button on the card is the peel as it was on 13 November: a bare wall shows nothing and peels a flat
+// piece; a whole thing glows and comes away in its own shape. The choice is kept for the next visit.
 async function simple(browser, failures) {
   const { context, page, errors } = await openPage(browser, 'peel?preview=1')
   const api = () => page.evaluate(() => ({ ...window.__capture }))
   const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
   const pressed = () => page.evaluate(() => Array.from(document.querySelectorAll('#mode button[aria-pressed="true"]')).map((b) => b.dataset.mode).join(','))
+  await page.waitForFunction(() => (document.getElementById('mode-note')?.textContent ?? '') !== '')
   check((await pressed()) === 'box', `simple: the card starts on Box (got ${await pressed()})`, failures)
   await page.click('#mode button[data-mode="simple"]')
   check((await pressed()) === 'simple', `simple: the Simple button switches to it (got ${await pressed()})`, failures)
@@ -156,7 +157,7 @@ async function simple(browser, failures) {
   await page.mouse.move(wx, wy)
   await page.waitForTimeout(1500)
   let state = await api()
-  check(state.roomAttention < 0.05 && state.roomOutline < 0.05, `simple: nothing shows before the pinch (ghost ${state.roomAttention.toFixed(2)}, outline ${state.roomOutline.toFixed(2)})`, failures)
+  check(state.roomAttention < 0.05 && state.roomOutline < 0.05, `simple: nothing shows on a bare wall before the pinch (glow ${state.roomAttention.toFixed(2)}, outline ${state.roomOutline.toFixed(2)})`, failures)
   await page.mouse.down()
   await page.mouse.move(wx, wy - 30, { steps: 6 })
   await page.waitForTimeout(300)
@@ -166,8 +167,22 @@ async function simple(browser, failures) {
   state = await until((s) => s.roomPiece === 'carried', 4000)
   check(state.roomPiece === 'carried', `simple: it comes away (got ${state.roomPiece})`, failures)
   await page.mouse.up()
+  // The vase on its stand glows, and a press lifts it whole.
+  const vx = (box?.x ?? 0) + (box?.width ?? 960) * 0.22
+  const vy = (box?.y ?? 0) + (box?.height ?? 640) * 0.78
+  await page.mouse.move(vx + 10, vy, { steps: 4 })
+  await page.mouse.move(vx, vy)
+  state = await until((s) => s.roomAttention > 0.5, 6000)
+  check(state.roomAttention > 0.5 && state.roomOutline < 0.05, `simple: the vase glows (glow ${state.roomAttention.toFixed(2)}, outline ${state.roomOutline.toFixed(2)})`, failures)
+  await page.mouse.down()
+  await page.mouse.move(vx, vy - 30, { steps: 6 })
+  await page.waitForTimeout(300)
+  state = await api()
+  check(state.roomPiece === 'lifting' && state.roomKind === 'object', `simple: a press on the vase lifts it whole (got ${state.roomPiece}, ${state.roomKind})`, failures)
+  await page.mouse.up()
   await page.reload()
-  await page.waitForSelector('#mode button[aria-pressed="true"]')
+  // Once the page's script has run, the note under the buttons says what the chosen mode does.
+  await page.waitForFunction(() => (document.getElementById('mode-note')?.textContent ?? '') !== '')
   check((await pressed()) === 'simple', `simple: the choice is kept for the next visit (got ${await pressed()})`, failures)
   check(errors.length === 0, `simple: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
   await context.close()
