@@ -117,6 +117,15 @@ for (const voxel of [0.02, 0.04]) {
     const footed = fitStanding(room(voxel, (x, y, z) => Math.min(top(x, y, z), foot(x, y, z), table(x, y, z))), { x: -0.2, y: 0.82, z: 0 }, { x: -0.2, y: 1.4, z: 0.6 }, pf)
     assert(footed !== null && footed.shape === 'box', `a square thing on a smaller foot is a box, got ${footed?.shape ?? pf.reason} (${voxel})`)
     assert(footed !== null && Math.abs(2 * footed.hu - 0.14) < 0.015 && Math.abs(2 * footed.hv - 0.14) < 0.015, `it is the size of its top, got ${footed ? `${cm(2 * footed.hu)} x ${cm(2 * footed.hv)}` : '-'} (${voxel})`)
+    // A glossy top that mirrors the room reads with a wide dip in its middle. A pot's inside drops
+    // to the table; this is still a box, and its top is where most of it is.
+    const stack = boxAt(-0.2, 0.75, 0, 0.14, 0.14, 0.07, 0.3)
+    const dip = boxAt(-0.2, 0.78, 0, 0.09, 0.09, 0.1, 0.3)
+    const pg = probe()
+    // The pinch lands where depth has the surface: down in the dip.
+    const glossy = fitStanding(room(voxel, (x, y, z) => Math.min(Math.max(stack(x, y, z), -dip(x, y, z)), table(x, y, z))), { x: -0.2, y: 0.78, z: 0 }, { x: -0.2, y: 1.4, z: 0.6 }, pg)
+    assert(glossy !== null && glossy.shape === 'box', `a box whose top reads with a dip is a box, got ${glossy?.shape ?? pg.reason} (${voxel})`)
+    assert(glossy !== null && Math.abs(glossy.top - 0.82) < 0.012, `its top is its rim's height, got ${glossy ? mm(glossy.top - 0.75) : '-'} mm (${voxel})`)
   }
 
   // Not things: the table itself, a wall, open air.

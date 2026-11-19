@@ -158,6 +158,12 @@ export class RoomField {
   private readonly maxChunks: number
 
   private readonly behind: number
+  /**
+   * Each reading clears what the field holds along the way to it (see
+   * `clearAlong`). Off unless asked for: a glossy top that mirrors the room is
+   * read as far away, and clearing would then wear the real top away.
+   */
+  clears = false
   /** Counts readings, so every other one clears the space it crossed. */
   private clearTurn = 0
   /** Chunks this near a point are not let go of: see `keep`. */
@@ -803,7 +809,7 @@ export class RoomField {
     const behind = edge ? this.voxel * 0.5 : this.behind
     const step = this.voxel * 0.5
     // Every other reading is enough to clear by, at half the cost: readings lie a voxel or two apart.
-    if (sample.past !== true && (this.clearTurn++ & 1) === 0) this.clearAlong(sample.ox, sample.oy, sample.oz, ix, iy, iz, depth - this.trunc - this.voxel)
+    if (this.clears && sample.past !== true && (this.clearTurn++ & 1) === 0) this.clearAlong(sample.ox, sample.oy, sample.oz, ix, iy, iz, depth - this.trunc - this.voxel)
     for (let t = depth - this.trunc; t <= depth + behind; t += step) {
       if (t < 0.2) continue
       const sdf = (depth - t) / this.trunc

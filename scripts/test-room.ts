@@ -236,6 +236,7 @@ console.log('field average ok')
 // has looked through where it was. A table seen along its length does not wear away.
 {
   const room = new RoomField(0.02, 300, 2)
+  room.clears = true
   const eye = { x: 0, y: 0.5, z: 0.5 }
   const look = (handThere: boolean) => {
     const readings: DepthSample[] = []
@@ -272,6 +273,7 @@ console.log('field average ok')
   assert(table !== null && Math.abs(table.y) < 0.01, `the table under where the hand was is still there, got ${table?.y}`)
   // A table seen from low down, along its length, many times: still all there.
   const low = new RoomField(0.02, 300, 2)
+  low.clears = true
   const lowEye = { x: 0, y: 0.12, z: 0.6 }
   const along: DepthSample[] = []
   for (let i = 0; i < 40; i++) {

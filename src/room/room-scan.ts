@@ -52,6 +52,20 @@ const CUT_R = 0.11
  * the depth mesh in its real shape.
  */
 const FLAT = queryFlag('flat') === '1'
+/**
+ * `?clear=1`: each depth reading clears what the field holds along the way to
+ * it, so a hand that slipped past the mask, or a thing moved, is forgotten.
+ * Off by default: a glossy top that mirrors the room reads as far away, and
+ * clearing then wears the real top away.
+ */
+const CLEAR = queryFlag('clear') === '1'
+/**
+ * `?simple=1`: the peel as it first was. Light gathers under a fingertip
+ * within 30 cm of a surface, and a pinch near any surface peels a flat piece
+ * of it there and then, with its relief and its picture, growing as you pull.
+ * Nothing is shown before the pinch and nothing is fitted.
+ */
+const SIMPLE = queryFlag('simple') === '1'
 /** `?motes=0` hides the motes of light that show depth being read. */
 const MOTES = queryFlag('motes') !== '0'
 /** `?mesh=0` hides the live mesh. `?mesh=all` shows all of it, not just where the hand points. */
@@ -317,6 +331,8 @@ export class RoomScan {
     this.group.name = 'room-scan'
     this.group.visible = false
     parent.add(this.group)
+    this.field.clears = CLEAR
+    if (this.fine) this.fine.clears = CLEAR
     const quad = new PlaneGeometry(1, 1)
     for (let i = 0; i < 3; i++) {
       const mat = poolMaterial(PALETTE)
@@ -536,6 +552,12 @@ export class RoomScan {
       return true
     }
     if (view) this.eye.copy(view)
+    if (SIMPLE) {
+      const hit = this.surfaceAtPinch(point, view)
+      if (!hit) return false
+      this.begin(hit, point, view, Math.random() * 40)
+      return true
+    }
     // What you saw is what you get.
     const seen = this.preview
     // Only the hand the preview follows takes it (or any pinch, when it came from looking).
@@ -574,21 +596,7 @@ export class RoomScan {
         return true
       }
     }
-    let hit = this.field.near(point.x, point.y, point.z, TOUCH_GAP, this.hitA)
-    if (!hit && view) {
-      // Fingers a little short of the wall still take it: look on past them.
-      this.scratch.copy(point).sub(view).normalize()
-      hit = this.field.surfaceAlong(
-        point.x - this.scratch.x * 0.04,
-        point.y - this.scratch.y * 0.04,
-        point.z - this.scratch.z * 0.04,
-        this.scratch.x,
-        this.scratch.y,
-        this.scratch.z,
-        0.04 + TOUCH_GAP,
-        this.hitA,
-      )
-    }
+    const hit = this.surfaceAtPinch(point, view)
     if (hit) {
       const shell = this.shellAt(hit)
       if (shell && (!FLAT || shell.kind === 'object')) this.beginObject(shell, point, false)
@@ -612,6 +620,26 @@ export class RoomScan {
     return true
   }
 
+  /** The surface a pinch at `point` is on: within reach of it, or a little past fingers short of it. */
+  private surfaceAtPinch(point: Vector3, view: Vector3 | null): SurfacePoint | null {
+    let hit = this.field.near(point.x, point.y, point.z, TOUCH_GAP, this.hitA)
+    if (!hit && view) {
+      // Fingers a little short of the wall still take it: look on past them.
+      this.scratch.copy(point).sub(view).normalize()
+      hit = this.field.surfaceAlong(
+        point.x - this.scratch.x * 0.04,
+        point.y - this.scratch.y * 0.04,
+        point.z - this.scratch.z * 0.04,
+        this.scratch.x,
+        this.scratch.y,
+        this.scratch.z,
+        0.04 + TOUCH_GAP,
+        this.hitA,
+      )
+    }
+    return hit
+  }
+
   /**
    * The desk's pinch: a press along a ray. Returns how far along the ray it
    * took hold, or -1.
@@ -629,6 +657,10 @@ export class RoomScan {
     if (!surface) return -1
     this.eye.copy(origin)
     const start = new Vector3(surface.x, surface.y, surface.z)
+    if (SIMPLE) {
+      this.begin(surface, start, origin, Math.random() * 40)
+      return surface.dist
+    }
     const seen = this.preview
     const ghost = seen.ghostShell
     if (seen.offer === 'ghost' && ghost && seen.ghostLevel > 0.25 && onShell(ghost, start.x, start.y, start.z)) {
@@ -705,6 +737,8 @@ export class RoomScan {
     }
     touch.up = true
     touch.from.copy(origin)
+    // The simple peel's light is under the fingertip only, as it first was.
+    if (SIMPLE && level < 0) reach = Math.min(reach, POOL_REACH)
     let hit = this.field.near(origin.x, origin.y, origin.z, 0.07, this.hitB)
     if (!hit && dir && dir.lengthSq() > 1e-6) {
       hit = this.surfaceOnRay(origin, this.local.copy(dir).normalize(), reach, this.hitB)
@@ -1027,11 +1061,12 @@ export class RoomScan {
   }
 
   /** Peel a flat piece off the surface at `hit`, `radius` across with the torn shape `seed`. */
-  private begin(hit: SurfacePoint, start: Vector3, view: Vector3 | null, seed: number, radius: number, taken: Skin | null = null): void {
+  /** Peel a flat piece at `hit`: `radius` across, or, without one, growing with the pull. */
+  private begin(hit: SurfacePoint, start: Vector3, view: Vector3 | null, seed: number, radius?: number, taken: Skin | null = null): void {
     const pinch = start.clone()
     this.makeRoom()
     this.centre.set(hit.x, hit.y, hit.z)
-    const skin = taken ?? this.takeSkin(this.centre, this.scratch.set(hit.nx, hit.ny, hit.nz), Math.min(PIECE_MAX, radius) * 1.15)
+    const skin = taken ?? this.takeSkin(this.centre, this.scratch.set(hit.nx, hit.ny, hit.nz), Math.min(PIECE_MAX, radius ?? PIECE_MAX) * 1.15)
     const piece = new PeelPiece({ hit, start: pinch, view, field: this.field, skin, palette: PALETTE, scale: PEEL_SCALE, seed, radius })
     this.hold(piece)
   }
@@ -1126,6 +1161,8 @@ export class RoomScan {
         near = 0.35
       }
     }
+    // The simple peel shows nothing before the pinch: only the light under the fingertip.
+    if (SIMPLE) target = null
     this.focusOn = target !== null
     if (!target && this.presenting && !this.held) {
       // No hand is up. Depth is still read closely where you look, ready for when one is.

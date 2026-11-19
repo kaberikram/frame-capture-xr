@@ -136,6 +136,33 @@ async function mesh(browser, failures) {
   await context.close()
 }
 
+// `simple=1` is the peel as it first was: nothing shows before the pinch, and a pinch on a surface peels a flat piece.
+async function simple(browser, failures) {
+  const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0&simple=1')
+  const api = () => page.evaluate(() => ({ ...window.__capture }))
+  const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
+  await until((s) => s.roomChunks > 150, 20000)
+  const box = await page.locator('#scene-container').boundingBox()
+  const wx = (box?.x ?? 0) + (box?.width ?? 960) * 0.2
+  const wy = (box?.y ?? 0) + (box?.height ?? 640) * 0.36
+  await page.mouse.move(wx - 20, wy)
+  await page.mouse.move(wx, wy)
+  await page.waitForTimeout(1500)
+  let state = await api()
+  check(state.roomAttention < 0.05 && state.roomOutline < 0.05, `simple: nothing shows before the pinch (ghost ${state.roomAttention.toFixed(2)}, outline ${state.roomOutline.toFixed(2)})`, failures)
+  await page.mouse.down()
+  await page.mouse.move(wx, wy - 30, { steps: 6 })
+  await page.waitForTimeout(300)
+  state = await api()
+  check(state.roomPiece === 'lifting' && state.roomKind === 'flat', `simple: a pinch on the wall peels a flat piece (got ${state.roomPiece}, ${state.roomKind})`, failures)
+  await page.mouse.move(wx, wy - 110, { steps: 10 })
+  state = await until((s) => s.roomPiece === 'carried', 4000)
+  check(state.roomPiece === 'carried', `simple: it comes away (got ${state.roomPiece})`, failures)
+  await page.mouse.up()
+  check(errors.length === 0, `simple: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
+  await context.close()
+}
+
 // A thing standing on a level surface is fitted as a clean solid: the desk's cup on its stand is a round.
 async function cup(browser, failures) {
   const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0')
@@ -548,6 +575,7 @@ async function headset(browser, failures, leaveHandInFrame) {
       await headset(browser, failures, true)
     }
     await mesh(browser, failures)
+    await simple(browser, failures)
     await cup(browser, failures)
     await peelHeadset(browser, failures, 'cpu')
     await peelHeadset(browser, failures, 'gpu')
