@@ -96,7 +96,7 @@ export function launchNote(text: string): void {
 /** What each peel mode does, under its buttons. */
 const MODE_NOTES: Record<PeelMode, string> = {
   box: 'Box: a thing on a table comes away whole, as a box or a round. A wall or a table gives a piece of itself.',
-  simple: 'Simple: a pinch near anything peels a flat piece of it, as the first version did. Nothing shows first.',
+  simple: 'Simple: as it was on 13 November. A thing glows when your hand nears it; pinch and it comes away in its own shape. A bare wall peels as a flat piece.',
 }
 
 /** The peel page's Box and Simple buttons: they switch at once, and the choice is kept for next time. */
