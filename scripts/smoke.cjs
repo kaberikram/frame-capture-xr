@@ -136,11 +136,18 @@ async function mesh(browser, failures) {
   await context.close()
 }
 
-// `simple=1` is the peel as it first was: nothing shows before the pinch, and a pinch on a surface peels a flat piece.
+// The Simple button on the card is the peel as it first was: nothing shows before the pinch, and a pinch on a
+// surface peels a flat piece. The choice is kept for the next visit.
 async function simple(browser, failures) {
-  const { context, page, errors } = await openPage(browser, 'peel?preview=1&ui=0&simple=1')
+  const { context, page, errors } = await openPage(browser, 'peel?preview=1')
   const api = () => page.evaluate(() => ({ ...window.__capture }))
   const until = async (pred, ms) => { const end = Date.now() + ms; let s = await api(); while (!pred(s) && Date.now() < end) { await page.waitForTimeout(150); s = await api() } return s }
+  const pressed = () => page.evaluate(() => Array.from(document.querySelectorAll('#mode button[aria-pressed="true"]')).map((b) => b.dataset.mode).join(','))
+  check((await pressed()) === 'box', `simple: the card starts on Box (got ${await pressed()})`, failures)
+  await page.click('#mode button[data-mode="simple"]')
+  check((await pressed()) === 'simple', `simple: the Simple button switches to it (got ${await pressed()})`, failures)
+  // The card is out of the way of the view from here on.
+  await page.evaluate(() => { document.getElementById('launch').hidden = true })
   await until((s) => s.roomChunks > 150, 20000)
   const box = await page.locator('#scene-container').boundingBox()
   const wx = (box?.x ?? 0) + (box?.width ?? 960) * 0.2
@@ -159,6 +166,9 @@ async function simple(browser, failures) {
   state = await until((s) => s.roomPiece === 'carried', 4000)
   check(state.roomPiece === 'carried', `simple: it comes away (got ${state.roomPiece})`, failures)
   await page.mouse.up()
+  await page.reload()
+  await page.waitForSelector('#mode button[aria-pressed="true"]')
+  check((await pressed()) === 'simple', `simple: the choice is kept for the next visit (got ${await pressed()})`, failures)
   check(errors.length === 0, `simple: no page errors${errors.length ? `: ${errors[0]}` : ''}`, failures)
   await context.close()
 }

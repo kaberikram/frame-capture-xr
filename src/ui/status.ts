@@ -1,4 +1,5 @@
 import { CLEAN, PEEL, PREVIEW_FORCED, queryFlag } from '../app/experience.js'
+import { peelMode, setPeelMode, type PeelMode } from '../room/peel-mode.js'
 import type { Held } from '../capture/held.js'
 import type { Phase } from '../debug/api.js'
 import type { Touch } from '../interaction/grip.js'
@@ -92,11 +93,39 @@ export function launchNote(text: string): void {
   if (el) el.textContent = text
 }
 
+/** What each peel mode does, under its buttons. */
+const MODE_NOTES: Record<PeelMode, string> = {
+  box: 'Box: a thing on a table comes away whole, as a box or a round. A wall or a table gives a piece of itself.',
+  simple: 'Simple: a pinch near anything peels a flat piece of it, as the first version did. Nothing shows first.',
+}
+
+/** The peel page's Box and Simple buttons: they switch at once, and the choice is kept for next time. */
+function wireMode(): void {
+  const group = document.getElementById('mode')
+  const note = document.getElementById('mode-note')
+  if (!group) return
+  const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('button[data-mode]'))
+  const show = () => {
+    const now = peelMode()
+    for (const button of buttons) button.setAttribute('aria-pressed', button.dataset.mode === now ? 'true' : 'false')
+    if (note) note.textContent = MODE_NOTES[now]
+  }
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const next = button.dataset.mode === 'simple' ? 'simple' : 'box'
+      setPeelMode(next)
+      show()
+    })
+  }
+  show()
+}
+
 /** The page card: hide it with `?ui=0`, and enable Enter once the browser can run passthrough. */
 export function wireLaunch(onEnter: () => void): void {
   const enter = document.getElementById('enter') as HTMLButtonElement | null
   const hint = document.getElementById('hint')
   const card = document.getElementById('launch')
+  if (PEEL) wireMode()
   if (queryFlag('ui') === '0' && card) card.hidden = true
   if (CLEAN && enter) enter.textContent = 'Enter'
   if (PREVIEW_FORCED && hint && !CLEAN) hint.textContent = PEEL ? 'Preview is on. Press a surface and drag up. Right-drag orbits.' : 'Preview is on. Drag in the view. Right-drag orbits.'
